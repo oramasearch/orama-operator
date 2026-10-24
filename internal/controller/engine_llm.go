@@ -319,7 +319,7 @@ func secretDataHash(secrets ...*corev1.Secret) string {
 // requestsForSecret maps a Secret event to the OramaCloudV1 resources in its namespace that read
 // it: an enabled engine's LLM key Secrets (<cr>-engine-secret, or an apiKeySecretRef), the Secret
 // spec.masterAPIKeySecretRef names, <cr>-broker-admin, <cr>-broker-users, <cr>-broker-harvest, <cr>-cache-auth and <cr>-analytics-api-key,
-// and the control DB's <cr>-controldb-app while analytics-processor runs. Supplied and copied
+// and the control DB's <cr>-controldb-app while analytics-processor or index-builder runs. Supplied and copied
 // Secrets carry no owner reference, so Owns alone would miss them; a Secret several CRs share
 // enqueues each of them.
 func (r *OramaCloudV1Reconciler) requestsForSecret(ctx context.Context, object client.Object) []reconcile.Request {
@@ -341,7 +341,7 @@ func (r *OramaCloudV1Reconciler) requestsForSecret(ctx context.Context, object c
 func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
 	names := []string{brokerAdminSecretName(oc), brokerUsersSecretName(oc), cacheAuthSecretName(oc), redisHTTPSecretName(oc), hpesSecretName(oc), analyticsKeySecretName(oc), brokerHarvestSecretName(oc),
 		harvestSignSecretName(oc), harvestNotificationSecretName(oc)}
-	if oc.Spec.Components.AnalyticsProcessor.Enabled {
+	if oc.Spec.Components.AnalyticsProcessor.Enabled || oc.Spec.Components.Ingestion.Enabled {
 		names = append(names, controlDBAppSecret(oc))
 	}
 	if oc.Spec.Components.Dashboard.Enabled {

@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -45,11 +46,14 @@ func rebuildStack(t *testing.T, mut func(*oramav1alpha1.OramaCloudV1)) (*OramaCl
 	claim := func(name, uid string, labels map[string]string) client.Object {
 		return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, UID: types.UID(uid), Labels: labels}}
 	}
+	controlDBClaim := claim("v1-controldb-1", "controldb-1", map[string]string{cnpgClusterLabel: "v1-controldb"})
+	controlDBClaim.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "postgresql.cnpg.io/v1", Kind: "Cluster", Name: "v1-controldb", UID: "cluster", Controller: boolPtr(true)}})
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
 	cluster.SetName("v1-controldb")
 	objects := []client.Object{
 		oc,
+		controlled(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "v1-index-builder"}}),
 		controlled(&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "v1-writer"}}),
 		controlled(&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "v1-reader"}}),
 		controlled(cluster),
@@ -59,7 +63,7 @@ func rebuildStack(t *testing.T, mut func(*oramav1alpha1.OramaCloudV1)) (*OramaCl
 		claim("data-v1-reader-0", "reader-0", nil),
 		claim("data-v1-reader-3", "reader-3", nil),
 		claim("data-v1-harvest-mongo-0", "mongo-0", nil),
-		claim("v1-controldb-1", "controldb-1", map[string]string{cnpgClusterLabel: "v1-controldb"}),
+		controlDBClaim,
 		claim("team-a-runs", "runs", nil),
 		claim("data-v1-writer-other-0", "lookalike", nil),
 	}
@@ -139,7 +143,7 @@ func TestStorageRebuildDeletesTheStacksDataOnceAndHandsBack(t *testing.T) {
 		obj  client.Object
 		name string
 	}{
-		{&appsv1.StatefulSet{}, "v1-writer"}, {&appsv1.StatefulSet{}, "v1-reader"},
+		{&appsv1.Deployment{}, "v1-index-builder"}, {&appsv1.StatefulSet{}, "v1-writer"}, {&appsv1.StatefulSet{}, "v1-reader"},
 		{&oramav1alpha1.PostgresSchema{}, "v1-controldb-schema"}, {&batchv1.Job{}, "v1-analytics-retention"},
 		{&corev1.PersistentVolumeClaim{}, "data-v1-reader-3"}, {&corev1.PersistentVolumeClaim{}, "v1-controldb-1"},
 	} {
@@ -225,22 +229,102 @@ func TestStorageRebuildRecordsBeforeItDeletes(t *testing.T) {
 	}
 }
 
-func TestStorageRebuildLeavesANewClaimWithARecordedName(t *testing.T) {
-	r, oc, writes := rebuildStack(t, nil)
+func TestStorageRebuildDeletesClaimsMadeAfterItStarted(t *testing.T) {
+	r, oc, _ := rebuildStack(t, nil)
 	ctx := context.Background()
 	if _, err := r.reconcileStorageRebuild(ctx, oc); err != nil {
 		t.Fatal(err)
 	}
-	// The writer's claim comes back under the same name, as a new StatefulSet would make it.
-	if err := r.Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-v1-writer-0", Namespace: oc.Namespace, UID: "writer-0-new"}}); err != nil {
+	// While the old StatefulSets wind down, one makes a claim for a new ordinal and another makes its
+	// deleted claim again: both are old storage on the old template.
+	for _, c := range []struct{ name, uid string }{{"data-v1-reader-5", "reader-5"}, {"data-v1-writer-0", "writer-0-again"}} {
+		if err := r.Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: c.name, Namespace: oc.Namespace, UID: types.UID(c.uid)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if proceed, err := r.reconcileStorageRebuild(ctx, rebuildLive(t, r, oc)); err != nil || proceed {
+		t.Fatalf("pass that found new claims = %v, %v; want held", proceed, err)
+	}
+	record := map[string]string{}
+	for _, c := range rebuildLive(t, r, oc).Status.StorageRebuild.Claims {
+		record[c.Name] = c.UID
+	}
+	if record["data-v1-reader-5"] != "reader-5" || record["data-v1-writer-0"] != "writer-0-again" {
+		t.Fatalf("record %v does not hold the claims found after the start", record)
+	}
+	for _, name := range []string{"data-v1-reader-5", "data-v1-writer-0"} {
+		if rebuildExists(t, r, &corev1.PersistentVolumeClaim{}, name) {
+			t.Fatalf("%s, made after the rebuild started, survived it", name)
+		}
+	}
+	if proceed, err := r.reconcileStorageRebuild(ctx, rebuildLive(t, r, oc)); err != nil || !proceed {
+		t.Fatalf("final pass = %v, %v; want completed", proceed, err)
+	}
+}
+
+func TestStorageRebuildNeverRunsACompletedIDAgain(t *testing.T) {
+	r, oc, writes := rebuildStack(t, nil)
+	ctx := context.Background()
+	run := func(id string) {
+		t.Helper()
+		live := rebuildLive(t, r, oc)
+		live.Spec.StorageRebuild.ID = id
+		if err := r.Update(ctx, live); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			if _, err := r.reconcileStorageRebuild(ctx, rebuildLive(t, r, oc)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	run("first")
+	run("second")
+	if got := rebuildLive(t, r, oc).Status.StorageRebuild.CompletedIDs; strings.Join(got, ",") != "first,second" {
+		t.Fatalf("completedIDs = %v", got)
+	}
+	// An older set file with the first rebuild in it comes back: nothing is deleted.
+	if err := r.Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-v1-writer-0", Namespace: oc.Namespace, UID: "customer-data"}}); err != nil {
 		t.Fatal(err)
 	}
 	before := len(writes.deleted)
-	if proceed, err := r.reconcileStorageRebuild(ctx, rebuildLive(t, r, oc)); err != nil || !proceed {
-		t.Fatalf("pass = %v, %v; want completed", proceed, err)
-	}
+	run("first")
 	if len(writes.deleted) != before || !rebuildExists(t, r, &corev1.PersistentVolumeClaim{}, "data-v1-writer-0") {
-		t.Fatalf("the new claim was deleted: %v", writes.deleted[before:])
+		t.Fatalf("a completed id ran again and deleted %v", writes.deleted[before:])
+	}
+}
+
+func TestStorageRebuildWaitingWritesStatusOnlyOnChange(t *testing.T) {
+	r, oc, writes := rebuildStack(t, nil)
+	ctx := context.Background()
+	// Two objects stay terminating, so every pass waits on the same set.
+	for _, held := range []struct {
+		obj  client.Object
+		name string
+	}{{&batchv1.Job{}, "v1-analytics-retention"}, {&oramav1alpha1.PostgresSchema{}, "v1-controldb-schema"}} {
+		live := storageGet(t, r, held.obj, oc.Namespace, held.name)
+		live.SetFinalizers([]string{"test/hold"})
+		if err := r.Update(ctx, live); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := r.reconcileStorageRebuild(ctx, rebuildLive(t, r, oc)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	steady := writes.status
+	for i := 0; i < 3; i++ {
+		if _, err := r.reconcileStorageRebuild(ctx, rebuildLive(t, r, oc)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if writes.status != steady {
+		t.Fatalf("an unchanged wait wrote status %d more times", writes.status-steady)
+	}
+	c := rebuildCondition(t, rebuildLive(t, r, oc), rebuildPhaseDeleting)
+	if !strings.Contains(c.Message, "Job v1-analytics-retention, PostgresSchema v1-controldb-schema") {
+		t.Fatalf("waiting message %q does not list the remaining objects in order", c.Message)
 	}
 }
 
@@ -257,6 +341,27 @@ func TestStorageRebuildRefusesAClaimAnotherControllerOwns(t *testing.T) {
 	}
 	if len(writes.deleted) != 0 {
 		t.Fatalf("deleted %v", writes.deleted)
+	}
+}
+
+func TestStorageRebuildRefusesAControlDBLabelOnAnotherObjectsClaim(t *testing.T) {
+	r, oc, writes := rebuildStack(t, nil)
+	ctx := context.Background()
+	if err := r.Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "lookalike-db", Namespace: oc.Namespace, UID: "x", Labels: map[string]string{cnpgClusterLabel: "v1-controldb"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.reconcileStorageRebuild(ctx, oc); err == nil || !strings.Contains(err.Error(), "lookalike-db") {
+		t.Fatalf("err = %v, want the claim named", err)
+	}
+	if len(writes.deleted) != 0 {
+		t.Fatalf("deleted %v", writes.deleted)
+	}
+}
+
+func TestIndexBuilderRollsWhenTheControlDBPasswordChanges(t *testing.T) {
+	oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Ingestion.Enabled = true })
+	if !slices.Contains(secretsReadBy(oc), controlDBAppSecret(oc)) {
+		t.Fatalf("a change to %s does not reach the stack that index-builder reads it for", controlDBAppSecret(oc))
 	}
 }
 

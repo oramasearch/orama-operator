@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -27,9 +28,9 @@ import (
 
 // A storage rebuild (spec.storageRebuild, operator#915) moves a stack to volumes it was not created
 // with. A claim's storage class and a StatefulSet's claim template cannot change, and a StatefulSet's
-// claims outlive it, so the only way onto new volumes is to delete the old ones. The rebuild deletes
-// the stack's data StatefulSets, their claims, the control DB and what recorded work against it, then
-// hands back to the normal reconcile, which creates them all again from the spec.
+// claims outlive it, so the only way onto new volumes is to delete the old ones. The rebuild stops the
+// stack's Deployments, deletes its data StatefulSets, their claims, the control DB and what recorded
+// work against it, then hands back to the normal reconcile, which creates them all again from the spec.
 
 const (
 	// storageRebuildCondition reports a requested rebuild: Refused, Deleting, or Completed.
@@ -47,10 +48,11 @@ var rebuildDataComponents = []string{"writer", "reader", "analytics", "broker", 
 // reconcile may go on, and false while a rebuild is deleting the old storage, so that no StatefulSet
 // or control DB is created again on a claim the rebuild is about to delete.
 func (r *OramaCloudV1Reconciler) reconcileStorageRebuild(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (bool, error) {
-	current := oc.Status.StorageRebuild
-	if current == nil || current.Phase != rebuildPhaseDeleting {
+	rebuild := oc.Status.StorageRebuild
+	starting := rebuild == nil || rebuild.Phase != rebuildPhaseDeleting
+	if starting {
 		req := oc.Spec.StorageRebuild
-		if req == nil || (current != nil && current.ID == req.ID) {
+		if req == nil || (rebuild != nil && slices.Contains(rebuild.CompletedIDs, req.ID)) {
 			return true, nil
 		}
 		refusal, err := r.storageRebuildRefusal(ctx, oc, req)
@@ -64,24 +66,35 @@ func (r *OramaCloudV1Reconciler) reconcileStorageRebuild(ctx context.Context, oc
 			})
 			return true, nil
 		}
-		claims, err := r.rebuildClaims(ctx, oc)
-		if err != nil {
-			return false, err
+		var completed []string
+		if rebuild != nil {
+			completed = rebuild.CompletedIDs
 		}
-		// The record is written before anything is deleted: a rebuild deletes no claim it did not
-		// record, and a restarted operator finishes the same rebuild from it.
-		oc.Status.StorageRebuild = &oramav1alpha1.StorageRebuildStatus{ID: req.ID, Phase: rebuildPhaseDeleting, Claims: claims}
+		rebuild = &oramav1alpha1.StorageRebuildStatus{ID: req.ID, Phase: rebuildPhaseDeleting, CompletedIDs: completed}
+		oc.Status.StorageRebuild = rebuild
+	}
+
+	// Every pass takes the inventory again, so a claim a StatefulSet made after the last pass is
+	// found too, and writes any new claim to the record before deleting anything: a rebuild deletes
+	// no claim it has not recorded, and a restarted operator finishes the same rebuild from it.
+	found, err := r.rebuildClaims(ctx, oc)
+	if err != nil {
+		return false, err
+	}
+	claims, changed := mergeRebuildClaims(rebuild.Claims, found)
+	if starting || changed {
+		rebuild.Claims = claims
 		meta.SetStatusCondition(&oc.Status.Conditions, metav1.Condition{
 			Type: storageRebuildCondition, Status: metav1.ConditionFalse, Reason: rebuildPhaseDeleting,
-			Message:            fmt.Sprintf("rebuild %s: deleting %d claims and the workloads that use them", req.ID, len(claims)),
+			Message:            fmt.Sprintf("rebuild %s: deleting %d claims and the workloads that use them", rebuild.ID, len(claims)),
 			ObservedGeneration: oc.Generation,
 		})
 		if err := r.Status().Update(ctx, oc); err != nil {
-			return false, fmt.Errorf("record storage rebuild %s: %w", req.ID, err)
+			return false, fmt.Errorf("record storage rebuild %s: %w", rebuild.ID, err)
 		}
+		rebuild = oc.Status.StorageRebuild
 	}
 
-	rebuild := oc.Status.StorageRebuild
 	remaining, err := r.deleteRebuildStorage(ctx, oc, rebuild.Claims)
 	if err != nil {
 		return false, err
@@ -95,6 +108,7 @@ func (r *OramaCloudV1Reconciler) reconcileStorageRebuild(ctx context.Context, oc
 		return false, nil
 	}
 	rebuild.Phase = rebuildPhaseCompleted
+	rebuild.CompletedIDs = append(rebuild.CompletedIDs, rebuild.ID)
 	meta.SetStatusCondition(&oc.Status.Conditions, metav1.Condition{
 		Type: storageRebuildCondition, Status: metav1.ConditionTrue, Reason: rebuildPhaseCompleted,
 		Message:            fmt.Sprintf("rebuild %s deleted %d claims; the stack is built again from its spec", rebuild.ID, len(rebuild.Claims)),
@@ -143,6 +157,9 @@ func (r *OramaCloudV1Reconciler) rebuildClaims(ctx context.Context, oc *oramav1a
 				return nil, fmt.Errorf("claim %s is controlled by %s %s, not this stack", claim.Name, owner.Kind, owner.Name)
 			}
 		case claim.Labels[cnpgClusterLabel] == controlDB:
+			if owner := metav1.GetControllerOf(claim); owner == nil || owner.Kind != "Cluster" || owner.Name != controlDB {
+				return nil, fmt.Errorf("claim %s carries the control DB's label but is not controlled by Cluster %s", claim.Name, controlDB)
+			}
 		default:
 			continue
 		}
@@ -150,6 +167,27 @@ func (r *OramaCloudV1Reconciler) rebuildClaims(ctx context.Context, oc *oramav1a
 	}
 	sort.Slice(recorded, func(i, j int) bool { return recorded[i].Name < recorded[j].Name })
 	return recorded, nil
+}
+
+// mergeRebuildClaims adds the claims found now to the record, by name, and says whether the record
+// changed. While a rebuild deletes, no component is reconciled, so every claim found is old storage:
+// one a StatefulSet made again under a recorded name replaces that name's UID, and is deleted too.
+func mergeRebuildClaims(recorded, found []oramav1alpha1.RebuildClaim) ([]oramav1alpha1.RebuildClaim, bool) {
+	merged := slices.Clone(recorded)
+	changed := false
+	for _, claim := range found {
+		i := slices.IndexFunc(merged, func(c oramav1alpha1.RebuildClaim) bool { return c.Name == claim.Name })
+		switch {
+		case i < 0:
+			merged = append(merged, claim)
+			changed = true
+		case merged[i].UID != claim.UID:
+			merged[i].UID = claim.UID
+			changed = true
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
+	return merged, changed
 }
 
 // rebuildDataClaimStatefulSet returns the data StatefulSet a claim name belongs to.
@@ -164,9 +202,11 @@ func rebuildDataClaimStatefulSet(oc *oramav1alpha1.OramaCloudV1, name string) (s
 }
 
 // deleteRebuildStorage asks for every object the rebuild removes to be deleted, and returns those
-// still present. Workloads go in the foreground, so their pods are gone before they are; a claim is
-// deleted only while it has its recorded UID, and kubelet's pvc-protection keeps it until no pod
-// uses it. Each pass repeats the deletes it needs, so a pass interrupted at any point resumes.
+// still present, sorted. The stack's Deployments go too, so no client writes to a store while it is
+// replaced and every client starts again with the new stores' credentials. Workloads go in the
+// foreground, so their pods are gone before they are; a claim is deleted only while it has its
+// recorded UID, and pvc-protection keeps it until no pod uses it. Each pass repeats the deletes it
+// needs, so a pass interrupted at any point resumes.
 func (r *OramaCloudV1Reconciler) deleteRebuildStorage(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, claims []oramav1alpha1.RebuildClaim) ([]string, error) {
 	var remaining []string
 	foreground := client.PropagationPolicy(metav1.DeletePropagationForeground)
@@ -190,6 +230,17 @@ func (r *OramaCloudV1Reconciler) deleteRebuildStorage(ctx context.Context, oc *o
 		return nil
 	}
 
+	var deployments appsv1.DeploymentList
+	if err := r.List(ctx, &deployments, client.InNamespace(oc.Namespace)); err != nil {
+		return nil, fmt.Errorf("list Deployments: %w", err)
+	}
+	for i := range deployments.Items {
+		if metav1.IsControlledBy(&deployments.Items[i], oc) {
+			if err := remove("Deployment", &deployments.Items[i]); err != nil {
+				return nil, err
+			}
+		}
+	}
 	for _, component := range rebuildDataComponents {
 		sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-" + component, Namespace: oc.Namespace}}
 		if err := remove("StatefulSet", sts); err != nil {
@@ -249,5 +300,6 @@ func (r *OramaCloudV1Reconciler) deleteRebuildStorage(ctx context.Context, oc *o
 			}
 		}
 	}
+	sort.Strings(remaining)
 	return remaining, nil
 }

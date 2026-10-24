@@ -36,11 +36,12 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 			return err
 		}
 		if err := r.reconcileApp(ctx, oc, appDef{
-			component:         "index-builder",
-			image:             componentImage(oc, "index-builder", "index-builder"),
-			port:              8080,
-			env:               append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
-			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc)}, keyRefSecrets(refs)...),
+			component: "index-builder",
+			image:     componentImage(oc, "index-builder", "index-builder"),
+			port:      8080,
+			env:       append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
+			// controlDBAppSecret is its DATABASE_URL (pgURIEnv): a new control DB has a new password.
+			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
 			resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
 		}); err != nil {
 			return err

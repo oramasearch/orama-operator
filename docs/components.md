@@ -146,13 +146,16 @@ A grown size stays in the set file that set it: a smaller value afterwards is a 
 A class change can't happen in place: claims and claim templates keep their class, and claims outlive
 their StatefulSet, so a stack re-created in its namespace takes the old claims back
 ([#915](https://github.com/oramasearch/orama-operator/issues/915)). `spec.storageRebuild` runs first in
-the reconcile, before any component. It records the stack's data claims by name and UID in status, then
-deletes the data StatefulSets, the control DB's CNPG Cluster, its PostgresSchemas, the stack's own Jobs and
-the recorded claims, and holds every component until they are gone. Then it marks the rebuild `Completed`,
-and the ordinary component steps create everything again on the current storage settings: new claims from
-new templates, a fresh `initdb`, the schemas, the reference rows and the `c1` row. Nothing is inferred
-from a class mismatch: the request is explicit, bound to the instance's UID, runs once per `id`, and is
-refused while a migration exists in the namespace. Field reference and status:
+the reconcile, before any component. Each pass records the stack's data claims by name and UID in status
+before deleting anything, then deletes the stack's Deployments, the data StatefulSets, the control DB's
+CNPG Cluster, its PostgresSchemas, the stack's own Jobs and the recorded claims, and holds every component
+until they are gone. Then it marks the rebuild `Completed`, and the ordinary component steps create
+everything again on the current storage settings: the Deployments, new claims from new templates, a fresh
+`initdb` with a new owner password, the schemas, the reference rows and the `c1` row. Nothing is inferred
+from a class mismatch: the request is explicit, bound to the instance's UID, runs once per `id` (every
+completed `id` is kept), and is refused while a migration exists in the namespace. index-builder's
+credentials hash includes `<cr>-controldb-app`, so it rolls when the control DB's owner password changes, as
+analytics-processor already did. Field reference and status:
 [crd-reference.md](crd-reference.md#storage-rebuild-specstoragerebuild).
 
 ## Cloudflare DNS ownership

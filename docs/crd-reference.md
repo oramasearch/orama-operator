@@ -650,7 +650,7 @@ again from the current storage settings. **It deletes the stack's data.**
 
 | Field | Type | Behavior |
 |---|---|---|
-| `id` | DNS label | Names the rebuild. It runs once: an `id` that already completed does nothing, and a new `id` runs again. |
+| `id` | DNS label | Names the rebuild. It runs once: every completed `id` is kept in `status.storageRebuild.completedIDs`, so an `id` that completed does nothing, even after a later rebuild, and a new `id` runs again. |
 | `instanceUID` | string | Must equal the instance's `metadata.uid`, so a request left in a spec never runs on an instance created again later. Read it with `kubectl get ocv1 <name> -o jsonpath='{.metadata.uid}'`. |
 | `dataLoss` | `DiscardAll` | The only value: the request states that the data goes. |
 
@@ -660,24 +660,31 @@ customer data). Otherwise the operator, before reconciling any component:
 
 1. records the claims it will delete in `status.storageRebuild.claims` (name and UID): every
    `data-<cr>-<component>-<ordinal>` of the writer, readers, analytics, broker, cache, search and HARVEST's
-   Mongo, retained ordinals included, and every claim labelled `cnpg.io/cluster: <cr>-controldb`. A claim
-   another controller owns stops the rebuild with an error. Nothing is deleted unless the record is written;
-2. deletes, in the foreground, those StatefulSets, the control DB's CNPG `Cluster`, its `PostgresSchema`s and
-   the Jobs the stack owns (the `c1` row's, analytics retention's), then each recorded claim with its recorded
-   UID as a precondition. Until all are gone the phase is `Progressing`, `Ready` is `False / StorageRebuilding`
+   Mongo, retained ordinals included, and every claim of the control DB's CNPG Cluster (labelled
+   `cnpg.io/cluster: <cr>-controldb` and controlled by that Cluster). A claim with either name or label that
+   another controller owns stops the rebuild with an error. Every pass takes this inventory again and records
+   a claim found since, including one a winding-down StatefulSet made again, before deleting anything;
+2. deletes, in the foreground, the Deployments the stack owns (so no client writes while its store is
+   replaced, and each starts again with the new stores' credentials), the data StatefulSets, the control DB's
+   CNPG `Cluster`, its `PostgresSchema`s and the Jobs the stack owns (the `c1` row's, analytics retention's),
+   then each recorded claim with its recorded UID as a precondition. Until all are gone the phase is
+   `Progressing`, `Ready` is `False / StorageRebuilding`, the condition lists what is left in sorted order,
    and no component is reconciled;
-3. marks the rebuild `Completed` and reconciles as usual, which creates the StatefulSets on new claims from the
-   current templates, a new control DB, its schemas, reference rows and `c1` row.
+3. marks the rebuild `Completed`, adds its `id` to `completedIDs`, and reconciles as usual, which creates the
+   Deployments, the StatefulSets on new claims from the current templates, a new control DB with its schemas,
+   reference rows and `c1` row.
 
-Configuration, generated credentials, Services, Ingresses, certificates, DNS records, KV namespaces and R2
-buckets stay. Deployments keep running and reconnect when their stores return; they serve errors meanwhile.
+Configuration, the operator's generated credentials, Services, Ingresses, certificates, DNS records, KV
+namespaces and R2 buckets stay. CNPG generates the new control DB's owner password (`<cr>-controldb-app`);
+its readers, analytics-processor and index-builder, roll when it changes. The stack serves nothing from the
+start of the rebuild until its workloads are Ready again. CronJobs stay as they are (suspended on production).
 A restarted operator resumes from the record. Removing `storageRebuild` from the spec does not stop a
 rebuild that has started.
 
 | `status.storageRebuild` | Meaning |
 |---|---|
 | `id`, `phase: Deleting`, `claims` | The rebuild in progress and what it deletes. |
-| `phase: Completed` | The rebuild with this `id` finished; the same `id` never runs again. |
+| `phase: Completed`, `completedIDs` | The rebuild with this `id` finished; no `id` in `completedIDs` runs again. |
 
 The leaf cluster must run an operator whose CRD has the field before a set carries it: an older CRD prunes the
 unknown field, and the request does nothing.

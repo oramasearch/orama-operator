@@ -129,19 +129,23 @@ type StorageRebuildSpec struct {
 
 // StorageRebuildStatus is the rebuild in progress, or the last one that completed.
 type StorageRebuildStatus struct {
-	// ID is the rebuild's spec.storageRebuild.id.
+	// ID is the rebuild in progress, or the last one that completed.
 	ID string `json:"id"`
-	// Phase is Deleting while the old StatefulSets, control DB and claims go, and Completed once
+	// Phase is Deleting while the old workloads, control DB and claims go, and Completed once
 	// they are gone and the normal reconcile builds the stack again.
 	// +kubebuilder:validation:Enum=Deleting;Completed
 	Phase string `json:"phase"`
-	// Claims are the data claims the rebuild deletes, recorded before anything is deleted. Each is
-	// deleted only while it still has the recorded UID, so a new claim with the same name is never
-	// touched.
+	// Claims are the data claims the rebuild deletes. Each is recorded before it is deleted, and
+	// deleted only while it still has the recorded UID.
 	// +optional
 	// +listType=map
 	// +listMapKey=name
 	Claims []RebuildClaim `json:"claims,omitempty"`
+	// CompletedIDs are every rebuild that has completed on this instance. A request whose id is
+	// here does nothing, so restoring an older set file never runs an old rebuild again.
+	// +optional
+	// +listType=set
+	CompletedIDs []string `json:"completedIDs,omitempty"`
 }
 
 // RebuildClaim is one data claim a storage rebuild deletes.
