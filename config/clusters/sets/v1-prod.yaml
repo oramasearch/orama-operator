@@ -97,7 +97,8 @@
 #   v1-eu-analytics-api-key (#386)                             readers' reader_side.analytics and the analytics
 #                                                              processor only (credentials.go)
 #   v1-eu-redis-http       token                              Redis HTTP shim and dashboard (credentials.go)
-#   v1-eu-harvest-sign     HARVEST_SIGN                       index-builder and harvest-master (credentials.go)
+#   v1-eu-harvest-sign     HARVEST_SIGN                       index-builder, harvest-master, dashboard
+#                                                              SCRAPER_SIGNATURE (credentials.go)
 #   v1-eu-harvest-notification NOTIFICATION_SIGNATURE          harvest-master (credentials.go)
 #
 # Derived:
@@ -134,8 +135,8 @@
 #     the 2026-10-23 read-only EU inspection found the old component Secret dev seeds still in use.
 #     The dashboard deployment-API key contract still needs qualification:
 #     DEPLOYMENT_API_API_KEY is not wired to the dashboard's PRIVATE_API_KEY.
-#     HARVEST's worker still seeds a dummy HARVEST_SIGN; verify the eventual
-#     crawler-job wiring separately. The index-builder/master pair and Redis HTTP token are generated.
+#     HARVEST's one-shot worker has no launcher yet; verify its eventual credential wiring
+#     separately. The index-builder/master/dashboard control key and Redis HTTP token are generated.
 #   The dashboard's Stripe key (#802, LSR-140, #885): the v1-eu-only reference below is prepared,
 #     and orama-system/v1-prod-dashboard-stripe now holds the validated restricted live key with
 #     exactly docs/components.md's permissions ("The dashboard's Stripe key"). Lake bills in the same

@@ -451,7 +451,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	// replace any but the owned ones.
 	env := append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, dashboardDBEnv(oc)...)
 	credentialSecrets := append([]string{masterKey}, dashboardDBSecrets(oc)...)
-	credentialSecrets = append(credentialSecrets, clickhouseAuthSecretName(oc), cronSecretName(oc))
+	credentialSecrets = append(credentialSecrets, clickhouseAuthSecretName(oc), cronSecretName(oc), harvestSignSecretName(oc))
 	// The restricted Stripe key from its own Secret (#802): an explicit entry, which dashboard.env
 	// cannot replace (validateDashboardEnv refuses STRIPE_SECRET_KEY while the reference is set).
 	env = append(env, keyRefEnv(stripeRefs)...)
@@ -479,7 +479,11 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	}
 	env = overrideEnv(env, d.Env)
 	// Generated internal keys win over any old value still supplied by dashboard.env or envFrom.
-	env = overrideEnv(env, []corev1.EnvVar{clickhousePasswordEnv(oc), secretKeyEnv("CRON_SECRET", cronSecretName(oc), "CRON_SECRET")})
+	env = overrideEnv(env, []corev1.EnvVar{
+		clickhousePasswordEnv(oc),
+		secretKeyEnv("CRON_SECRET", cronSecretName(oc), "CRON_SECRET"),
+		secretKeyEnv("SCRAPER_SIGNATURE", harvestSignSecretName(oc), harvestSignKey),
+	})
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
 	if err := r.reconcileApp(ctx, oc, appDef{

@@ -189,7 +189,8 @@ The operator generates these and points components at in-cluster service DNS.
 - **Generated secrets:** the RSA **JWT keypair** (dashboard signs, engine verifies), the broker
   admin password (`<cr>-broker-admin`), the Redis password (`<cr>-cache-auth`), the analytics key
   the readers and analytics-processor share (`<cr>-analytics-api-key`), HARVEST's control key
-  (`<cr>-harvest-sign`: index-builder's `HARVEST_SIGN`, harvest-master's `HARVEST_SIGNATURE`) and
+  (`<cr>-harvest-sign`: index-builder's `HARVEST_SIGN`, harvest-master's `HARVEST_SIGNATURE`,
+  dashboard's `SCRAPER_SIGNATURE`) and
   harvest-master's notification signing key (`<cr>-harvest-notification`), generated once with
   random values and read by every client by reference
   ([components.md](components.md#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).

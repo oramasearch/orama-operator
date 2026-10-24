@@ -58,6 +58,7 @@ func TestStackInternalCredentialsAreSharedAndStable(t *testing.T) {
 		{"index-builder", "index-builder", "API_SECRET", "v1-index-builder-auth", "API_SECRET"},
 		{"index-builder", "index-builder", "DEPLOYMENT_API_API_KEY", "v1-deployment-api-auth", "DEPLOYMENT_API_API_KEY"},
 		{"dashboard", "dashboard", "CRON_SECRET", "v1-cron-secret", "CRON_SECRET"},
+		{"dashboard", "dashboard", "SCRAPER_SIGNATURE", "v1-harvest-sign", harvestSignKey},
 	} {
 		tmpl, ok := templates[tc.workload]
 		if !ok {
@@ -93,12 +94,13 @@ func TestStackInternalCredentialsAreSharedAndStable(t *testing.T) {
 		{"v1-clickhouse-auth", "CLICKHOUSE_PASSWORD", []string{"analytics", "analytics-processor", "dashboard", "workers", "disco"}},
 		{"v1-typesense-auth", "TYPESENSE_API_KEY", []string{"search", "index-builder"}},
 		{"v1-cron-secret", "CRON_SECRET", []string{"dashboard"}},
+		{"v1-harvest-sign", harvestSignKey, []string{"dashboard", "index-builder", "harvest-master"}},
 		{"v1-decrypter-auth", "API_SECRET", []string{"index-builder", "openai-decrypter"}},
 		{"v1-index-builder-auth", "API_SECRET", []string{"index-builder"}},
 		{"v1-deployment-api-auth", "DEPLOYMENT_API_API_KEY", []string{"index-builder"}},
 	} {
 		before := h.templates()
-		value := "updated-" + tc.secret
+		value := "updated-" + tc.secret + "-12345678901234567890"
 		h.setSecret(tc.secret, tc.key, value)
 		if tc.secret == "v1-decrypter-auth" {
 			h.setSecret(tc.secret, "DECRYPTER_API_SECRET_BASE64", base64.StdEncoding.EncodeToString([]byte(value)))

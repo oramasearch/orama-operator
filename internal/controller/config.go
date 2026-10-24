@@ -301,7 +301,7 @@ func retiredComponentCredentialKeys(component string) []string {
 	case "analytics", "analytics-processor", "disco", "workers":
 		return []string{"CLICKHOUSE_PASSWORD"}
 	case "dashboard":
-		return []string{"CLICKHOUSE_PASSWORD", "CRON_SECRET", "REDIS_CACHE_TOKEN"}
+		return []string{"CLICKHOUSE_PASSWORD", "CRON_SECRET", "REDIS_CACHE_TOKEN", "SCRAPER_SIGNATURE"}
 	case "index-builder":
 		return []string{"TYPESENSE_API_KEY", "API_SECRET", "DEPLOYMENT_API_API_KEY", "DECRYPTER_API_SECRET_BASE64", "HARVEST_SIGN", "ORAMA_EMBEDDINGS_BEARER"}
 	case "harvest":

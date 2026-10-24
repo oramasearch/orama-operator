@@ -257,7 +257,7 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		}},
 		// HARVEST's keys follow ingestion too: index-builder reads the control key even where
 		// harvest is off, and both keep their values while harvest-master is away.
-		{local: c.Ingestion.Enabled, name: harvestSignSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+		{local: c.Ingestion.Enabled || c.Dashboard.Enabled, name: harvestSignSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
 			return map[string][]byte{harvestSignKey: []byte(k)}
 		}},
 		{local: c.Ingestion.Enabled, name: harvestNotificationSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {

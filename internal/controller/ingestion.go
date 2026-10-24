@@ -93,7 +93,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 
 const (
 	// harvestSignKey is the key of <cr>-harvest-sign: HARVEST's control key, which index-builder
-	// sends as "Authorization: Bearer" (its HARVEST_SIGN) and harvest-master checks (its
+	// sends as ?signature= (its HARVEST_SIGN) and harvest-master checks (its
 	// HARVEST_SIGNATURE, at least 32 characters). One value under two names.
 	harvestSignKey = "HARVEST_SIGN"
 	// harvestNotificationKey is the key of <cr>-harvest-notification: harvest-master's private HMAC
