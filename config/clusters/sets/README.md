@@ -1,9 +1,11 @@
 # Managed sets
 
 - [lake-nonprod.yaml](lake-nonprod.yaml): dev, testing and staging with separate Stripe sandboxes.
-- [lake-prod.yaml](lake-prod.yaml): production EU and US. The EU member declares operator-managed
-  live payments from managing-cluster Secret `lake/stripe-live`, copied as `stripe`. The US member
-  retains the legacy manual-payment configuration until the EU gate passes and its own change lands.
+- [lake-prod.yaml](lake-prod.yaml): production EU and US. Both members declare operator-managed
+  live payments from managing-cluster Secret `lake/stripe-live`, copied as `stripe`; each has its
+  own operator-managed webhook and signing Secret. EU passed its gate before the US change.
+  The common legacy `lake-prod-stripe` copy is removed from this set; retained Secret objects
+  are not deleted.
 - [v1-nonprod.yaml](v1-nonprod.yaml) and [v1-prod.yaml](v1-prod.yaml): Cloud v1 instances.
 
 Apply only after the credential checks and production approval in

@@ -40,6 +40,10 @@ spec:
   - clusterRef: orama-production-cluster-03
     name: shared-us
     spec:
+      billing: {enabled: true}
+      payments:
+        mode: live
+        secretRef: {name: stripe}
       args:
       - "--listen"
       - 0.0.0.0:4900
@@ -52,12 +56,6 @@ spec:
         value: us.lake.live
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      - name: LAKE_BILLING
-        value: "on"
-      - name: LAKE_STRIPE_SECRET_KEY
-        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
-      - name: LAKE_STRIPE_WEBHOOK_SECRET
-        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       # Order email (lake docs/api/orders.md#email): Orama's Resend key, sending-only for lake.live;
       # the sender defaults to "Lake <orders@lake.live>" (lake.live verified in Resend).
       - name: LAKE_RESEND_API_KEY
@@ -69,6 +67,7 @@ spec:
         secretKeySecretRef: {name: clerk-secret-key}
     secrets:
     - {name: clerk-lake-prod, namespace: lake, as: clerk-secret-key}
+    - {name: stripe-live, namespace: lake, as: stripe}
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
@@ -76,8 +75,6 @@ spec:
   - name: cloudflare-api-token-lake-live
     namespace: lake
   - name: lake-prod-openai
-    namespace: lake
-  - name: lake-prod-stripe
     namespace: lake
   - name: lake-prod-resend
     namespace: lake

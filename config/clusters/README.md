@@ -141,9 +141,10 @@ and key provenance before applying a set that names it.
 | `stripe-live` | `lake` | live mode, for `lake-prod` |
 | `stripe-v1-dev` | `orama-system` | the `dev` sandbox, for `v1-dev` |
 
-The production EU member now declares `billing.enabled: true` and live `payments`, using
-`lake/stripe-live` copied as `stripe`. US retains its legacy env entries until EU's gate passes;
-its separate follow-up removes the common `lake-prod-stripe` copy after the last reader moves.
+Both production members declare `billing.enabled: true` and live `payments`, using
+`lake/stripe-live` copied as `stripe`, with a separate webhook/signing Secret per region.
+EU passed its live gate before US moved; the common `lake-prod-stripe` copy is now removed
+from the file because neither member reads it. Retained Secret objects are not deleted.
 The [sets index](sets/README.md) describes the staged file state. Verify the live source and obtain
 the production go-ahead before applying; this declaration alone does not prove active payments.
 
