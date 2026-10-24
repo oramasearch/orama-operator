@@ -129,16 +129,21 @@ func publicDNSSecret(oc *oramav1alpha1.OramaCloudV1) string {
 }
 
 // reconcilePublicDNS keeps one CloudflareDNSRecord, <cr>-<component>-dns, for each published
-// endpoint: the dashboard, the writer and the readers. Every host is a record in the zone of the
-// token Secret's `zoneID`.
+// endpoint: the dashboard, the docs site, the writer and the readers. Every host is a record in the
+// zone of the token Secret's `zoneID`.
 func (r *OramaCloudV1Reconciler) reconcilePublicDNS(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	dashboardHost := ""
 	if d := oc.Spec.Components.Dashboard; d.Enabled {
 		dashboardHost = d.Host
 	}
+	docsHost := ""
+	if d := oc.Spec.Components.Docs; d.Enabled {
+		docsHost = d.Host
+	}
 	secret := publicDNSSecret(oc)
 	for _, endpoint := range []struct{ component, host string }{
 		{"dashboard", dashboardHost},
+		{"docs", docsHost},
 		{"writer", writerPublicHost(oc)},
 		{"reader", readerPublicHost(oc)},
 	} {
