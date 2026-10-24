@@ -177,139 +177,10 @@ spec:
   # Customers keep reading through collections.orama.com, whose worker forwards to
   # ORAMACORE_READ_URLS.c1; the cutover runbook points that at https://reader.orama.ing and repoints
   # app.orama.com, which gets no DNS record from the operator (an extra host never does).
-  - clusterRef: orama-production-cluster-02
-    name: v1-eu
-    namespace: v1-eu
-    secrets:
-    - name: v1-prod-master-api-key
-      namespace: orama-system
-    - name: v1-prod-llm-keys
-      namespace: orama-system
-    - name: v1-prod-dashboard-env
-      namespace: orama-system
-    - name: v1-prod-dashboard-stripe
-      namespace: orama-system
-    spec:
-      profile: medium
-      jwtIssuer: https://app.orama.ing
-      masterAPIKeySecretRef:
-        name: v1-prod-master-api-key
-      # Prod 1's providers, models and selector. Keys come from v1-prod-llm-keys.
-      llm:
-        default: groq
-        providers:
-        - name: openai
-          models: [gpt-5.2]
-          apiKeySecretRef: { name: v1-prod-llm-keys }
-        - name: google
-          models: [gemini-2.0-flash-001]
-          apiKeySecretRef: { name: v1-prod-llm-keys }
-        - name: groq
-          models: [openai/gpt-oss-120b]
-          apiKeySecretRef: { name: v1-prod-llm-keys }
-        - name: anthropic
-          models: [claude-sonnet-4-5]
-          apiKeySecretRef: { name: v1-prod-llm-keys }
-        automaticEmbeddingsSelector: { provider: openai, model: gpt-5.2 }
-      cloudflare:
-        manageLoadBalancers: false     # no geo load balancer across the members yet
-      # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
-      # default is Standard SSD. A volume's class cannot change after it is created.
-      components:
-        engine:
-          enabled: true
-          envoy: true
-          writer:
-            gpu: false
-            host: writer.orama.ing
-            # Prod 1's writer root volume is 500 GiB (snapshot of vol-0b8dcc408f8ea762f, orama-bridge
-            # production-changes.md; oramacore-aws terraform/live/prod/main.tf root_volume_size = 500)
-            # with 343 GiB free on 2026-10-12 (techops-docs incident-2026-10-12-reader-stalls.md, "Host
-            # storage"): about 157 GiB used, OS included. A larger size here grows the claim (#505).
-            storage: { size: 512Gi, storageClassName: managed-csi-premium }
-            # jwksURL unset: the writer reads the dashboard's keys in-cluster. Prod 2 has one cluster
-            # row, the operator's `c1`, whose writer_url the dashboard mints the audience from
-            # (decisions 2026-10-16 #9).
-            jwt:
-              audiences:
-              - https://writer.orama.ing
-          reader:
-            host: reader.orama.ing
-            replicas: 2
-            # Each reader's disk is 512Gi, #382's default: about twice the largest Prod 1 reader's use
-            # (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3). A larger size grows them (#505).
-            storage: { size: 512Gi, storageClassName: managed-csi-premium }
-        dashboard:
-          enabled: true
-          host: app.orama.ing
-          extraHosts: [app.orama.com]
-          envFrom:
-          - secretRef: { name: v1-prod-dashboard-env }
-          stripeSecretKeySecretRef:
-            name: v1-prod-dashboard-stripe
-            key: STRIPE_SECRET_KEY
-          # Prod 1's Vercel crons as CronJobs; the cutover sets suspend: false in this file.
-          crons:
-            enabled: true
-            suspend: true
-        docs:
-          enabled: true
-        controlDB:
-          enabled: true
-          mode: in-cluster
-          # PlanetScale holds 531 MB on a 10 GB disk (techops-docs planetscale.md, 2026-07-07).
-          storage: { size: 10Gi, storageClassName: managed-csi-premium }
-        analytics:
-          enabled: true
-          mode: in-cluster
-          # 30 days kept, starting fresh (bridge decisions 2026-10-16 #4). ClickHouse Cloud's
-          # oramacore_analytics_search_raw is 468.30 GiB for 16,979,167 rows, ~29.6 KB a row
-          # (techops-docs clickhouse.md, 2026-07-07); 8,318,162 searches in 90 days (orama-bridge#138,
-          # 2026-10-08) give ~82 GiB per 30 days. Doubled for headroom and rounded up.
-          storage: { size: 200Gi, storageClassName: managed-csi-premium }
-        analyticsProcessor:
-          enabled: true
-          # The cutover sets suspend: false in this file.
-          import:
-            enabled: true
-            suspend: true
-        cache:
-          enabled: true
-          mode: in-cluster
-          # 10Gi, the default, on purpose: measuring Prod 1's Upstash Redis is deferred (bridge decisions
-          # 2026-10-17 #22), and no source records its data size (techops-docs has only its billing,
-          # evidence/upstash-billing-2026-07-08.md). The class is set now because it cannot change
-          # later; the size can grow once Prod 1 is measured.
-          storage: { size: 10Gi, storageClassName: managed-csi-premium }
-        broker:
-          enabled: true
-          mode: in-cluster
-          # The oramacore-operations stream is capped at 5 GB on Prod 1 (techops-docs aws.md) and by the
-          # operator (datastore.go brokerOperationsStreamMaxBytes); four times the cap.
-          storage: { size: 20Gi, storageClassName: managed-csi-premium }
-        search:
-          enabled: true
-          mode: in-cluster
-          # 10Gi, the default, on purpose: measuring Prod 1's Typesense is deferred (bridge decisions
-          # 2026-10-17 #22), and no source records its data size. The class is set now because it
-          # cannot change later; the size can grow once Prod 1 is measured.
-          storage: { size: 10Gi, storageClassName: managed-csi-premium }
-        ingestion:
-          enabled: true
-          harvest: true
-        workers:
-          enabled: true
-          replicas: 2
-        searchWorkers:
-          enabled: true
-        # Prod 1's DISCO hosting is unconfirmed (its GCP project was deleted; techops-docs disco.md,
-        # orama-bridge retirement-register R31), and the cutover plan does not move it.
-        disco:
-          enabled: false
-        # No pgAdmin is recorded on Prod 1, whose control DB is PlanetScale (techops-docs planetscale.md;
-        # the admin surface is open as orama-bridge Q25/R43).
-        pgAdmin:
-          enabled: false
+  # v1-eu (orama-production-cluster-02) is out of the set while its sandbox stack is removed: under
+  # deletionPolicy Retain the set lets it go and stops managing it, then its namespace is deleted
+  # (Steve's consent; its claims are on the 10Gi default class, which a StatefulSet cannot change), and
+  # the next commit adds it back with the production values on orama.ing (orama-bridge#244).
   # Juan chose no US dashboard (#885, 2026-10-23): it has no production dashboard role and receives
   # no dashboard credentials. Applying this file removes its dashboard and CronJobs and lets later
   # components reconcile. The live set stays unchanged until the production apply is approved.
@@ -400,15 +271,25 @@ spec:
       # LSR-214: warn on tag-only selections without blocking this live set. Enable after all
       # application/helper overrides, including controldb, have reviewed digests; see docs/development.md.
       requireDigests: false
-      # Both members' combined OramaCore engine: v1.2.39 plus oramacore#340 and #341, which serve
-      # GET /health/ready, the readers' readiness probe since #506 (#597). Built from
-      # oramacore 9d8ed373 into the private oramasearch/oramacore-cloud-v1. Neither member sets
-      # images.overrides, so both get it from here.
+      # The newest build of each Cloud v1 component, with the 22 October security fixes, by digest
+      # (orama-bridge decisions 2026-10-23, 3): the same images v1-nonprod runs, so production runs
+      # what was tested there. Both members get them from here. Components not listed (docs, the
+      # placeholder workers, oramacore-ai-server) run the v1-sandbox tag, because nothing newer exists.
       overrides:
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-9d8ed373
+        # The combined OramaCore engine from oramacore-private develop 91a1b086: caca2a59 (v1.2.39 with
+        # oramacore#340, #341 and #343) plus the security fixes LSR-063, -064, -149 to -155, -234 and -235.
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-91a1b086@sha256:c55d42b1dbf1d057ca14001bf3fedf883ab06573386fd87c8e4557d7e5aed05a
         # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
         hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
+        # Services from each repository's dev tip with the security fixes, recorded in
+        # orama-cloud-v1-bridge#15.
+        index-builder: oramasearch/index-builder:v1-dev-c59f563a@sha256:4d13b9cdd5c36291406fc215542fde582b6b5660fc01b3fc5e99672284268d9e
+        disco: oramasearch/disco:v1-dev-b9c6050b@sha256:cc856f56122cdacc0fbafe688a1e41643466cadcdd3b1b83b1a732c549d360c5
+        analytics-processor: oramasearch/analytics-processor:v1-dev-a9dc4f7b@sha256:004ce89d5a863046ed5cee4d8d58bc687c817075b999151dd83ff19276efe9e1
+        harvest-master: oramasearch/harvest-master:v1-dev-5773f2da@sha256:7eea9df90883848f80499bf72afc446cec96a8de19e01012de630f2218ed3182
+        harvest: oramasearch/harvest:v1-dev-5773f2da@sha256:9941126f9b945674d2450f47e6d132f6a1124fd63ba25c7bf3dde10cb6747769
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
+      tag: v1-sandbox
     region:
       role: primary
