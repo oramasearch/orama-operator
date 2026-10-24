@@ -88,8 +88,8 @@ primary's enabled writer, the readers of an enabled engine (in a primary or read
 enabled analytics/cache/broker/search stores selected by their
 existing in-cluster mode and placement checks. External stores, disabled components, a read
 region's absent writer, and central stores skipped in a read region contribute no mismatch.
-ControlDB is always in-cluster (decision 61) and follows its enabled policy. HARVEST Mongo keeps the
-shared helper's `10Gi`/default-class output and has no new storage setting.
+ControlDB is always in-cluster (decision 61) and follows its enabled policy. HARVEST's Mongo takes
+`ingestion.harvestMongoStorage`, and is managed while ingestion and HARVEST are enabled.
 
 Writer, reader and store `storage.size` default to `10Gi`
 ([engine](#engine-internalcontrollerenginego)); every reader's claim `data-<cr>-reader-<n>` grows
@@ -140,6 +140,22 @@ and its CSI driver must support the disk/filesystem operation. See
 [Kubernetes expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)
 and [CNPG expansion](https://cloudnative-pg.io/docs/1.27/storage/#volume-expansion).
 A grown size stays in the set file that set it: a smaller value afterwards is a refused shrink.
+
+### Volume replacement (`internal/controller/oramacloudv1_volume_replacement.go`)
+
+A class change or a shrink can't happen in place: claims, claim templates and CNPG's storage class keep their
+class, and claims outlive their StatefulSet, so a component re-created in its namespace takes the old claims
+back ([#915](https://github.com/oramasearch/orama-operator/issues/915)). `reconcileVolumeReplacement` runs first
+in the reconcile, before any component. For each volume whose `storage.approveDataDeletion` is `true`
+(`managedVolumes`, the same list the storage pass uses), it deletes the claims that differ from the declared
+storage and their StatefulSet, or the control DB's CNPG Cluster (judged by its claims' class) after its
+`PostgresSchema`s and the `c1` row's Job, and holds every component until they are gone. A new analytics volume
+also restarts analytics-processor, which creates ClickHouse's tables only when it starts. The ordinary steps then create them again on the current
+storage settings. It derives everything from the cluster on every pass and keeps no record, so a volume
+already on its declared storage is left alone and a later change is reconciled the same way.
+index-builder's credentials hash includes `<cr>-controldb-app`, so it rolls when a new control DB brings a new
+owner password, as analytics-processor already did. Field reference:
+[crd-reference.md](crd-reference.md#replacing-a-volume-storageapprovedatadeletion).
 
 ## Cloudflare DNS ownership
 

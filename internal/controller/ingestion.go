@@ -36,11 +36,12 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 			return err
 		}
 		if err := r.reconcileApp(ctx, oc, appDef{
-			component:         "index-builder",
-			image:             componentImage(oc, "index-builder", "index-builder"),
-			port:              8080,
-			env:               append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
-			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc)}, keyRefSecrets(refs)...),
+			component: "index-builder",
+			image:     componentImage(oc, "index-builder", "index-builder"),
+			port:      8080,
+			env:       append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
+			// controlDBAppSecret is its DATABASE_URL (pgURIEnv): a new control DB has a new password.
+			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
 			resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
 		}); err != nil {
 			return err
@@ -75,6 +76,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 		image:     "mongo:7@sha256:c53852c00c23ca9f23fc39690350ffa9a80e3642fe8f96879726d8da0abe80a7",
 		ports:     []corev1.ContainerPort{{Name: "mongo", ContainerPort: 27017}},
 		dataPath:  "/data/db",
+		storage:   ing.HarvestMongoStorage,
 		resources: resourceReqs("256Mi", "50m", "1Gi"),
 	}); err != nil {
 		return err

@@ -82,16 +82,27 @@ func (s *storageResult) add(component, problem, message string) {
 // own StorageApplied condition rather than Ready, so a refused shrink or a resize in progress never
 // marks a serving stack not Ready. The return value keeps the readiness backstop running even when
 // workloads are Ready, including for late/retained PVCs.
-func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
-	result := &storageResult{}
-	managed := false
+// controlDBVolume names the control DB's volume, CNPG's, in managedVolumes.
+const controlDBVolume = "controlDB"
+
+// managedVolume is one locally managed data volume: a StatefulSet's "data" claims
+// (<cr>-<component>), or the control DB's CNPG storage.
+type managedVolume struct {
+	component string
+	storage   *oramav1alpha1.VolumeSpec
+	fallback  string
+}
+
+// managedVolumes lists the stack's locally managed volumes: the primary's writer, the readers of an
+// enabled engine, the in-cluster analytics/broker/cache/search stores this region runs, HARVEST's
+// Mongo while HARVEST runs, and the control DB. External stores and disabled components have none.
+func managedVolumes(oc *oramav1alpha1.OramaCloudV1) []managedVolume {
+	var volumes []managedVolume
 	if oc.Spec.Components.Engine.Enabled && oc.Spec.Region.Role == "primary" {
-		managed = true
-		r.reconcileStatefulStorage(ctx, oc, "writer", oc.Spec.Components.Engine.Writer.Storage, defaultVolumeSize, result)
+		volumes = append(volumes, managedVolume{"writer", oc.Spec.Components.Engine.Writer.Storage, defaultVolumeSize})
 	}
 	if oc.Spec.Components.Engine.Enabled {
-		managed = true
-		r.reconcileStatefulStorage(ctx, oc, "reader", oc.Spec.Components.Engine.Reader.Storage, readerDataSize, result)
+		volumes = append(volumes, managedVolume{"reader", oc.Spec.Components.Engine.Reader.Storage, readerDataSize})
 	}
 	for _, store := range []struct {
 		name string
@@ -103,14 +114,28 @@ func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *orama
 		if !store.spec.Enabled || store.spec.Mode == "external" || (store.spec.Placement == "central" && oc.Spec.Region.Role == "read") {
 			continue
 		}
-		managed = true
-		r.reconcileStatefulStorage(ctx, oc, store.name, store.spec.Storage, defaultVolumeSize, result)
+		volumes = append(volumes, managedVolume{store.name, store.spec.Storage, defaultVolumeSize})
 	}
-	db := oc.Spec.Components.ControlDB
-	if db.Enabled && db.Mode != "external" {
-		managed = true
-		r.reconcileControlDBStorage(ctx, oc, db.Storage, result)
+	if ing := oc.Spec.Components.Ingestion; ing.Enabled && ing.Harvest {
+		volumes = append(volumes, managedVolume{"harvest-mongo", ing.HarvestMongoStorage, defaultVolumeSize})
 	}
+	if db := oc.Spec.Components.ControlDB; db.Enabled && db.Mode != "external" {
+		volumes = append(volumes, managedVolume{controlDBVolume, db.Storage, defaultVolumeSize})
+	}
+	return volumes
+}
+
+func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
+	result := &storageResult{}
+	volumes := managedVolumes(oc)
+	for _, v := range volumes {
+		if v.component == controlDBVolume {
+			r.reconcileControlDBStorage(ctx, oc, v.storage, result)
+			continue
+		}
+		r.reconcileStatefulStorage(ctx, oc, v.component, v.storage, v.fallback, result)
+	}
+	managed := len(volumes) > 0
 	sort.Strings(result.messages)
 	cond := metav1.Condition{Type: "StorageApplied", Status: metav1.ConditionTrue, Reason: "Applied"}
 	if result.failed {
@@ -127,13 +152,16 @@ func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *orama
 // storageDifferences reports every unsupported change before any write is attempted. Capacity
 // is evidence only: provisioners can round it above a numerically equal requested size.
 func storageDifferences(component, target string, desired resource.Quantity, storage *oramav1alpha1.VolumeSpec, current resource.Quantity, class, evidence string, result *storageResult) bool {
+	// Neither difference can be applied in place; replacing the volume needs approveDataDeletion
+	// (reconcileVolumeReplacement), which this pass only reaches without it.
+	const replace = "; replacing the volume erases its data and needs storage.approveDataDeletion"
 	rejected := false
 	if desired.Cmp(current) < 0 {
-		result.add(component, "ShrinkNotSupported", fmt.Sprintf("requested %s, %s requests %s%s", desired.String(), target, current.String(), evidence))
+		result.add(component, "ShrinkNotSupported", fmt.Sprintf("requested %s, %s requests %s%s%s", desired.String(), target, current.String(), evidence, replace))
 		rejected = true
 	}
 	if storage != nil && storage.StorageClassName != nil && *storage.StorageClassName != class {
-		result.add(component, "StorageClassChangeNotSupported", fmt.Sprintf("requested %s, %s uses %q", *storage.StorageClassName, target, class))
+		result.add(component, "StorageClassChangeNotSupported", fmt.Sprintf("requested %s, %s uses %q%s", *storage.StorageClassName, target, class, replace))
 		rejected = true
 	}
 	return rejected

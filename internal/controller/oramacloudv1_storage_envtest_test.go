@@ -54,6 +54,44 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Run("approveDataDeletion and HARVEST Mongo storage admission", func(t *testing.T) {
+		for i, tc := range []struct {
+			path  []string
+			value map[string]interface{}
+			valid bool
+		}{
+			{[]string{"engine", "writer", "storage"}, map[string]interface{}{"size": "512Gi", "storageClassName": "managed-csi-premium", "approveDataDeletion": true}, true},
+			{[]string{"controlDB", "storage"}, map[string]interface{}{"storageClassName": "managed-csi-premium", "approveDataDeletion": false}, true},
+			{[]string{"engine", "writer", "storage"}, map[string]interface{}{"approveDataDeletion": "yes"}, false},
+			{[]string{"ingestion", "harvestMongoStorage"}, map[string]interface{}{"size": "20Gi", "storageClassName": "managed-csi-premium", "approveDataDeletion": true}, true},
+			{[]string{"ingestion", "harvestMongoStorage"}, map[string]interface{}{"size": "0"}, false},
+		} {
+			obj := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "orama.cloud/v1alpha1", "kind": "OramaCloudV1", "metadata": map[string]interface{}{"name": fmt.Sprintf("approve-%d", i), "namespace": ns.Name}, "spec": map[string]interface{}{"region": map[string]interface{}{"name": "test", "role": "primary"}}}}
+			if err := unstructured.SetNestedMap(obj.Object, tc.value, append([]string{"spec", "components"}, tc.path...)...); err != nil {
+				t.Fatal(err)
+			}
+			err := kube.Create(ctx, obj)
+			if tc.valid && err != nil {
+				t.Fatalf("%v %v rejected: %v", tc.path, tc.value, err)
+			}
+			if !tc.valid && !apierrors.IsInvalid(err) {
+				t.Fatalf("%v %v: err = %v, want Invalid", tc.path, tc.value, err)
+			}
+			if tc.valid {
+				// The field survives the round trip: the API server does not prune it.
+				live := &unstructured.Unstructured{}
+				live.SetGroupVersionKind(obj.GroupVersionKind())
+				if err := kube.Get(ctx, client.ObjectKeyFromObject(obj), live); err != nil {
+					t.Fatal(err)
+				}
+				got, _, _ := unstructured.NestedFieldNoCopy(live.Object, append([]string{"spec", "components"}, tc.path...)...)
+				if fmt.Sprint(got) != fmt.Sprint(tc.value) {
+					t.Fatalf("%v stored as %v, want %v", tc.path, got, tc.value)
+				}
+			}
+		}
+	})
+
 	t.Run("quantity and class admission on every component", func(t *testing.T) {
 		for i, path := range [][]string{{"engine", "writer"}, {"analytics"}, {"broker"}, {"cache"}, {"search"}, {"controlDB"}} {
 			for j, tc := range []struct {
