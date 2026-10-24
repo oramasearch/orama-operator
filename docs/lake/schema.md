@@ -8,12 +8,10 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` tag v0.4.0, commit 9115632e254930381f6f08553b5111be40866a4c](https://github.com/oramasearch/lake/blob/9115632e254930381f6f08553b5111be40866a4c/db/schema.sql),
-through `0093_root_recovery_participants`: `0091_account_deletion` (`users.deleted_at`,
-`account_deletion_guard`), `0092_saml_sign_in` (`sso_saml_requests`, `sso_saml_assertions`,
-`saml_sign_in_guard`) and `0093_root_recovery_participants` (`pki_recovery_participants`,
-`root_recovery_participants_guard`). Before it, `0090_billing_contacts` at lake `dev` 2b39c2f7. Its
-SHA-256 is `1cf11ebf172c442a2bbb4077a2af667b48f712bab50ee5e37c3201569fd58a7d`.
+[`oramasearch/lake` tag v0.5.0, commit 9c7c2fc787ae110cb62e32089750f3d37117dcf1](https://github.com/oramasearch/lake/blob/9c7c2fc787ae110cb62e32089750f3d37117dcf1/db/schema.sql),
+through `0098_authentication_attempts`. Its SHA-256 is
+`c8a7f174a979f4c1a414e3d3040b1f2f4c86613b033b7f472d093229b6728ec2`. Before it, lake v0.4.0 (9115632e),
+through `0093_root_recovery_participants`.
 
 **Pin only a commit on lake `dev` or a release tag, never a pull request's branch.** Lake records a
 migration by name only, with no checksum, so a migration applied from a branch and changed before it
@@ -23,6 +21,18 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migrations `0094` to `0098`, in lake v0.5.0, apply before the lake v0.5.0 image rolls; the schema
+gate holds that image until they have applied. Lake v0.4.0 keeps running on them. Not all are purely
+additive:
+
+| Migration | What it does | Guard |
+|---|---|---|
+| `0094_clerk_revocation` (lake#948) | `clerk_user_states`, `users.clerk_suspended`; **once, revokes every session and device of a Clerk-linked account** (everyone signs in again) | `clerk_revocation_guard` |
+| `0095_model_token_prices` (lake#961) | widens the price classes and seeds the default models' token prices | `model_token_prices_guard` |
+| `0096_email_recovery_limits` (lake#968) | `offline_recovery_budgets`, a cancelled recovery status | `email_recovery_limits_guard` |
+| `0097_cloud_order_entitlements` (lake#972) | the subscription and grace columns on `cloud_orders`, the view `cloud_order_desired_state`, and a **unique index on `stripe_subscription_id`**: it fails if two orders already share one | `cloud_order_entitlements_guard` |
+| `0098_authentication_attempts` (lake#966) | the shared failed-verification limits table | `authentication_attempts_guard` |
 
 Migrations `0091_account_deletion` (lake#810, lake#1014), `0092_saml_sign_in` (lake#836, lake#1019)
 and `0093_root_recovery_participants` (lake#934, lake#1038), all in lake v0.4.0, are additive. Their

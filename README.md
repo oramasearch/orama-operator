@@ -51,9 +51,11 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.9.0** (2026-10-23): the operator side of zetta v0.5.0 (approved connector
-destinations on every workspace Zetta), nonprod Stripe payments and Cloud v1 production dashboard
-credentials ([`docs/releases/v0.9.0.md`](docs/releases/v0.9.0.md)).
+The current release is **v0.9.1** (2026-10-24), a patch carrying lake v0.5.0's schema, Clerk secret key
+and webhook events ([`docs/releases/v0.9.1.md`](docs/releases/v0.9.1.md)). Before it, **v0.9.0**
+(2026-10-23): the operator side of zetta v0.5.0 (approved connector destinations on every workspace
+Zetta), nonprod Stripe payments and Cloud v1 production dashboard credentials
+([`docs/releases/v0.9.0.md`](docs/releases/v0.9.0.md)).
 Before it, **v0.7.3** (2026-10-20), a patch releasing the committed cluster files
 (every Lake on lake v0.3.1; [`docs/releases/v0.7.3.md`](docs/releases/v0.7.3.md)). **v0.7.2** moved Lake's
 schema through `0090_billing_contacts` ([`docs/releases/v0.7.2.md`](docs/releases/v0.7.2.md)). Before them, **v0.7.1**, a patch:

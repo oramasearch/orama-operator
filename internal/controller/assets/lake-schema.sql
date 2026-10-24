@@ -2,7 +2,7 @@
 --
 -- SOURCE OF TRUTH: oramasearch/lake, db/schema.sql. The operator vendors a byte-identical copy at
 -- internal/controller/assets/lake-schema.sql and applies it to each Lake's Postgres through a
--- PostgresSchema (one transaction, guarded on the `app_forward_auth_guard` table, versioned by
+-- PostgresSchema (one transaction, guarded on the `clerk_revocation_guard` table, versioned by
 -- content hash).
 -- Keep the two files identical; the operator's version string changes exactly when this does.
 --
@@ -4711,3 +4711,201 @@ CREATE TABLE IF NOT EXISTS root_recovery_participants_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0093_root_recovery_participants')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0094_clerk_revocation (lake#948, docs/api/clerk.md): ordered upstream account state and a
+-- monotonic revocation watermark prevent re-exchange of templates issued before revocation.
+-- Revocation is account-wide because Clerk templates carry no session id. The operator must
+-- vendor this schema and use clerk_revocation_guard. Revoke legacy Clerk-linked credentials
+-- once: old ignored deliveries cannot be replayed, and their originating sessions are unknown.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS clerk_user_states (
+    subject text PRIMARY KEY CHECK (length(subject) BETWEEN 1 AND 256),
+    updated_at bigint NOT NULL DEFAULT -1,
+    revoked_before bigint NOT NULL DEFAULT -1,
+    suspended boolean NOT NULL DEFAULT false,
+    deleted boolean NOT NULL DEFAULT false
+);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS clerk_suspended boolean NOT NULL DEFAULT false;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0094_clerk_revocation') THEN
+        INSERT INTO clerk_user_states (subject, revoked_before)
+        SELECT substring(subject FROM 7), floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
+        FROM credentials WHERE pool_id = 'lake' AND kind = 'oauth' AND subject LIKE 'clerk:%'
+        ON CONFLICT (subject) DO UPDATE SET revoked_before =
+            GREATEST(clerk_user_states.revoked_before, EXCLUDED.revoked_before);
+        UPDATE sessions SET revoked_at = coalesce(revoked_at, now())
+        WHERE user_id IN (SELECT user_id FROM credentials WHERE pool_id = 'lake'
+                         AND kind = 'oauth' AND subject LIKE 'clerk:%');
+        UPDATE devices SET revoked_at = coalesce(revoked_at, now())
+        WHERE user_id IN (SELECT user_id FROM credentials WHERE pool_id = 'lake'
+                         AND kind = 'oauth' AND subject LIKE 'clerk:%');
+    END IF;
+END $$;
+CREATE TABLE IF NOT EXISTS clerk_revocation_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0094_clerk_revocation') ON CONFLICT DO NOTHING;
+-- 0095_model_token_prices (LSR-095, lake#961, docs/api/model-gateway.md): exact model input/output
+-- billing classes. Preserve historical GPU-style classes; only model_tokens may use model/direction.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE billing_plan_prices DROP CONSTRAINT IF EXISTS billing_plan_prices_class_check;
+ALTER TABLE billing_plan_prices ADD CONSTRAINT billing_plan_prices_class_check CHECK (
+    class ~ '^([a-z0-9][a-z0-9-]{0,31})?$' OR
+    (dimension = 'model_tokens' AND class COLLATE "C" ~ '^[!-~]{1,128}/(input|output)$')
+);
+ALTER TABLE billing_invoice_lines DROP CONSTRAINT IF EXISTS billing_invoice_lines_class_check;
+ALTER TABLE billing_invoice_lines ADD CONSTRAINT billing_invoice_lines_class_check CHECK (
+    class ~ '^([a-z0-9][a-z0-9-]{0,31})?$' OR
+    (dimension = 'model_tokens' AND class COLLATE "C" ~ '^[!-~]{1,128}/(input|output)$')
+);
+CREATE TABLE IF NOT EXISTS model_token_prices_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+-- The default gateway models' token prices (Steve, 2026-10-23): OpenAI's published standard
+-- price per million tokens, https://developers.openai.com/api/docs/pricing, read 2026-10-23,
+-- plus 30%, in millionths of a US dollar per 1,000,000 tokens (docs/api/billing.md#rates):
+--   gpt-5.5                 $5.00 in, $30.00 out  ->  6500000 / 39000000 (under 272K context)
+--   gpt-5                   $1.25 in, $10.00 out  ->  1625000 / 13000000
+--   gpt-4o                  $2.50 in, $10.00 out  ->  3250000 / 13000000
+--   text-embedding-3-small  $0.02 in, no output   ->    26000 /    26000 (an embedding reports
+--                                                       no output tokens; the gateway needs both)
+-- Applied once, the first time this migration runs, on a fresh and an existing control plane
+-- alike. Publications are kept as published, so a new one is written for this UTC month: the
+-- rates of the list in force now (none on a fresh instance) plus these. A list published for a
+-- later month gets them too. A rate an operator already published for one of these classes is
+-- never replaced. A list in another currency is left for the operator.
+DO $model_token_prices$
+DECLARE
+    this_month        text := to_char(now() AT TIME ZONE 'UTC', 'YYYYMM');
+    seeded_id         text := 'usage-' || to_char(now() AT TIME ZONE 'UTC', 'YYYYMM') || '-' ||
+                              lpad(floor(extract(epoch FROM clock_timestamp()) * 1000000)
+                                       ::bigint::text, 17, '0');
+    in_force_id       text;
+    in_force_currency text;
+    seed_classes      text[] := ARRAY['gpt-5.5/input', 'gpt-5.5/output',
+                                      'gpt-5/input', 'gpt-5/output',
+                                      'gpt-4o/input', 'gpt-4o/output',
+                                      'text-embedding-3-small/input',
+                                      'text-embedding-3-small/output'];
+    seed_micros       bigint[] := ARRAY[6500000, 39000000,
+                                        1625000, 13000000,
+                                        3250000, 13000000,
+                                        26000,
+                                        26000];
+BEGIN
+    IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0095_model_token_prices') THEN
+        RETURN;
+    END IF;
+    SELECT p.id, p.currency INTO in_force_id, in_force_currency FROM billing_plans p
+     WHERE p.id ~ '^usage-[0-9]{6}-[0-9]{17}$' AND substr(p.id, 7, 6) <= this_month
+     ORDER BY p.id DESC LIMIT 1;
+    IF in_force_currency IS NULL OR in_force_currency = 'USD' THEN
+        INSERT INTO billing_plans (id, name, description, currency)
+        VALUES (seeded_id, 'Usage',
+                'Usage price list from ' || substr(this_month, 1, 4) || '-' ||
+                    substr(this_month, 5, 2),
+                'USD');
+        INSERT INTO billing_plan_prices (plan_id, dimension, class, unit_micros, per, included)
+        SELECT seeded_id, pp.dimension, pp.class, pp.unit_micros, pp.per, pp.included
+          FROM billing_plan_prices pp WHERE pp.plan_id = in_force_id;
+        INSERT INTO billing_plan_prices (plan_id, dimension, class, unit_micros, per)
+        SELECT seeded_id, 'model_tokens', s.class, s.unit_micros, 1000000
+          FROM unnest(seed_classes, seed_micros) AS s(class, unit_micros)
+            ON CONFLICT DO NOTHING;
+    END IF;
+    INSERT INTO billing_plan_prices (plan_id, dimension, class, unit_micros, per)
+    SELECT p.id, 'model_tokens', s.class, s.unit_micros, 1000000
+      FROM billing_plans p
+     CROSS JOIN unnest(seed_classes, seed_micros) AS s(class, unit_micros)
+     WHERE p.id ~ '^usage-[0-9]{6}-[0-9]{17}$' AND substr(p.id, 7, 6) > this_month
+       AND p.currency = 'USD'
+        ON CONFLICT DO NOTHING;
+END
+$model_token_prices$;
+INSERT INTO schema_migrations (version) VALUES ('0095_model_token_prices') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0096_email_recovery_limits (LSR-102, lake#968): durable anonymous budgets and owner cancellation.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE offline_recovery_attempts DROP CONSTRAINT IF EXISTS offline_recovery_attempts_status_check;
+ALTER TABLE offline_recovery_attempts ADD CONSTRAINT offline_recovery_attempts_status_check
+    CHECK (status IN ('cooling', 'pending_approval', 'approved', 'completed', 'cancelled'));
+CREATE TABLE IF NOT EXISTS offline_recovery_budgets (
+    id text PRIMARY KEY,
+    started_at timestamptz NOT NULL,
+    requests integer NOT NULL CHECK (requests > 0)
+);
+CREATE TABLE IF NOT EXISTS email_recovery_limits_guard (id integer PRIMARY KEY CHECK (id = 1));
+INSERT INTO email_recovery_limits_guard (id) VALUES (1) ON CONFLICT DO NOTHING;
+INSERT INTO schema_migrations (version) VALUES ('0096_email_recovery_limits') ON CONFLICT DO NOTHING;
+
+-- 0097_cloud_order_entitlements (lake#972): signed subscription snapshots and a clock-evaluated
+-- operator contract. Existing subscriptions require a signed renewal/snapshot before provisioning.
+ALTER TABLE cloud_orders ADD COLUMN IF NOT EXISTS subscription_status text NOT NULL DEFAULT 'pending'
+    CHECK (length(subscription_status) <= 64);
+ALTER TABLE cloud_orders ADD COLUMN IF NOT EXISTS paid_through bigint NOT NULL DEFAULT 0
+    CHECK (paid_through BETWEEN 0 AND 253402300799);
+ALTER TABLE cloud_orders ADD COLUMN IF NOT EXISTS entitlement_access_until bigint NOT NULL DEFAULT 0
+    CHECK (entitlement_access_until BETWEEN 0 AND 253402300799);
+ALTER TABLE cloud_orders ADD COLUMN IF NOT EXISTS subscription_event_created bigint NOT NULL DEFAULT 0
+    CHECK (subscription_event_created BETWEEN 0 AND 253402300799);
+ALTER TABLE cloud_orders ADD COLUMN IF NOT EXISTS entitlement_grace_seconds integer NOT NULL DEFAULT 259200
+    CHECK (entitlement_grace_seconds BETWEEN 0 AND 2592000);
+ALTER TABLE cloud_orders ADD COLUMN IF NOT EXISTS entitlement_retry_invoice_id text NOT NULL DEFAULT ''
+    CHECK (length(entitlement_retry_invoice_id) <= 255);
+CREATE UNIQUE INDEX IF NOT EXISTS cloud_orders_subscription_unique ON cloud_orders (stripe_subscription_id)
+    WHERE stripe_subscription_id IS NOT NULL;
+
+-- Read this view on every reconcile, including already-ready orders. No expiry worker is required.
+-- The columns are listed, never `*`: Postgres fixes a view's columns when it is created, so a
+-- later `ALTER TABLE cloud_orders ADD COLUMN` would make this CREATE OR REPLACE VIEW try to insert
+-- a column before `entitlement_state` and fail the whole schema apply. A later migration that wants
+-- a new column in the view appends it after `desired_state`.
+CREATE OR REPLACE VIEW cloud_order_desired_state AS
+SELECT
+    id, created_at, updated_at, offer, path, cloud_provider, region, contact_name, contact_email,
+    company, details, quantity, amount_cents, currency, included_credit_cents,
+    stripe_checkout_session_id, stripe_customer_id, stripe_subscription_id, state, host,
+    failure_reason, claimed_by, claimed_at, organization_id, support_emailed_state,
+    customer_emailed_state, email_attempts, email_error, email_retry_at, subscription_status,
+    paid_through, entitlement_access_until, subscription_event_created, entitlement_grace_seconds,
+    entitlement_retry_invoice_id,
+    entitlement_state, CASE
+    WHEN path <> 'checkout' THEN 'unmanaged'
+    WHEN state IN ('paid', 'provisioning', 'ready') AND entitlement_state IN ('active', 'grace')
+        THEN 'present'
+    ELSE 'suspended'
+END AS desired_state
+FROM (
+    SELECT
+        id, created_at, updated_at, offer, path, cloud_provider, region, contact_name, contact_email,
+        company, details, quantity, amount_cents, currency, included_credit_cents,
+        stripe_checkout_session_id, stripe_customer_id, stripe_subscription_id, state, host,
+        failure_reason, claimed_by, claimed_at, organization_id, support_emailed_state,
+        customer_emailed_state, email_attempts, email_error, email_retry_at, subscription_status,
+        paid_through, entitlement_access_until, subscription_event_created, entitlement_grace_seconds,
+        entitlement_retry_invoice_id,
+        CASE
+        WHEN path <> 'checkout' THEN 'not_applicable'
+        WHEN stripe_subscription_id IS NULL OR stripe_customer_id IS NULL OR entitlement_access_until = 0
+            THEN 'suspended'
+        WHEN extract(epoch FROM statement_timestamp()) < entitlement_access_until THEN 'active'
+        WHEN extract(epoch FROM statement_timestamp()) < entitlement_access_until + entitlement_grace_seconds THEN 'grace'
+        ELSE 'suspended'
+    END AS entitlement_state
+    FROM cloud_orders
+) orders;
+CREATE TABLE IF NOT EXISTS cloud_order_entitlements_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0097_cloud_order_entitlements') ON CONFLICT DO NOTHING;
+-- 0098_authentication_attempts (lake#966, LSR-100): shared, bounded authentication budgets.
+CREATE TABLE IF NOT EXISTS authentication_attempts (
+    key_hash text PRIMARY KEY CHECK (key_hash ~ '^[0-9a-f]{64}$'),
+    failures integer NOT NULL CHECK (failures >= 0),
+    pending integer NOT NULL CHECK (pending >= 0),
+    window_id uuid NOT NULL,
+    expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS authentication_attempts_expires_idx ON authentication_attempts(expires_at);
+CREATE TABLE IF NOT EXISTS authentication_attempts_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations(version) VALUES ('0098_authentication_attempts') ON CONFLICT DO NOTHING;

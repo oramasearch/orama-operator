@@ -76,16 +76,24 @@ const (
 )
 
 // lakeStripeWebhookEvents are the Stripe event types Lake's webhook handler takes (lake
-// src/api/stripe.cpp): the invoice events it handles today, and the Checkout events of lake#833's
-// order sheet. Lake acknowledges a type it does not handle, so subscribing early is harmless.
+// src/api/stripe.cpp): the invoice events, the Checkout events of lake#833's order sheet, and the
+// subscription and invoice lifecycle that sets a cloud order's paid-through date (lake#972). Lake acknowledges a type it does not handle, so subscribing early is harmless.
 // Change this list together with Lake's handler.
 var lakeStripeWebhookEvents = []string{
 	"checkout.session.async_payment_failed",
 	"checkout.session.async_payment_succeeded",
 	"checkout.session.completed",
 	"checkout.session.expired",
+	"customer.subscription.created",
+	"customer.subscription.deleted",
+	"customer.subscription.paused",
+	"customer.subscription.resumed",
+	"customer.subscription.updated",
+	"invoice.marked_uncollectible",
 	"invoice.paid",
+	"invoice.payment_action_required",
 	"invoice.payment_failed",
+	"invoice.updated",
 	"invoice.voided",
 }
 
