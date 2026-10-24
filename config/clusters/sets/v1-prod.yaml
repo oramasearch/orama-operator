@@ -177,10 +177,11 @@ spec:
   # Customers keep reading through collections.orama.com, whose worker forwards to
   # ORAMACORE_READ_URLS.c1; the cutover runbook points that at https://reader.orama.ing and repoints
   # app.orama.com, which gets no DNS record from the operator (an extra host never does).
-  # v1-eu (orama-production-cluster-02) is out of the set while its sandbox stack is removed: under
-  # deletionPolicy Retain the set lets it go and stops managing it, then its namespace is deleted
-  # (Steve's consent; its claims are on the 10Gi default class, which a StatefulSet cannot change), and
-  # the next commit adds it back with the production values on orama.ing (orama-bridge#244).
+  # v1-eu (orama-production-cluster-02) is out of the set while its sandbox stack is removed. With
+  # deletionPolicy Delete below, the operator deletes the sandbox OramaCloudV1 from the cluster. The next
+  # commit adds v1-eu back in a new namespace, v1-eu-prod, with the production values on orama.ing. The
+  # sandbox's data claims are on the 10Gi default class, which a StatefulSet cannot change, and they
+  # outlive the instance; in a new namespace nothing reuses them (orama-bridge#244).
   # Juan chose no US dashboard (#885, 2026-10-23): it has no production dashboard role and receives
   # no dashboard credentials. Applying this file removes its dashboard and CronJobs and lets later
   # components reconcile. The live set stays unchanged until the production apply is approved.
@@ -255,7 +256,9 @@ spec:
           - llama-3.3-70b-versatile
           name: groq
       profile: light
-  deletionPolicy: Retain
+  # Delete only while v1-eu's sandbox instance is removed: a member taken out of the set is deleted
+  # from its cluster. The next commit sets Retain again.
+  deletionPolicy: Delete
   secrets:
   - name: oramasearch-dockerhub
     namespace: orama-system
