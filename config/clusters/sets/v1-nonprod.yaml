@@ -99,10 +99,9 @@ spec:
     namespace: orama-system
   - name: v1-nonprod-dashboard-env
     namespace: orama-system
-  # Lake's development Clerk instance (keys publishableKey, secretKey). The dashboard is its satellite
-  # on app-dev.oramadev.net (orama-bridge#228; decisions of 21 October, 4 and 6).
-  - name: clerk-lake-dev
-    namespace: lake
+  # Cloud v1's standalone development Clerk instance (orama-bridge#250).
+  - name: clerk-cloud-v1-dev
+    namespace: orama-system
   template:
     cloudflare:
       apiTokenSecretRef:
@@ -141,19 +140,13 @@ spec:
         envFrom:
         - secretRef:
             name: v1-nonprod-dashboard-env
-        # Clerk sign-in as a satellite of Lake's development instance. The NEXT_PUBLIC_* values are also
-        # compiled into the image (orama-cloud-v1-bridge build/images/dashboard/public.env.v1-dev); the
-        # server reads them at runtime, so the two must match. The dashboard refuses to start on Lake's
-        # keys unless app-dev.oramadev.net is registered as the instance's satellite.
+        # Cloud v1's own Clerk application, with sign-in on /login. Public runtime values
+        # must match the image's build/images/dashboard/public.env.v1-dev inputs.
         env:
         - name: CLERK_SECRET_KEY
-          valueFrom: {secretKeyRef: {name: clerk-lake-dev, key: secretKey}}
+          valueFrom: {secretKeyRef: {name: clerk-cloud-v1-dev, key: secretKey}}
         - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-          valueFrom: {secretKeyRef: {name: clerk-lake-dev, key: publishableKey}}
-        - {name: NEXT_PUBLIC_CLERK_IS_SATELLITE, value: "true"}
-        - {name: NEXT_PUBLIC_CLERK_DOMAIN, value: app-dev.oramadev.net}
-        - {name: NEXT_PUBLIC_CLERK_SIGN_IN_URL, value: https://above-seahorse-7535.accounts.dev/sign-in}
-        - {name: NEXT_PUBLIC_CLERK_SIGN_UP_URL, value: https://above-seahorse-7535.accounts.dev/sign-up}
+          valueFrom: {secretKeyRef: {name: clerk-cloud-v1-dev, key: publishableKey}}
         - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app-dev.oramadev.net/auth/complete}
         - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app-dev.oramadev.net/auth/complete}
         # Prod 1's three dashboard crons, created suspended; CRON_SECRET comes from the envFrom Secret.
@@ -201,8 +194,8 @@ spec:
       # v1-sandbox tag, because nothing newer exists for them.
       overrides:
         # The Clerk dashboard from dashboard dev 56f355da: the Cloud v1 security fixes (dashboard#187) and
-        # R2 upload signing (dashboard#186); recorded in orama-cloud-v1-bridge#12.
-        dashboard: oramasearch/dashboard:v1-dev-56f355da@sha256:975d13df7fdfe9a7a4fbb2b7817294007604540c1bebc74a517d6acf20b87f5e
+        # R2 upload signing (dashboard#186); standalone Clerk build recorded in orama-cloud-v1-bridge#19.
+        dashboard: oramasearch/dashboard:v1-dev-56f355da-cv1@sha256:f4454f12c77732e0330ceafcf02711dc8875d710710b09f6a212a7364b06d261
         # The combined OramaCore engine from oramacore-private develop 91a1b086: caca2a59 (v1.2.39 with
         # oramacore#340, #341 and #343) plus the security fixes LSR-063, -064, -149 to -155, -234 and -235.
         oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-91a1b086@sha256:c55d42b1dbf1d057ca14001bf3fedf883ab06573386fd87c8e4557d7e5aed05a
