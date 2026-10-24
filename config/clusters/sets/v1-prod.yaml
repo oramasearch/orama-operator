@@ -173,10 +173,12 @@ metadata:
   name: v1-prod
 spec:
   clusters:
-  # Hosts are one level under orama.ing, which Cloudflare's *.orama.ing edge certificate covers.
+  # Hosts mirror Prod 1's names under orama.ing (app, collections, docs; Juan, 2026-10-24), one level
+  # deep, which Cloudflare's *.orama.ing edge certificate covers. collections.orama.ing is the readers.
   # Customers keep reading through collections.orama.com, whose worker forwards to
-  # ORAMACORE_READ_URLS.c1; the cutover runbook points that at https://reader.orama.ing and repoints
-  # app.orama.com, which gets no DNS record from the operator (an extra host never does).
+  # ORAMACORE_READ_URLS.c1; the cutover runbook points that at https://collections.orama.ing and
+  # repoints app.orama.com, which gets no DNS record from the operator (an extra host never does).
+  # mcp.orama.com stays a Cloudflare worker: nothing in the stack serves MCP, so there is no mcp.orama.ing.
   - clusterRef: orama-production-cluster-02
     name: v1-eu
     namespace: v1-eu
@@ -251,7 +253,7 @@ spec:
               audiences:
               - https://writer.orama.ing
           reader:
-            host: reader.orama.ing
+            host: collections.orama.ing
             replicas: 2
             # Each reader's disk is 512Gi, #382's default: about twice the largest Prod 1 reader's use
             # (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3). A larger size grows them (#505).
@@ -432,9 +434,9 @@ spec:
           enabled: false
         disco:
           enabled: true
+        # One docs site, as on Prod 1: docs.orama.ing, from v1-eu.
         docs:
-          enabled: true
-          host: docs-us.orama.ing
+          enabled: false
         engine:
           enabled: true
           envoy: true
