@@ -111,7 +111,7 @@ DELETE FROM schema_migrations WHERE version = '0067_workspace_store';`)
 func (p *lakeSchemaProof) applyLakeSchema(scheme *runtime.Scheme) string {
 	p.t.Helper()
 	lakeReconciler := &LakeReconciler{Client: p.client, Scheme: scheme}
-	if err := lakeReconciler.reconcileLakeControlDBSchema(p.ctx, p.lake, p.lake.Spec.Namespace, nil); err != nil {
+	if err := lakeReconciler.reconcileLakeControlDBSchema(p.ctx, p.lake, p.lake.Spec.Namespace, nil, nil); err != nil {
 		p.t.Fatal(err)
 	}
 	p.reconciler = &PostgresSchemaReconciler{Client: p.client, Scheme: scheme}
@@ -126,7 +126,7 @@ func testLakeSchemaUpgrade(t *testing.T, c client.Client, scheme *runtime.Scheme
 	proof.sql(strings.Split(lakeSchemaSQL, "-- Token attenuation (migration 0021)")[0])
 	proof.seedSessions()
 	lakeReconciler := &LakeReconciler{Client: c, Scheme: scheme}
-	if err := lakeReconciler.reconcileLakeControlDBSchema(proof.ctx, proof.lake, proof.key.Namespace, nil); err != nil {
+	if err := lakeReconciler.reconcileLakeControlDBSchema(proof.ctx, proof.lake, proof.key.Namespace, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	var ps oramav1alpha1.PostgresSchema
@@ -142,7 +142,7 @@ func testLakeSchemaUpgrade(t *testing.T, c client.Client, scheme *runtime.Scheme
 	proof.reconcile("Applying")
 	proof.runJob()
 	proof.reconcile("Applied")
-	if err := lakeReconciler.reconcileLakeControlDBSchema(proof.ctx, proof.lake, proof.key.Namespace, nil); err != nil {
+	if err := lakeReconciler.reconcileLakeControlDBSchema(proof.ctx, proof.lake, proof.key.Namespace, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	proof.reconcile("Applying")

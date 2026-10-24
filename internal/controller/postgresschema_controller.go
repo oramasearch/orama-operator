@@ -213,6 +213,9 @@ func schemaMigrationVersions(sql string) []string {
 // migrations, keep the guard-only behavior. With spec.applyEveryVersion there is no guard: the Job
 // of each version applies the file.
 func pgMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
+	if ps.Spec.Migrate != nil {
+		return pgImageMigrationJobSpec(ps)
+	}
 	guard := ps.Spec.GuardTable
 	if guard == "" {
 		guard = "crawler_configs"
@@ -277,6 +280,55 @@ echo "postgres-schema: done"`
 			},
 		},
 	}
+}
+
+// pgImageMigrationJobSpec runs spec.migrate: the image's own migration command, with the
+// connection URI in spec.migrate.databaseEnv and no schema file (orama-operator#936). Lake's
+// `lake migrate` waits for the database itself, takes an advisory lock, and applies its embedded
+// schema in one transaction with the same skip rule as the psql script above. Exit codes listed in
+// failOnExitCodes fail the Job at once; any other failure is retried up to the backoff limit.
+func pgImageMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
+	migrate := ps.Spec.Migrate
+	securityContext := hardenedSecurityContext()
+	securityContext.RunAsNonRoot = boolPtr(true)
+	podSecurityContext := &corev1.PodSecurityContext{RunAsNonRoot: boolPtr(true), RunAsUser: migrate.RunAsUser, RunAsGroup: migrate.RunAsGroup}
+	spec := batchv1.JobSpec{
+		BackoffLimit: int32Ptr(20), // retry while the database is unreachable
+		Template: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Labels: pgMigrationPodLabels(ps)},
+			Spec: corev1.PodSpec{
+				RestartPolicy:                corev1.RestartPolicyNever,
+				ServiceAccountName:           ps.Name + "-migrate",
+				AutomountServiceAccountToken: boolPtr(false),
+				EnableServiceLinks:           boolPtr(false),
+				ImagePullSecrets:             ps.Spec.ImagePullSecrets,
+				SecurityContext:              podSecurityContext,
+				Containers: []corev1.Container{{
+					Name:            "migrate",
+					Image:           ps.Spec.Image, // the image carries the schema and the command
+					Args:            append([]string(nil), migrate.Args...),
+					Resources:       *resourceReqs("64Mi", "25m", "512Mi"),
+					SecurityContext: securityContext,
+					// The JSON report on stdout stays in the pod log; a failure's one-line summary
+					// (stderr) becomes the termination message.
+					TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+					Env: []corev1.EnvVar{{Name: migrate.DatabaseEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: ps.Spec.ConnectionSecretRef.Name}, Key: ps.Spec.ConnectionSecretRef.Key}}}},
+				}},
+			},
+		},
+	}
+	if len(migrate.FailOnExitCodes) > 0 {
+		spec.PodFailurePolicy = &batchv1.PodFailurePolicy{Rules: []batchv1.PodFailurePolicyRule{{
+			Action: batchv1.PodFailurePolicyActionFailJob,
+			OnExitCodes: &batchv1.PodFailurePolicyOnExitCodesRequirement{
+				ContainerName: strPtr("migrate"),
+				Operator:      batchv1.PodFailurePolicyOnExitCodesOpIn,
+				Values:        append([]int32(nil), migrate.FailOnExitCodes...),
+			},
+		}}}
+	}
+	return spec
 }
 
 // jobFailed reports whether the Job has a terminal Failed condition (backoff exhausted).

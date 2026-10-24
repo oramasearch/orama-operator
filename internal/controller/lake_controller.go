@@ -96,6 +96,9 @@ type LakeReconciler struct {
 	Clientset kubernetes.Interface
 	// BuildLogs substitutes the pods/log read in tests.
 	BuildLogs func(ctx context.Context, namespace, jobName string) (string, error)
+	// LakeManifestLogs substitutes the manifest pod's pods/log read in tests (lake_manifest.go).
+	// With neither it nor Clientset no image manifest is read and the vendored schema path applies.
+	LakeManifestLogs func(ctx context.Context, namespace, podName string) (string, error)
 	// BuildEventClient posts best-effort pod-level events to lake. Nil uses a bounded client.
 	BuildEventClient *http.Client
 }
@@ -293,8 +296,13 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		log.Info("spec.env names LAKE_BILLING but spec.billing decides it; the spec.env entry is ignored, remove it",
 			"billing", lake.Spec.Billing.Enabled)
 	}
+	// The image's manifest (lake_manifest.go, #936): its schema, Stripe events and products.
+	manifest, err := r.reconcileLakeImageManifest(ctx, &lake, ns)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("read image manifest: %w", err)
+	}
 	// Payments (spec.payments, lake_payments.go): before the Deployment, which reads its keys.
-	payments, err := r.reconcileLakePayments(ctx, &lake, ns, labels)
+	payments, err := r.reconcileLakePayments(ctx, &lake, ns, labels, manifest.Status)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile payments: %w", err)
 	}
@@ -321,14 +329,20 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeControlDB(ctx, &lake, ns, labels, backup); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile control db: %w", err)
 	}
-	if err := r.reconcileLakeControlDBSchema(ctx, &lake, ns, labels); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile control db schema: %w", err)
+	// The schema follows the image's manifest; while a new image's manifest is being read the
+	// PostgresSchema is left as it is, and so is the Deployment.
+	desiredSchemaVersion := ""
+	if manifest.Current {
+		if err := r.reconcileLakeControlDBSchema(ctx, &lake, ns, labels, manifest.Status); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile control db schema: %w", err)
+		}
+		desiredSchemaVersion = lakeDesiredSchemaVersion(&lake, manifest.Status)
 	}
 
 	// Hold both first startup and updates until the desired schema has finished applying.
 	// Keep an existing Deployment intact while the replacement migration Job runs.
-	schemaPhase, schemaVersion, schemaReadiness := r.lakeSchemaStatus(ctx, &lake, ns)
-	schemaReady := schemaReadiness.phase == "Ready"
+	schemaPhase, schemaVersion, schemaReadiness := r.lakeSchemaStatus(ctx, &lake, ns, desiredSchemaVersion)
+	schemaReady := schemaReadiness.phase == "Ready" && (manifest.Current || !lakePostgresEnabled(&lake))
 	deploy := &appsv1.Deployment{}
 	if schemaReady {
 		deploy, err = r.reconcileLakeDeployment(
@@ -381,6 +395,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		})
 	}
 	readiness = append(readiness, schemaReadiness)
+	if manifest.Readiness.phase != "Ready" {
+		readiness = append(readiness, manifest.Readiness)
+	}
 	zettaReady, zettaCondition := lakeZettaStatus(&lake, zetta)
 	if lakeZettaEnabled(&lake) && !zettaReady {
 		zettaPhase := "Progressing"
@@ -435,6 +452,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail ||
 		lake.Status.ZettaReady != zettaReady ||
 		lake.Status.SchemaPhase != schemaPhase || lake.Status.SchemaVersion != schemaVersion ||
+		!apiequality.Semantic.DeepEqual(lake.Status.ImageManifest, manifest.Status) ||
 		lake.Status.BackupReady != backupReady || !lakeBackupTimesEqual(lake.Status.LastBackupTime, lastBackupTime) ||
 		!apiequality.Semantic.DeepEqual(lake.Status.DataServices, dataServices) ||
 		lake.Status.DataServicesSummary != dataServicesSummary ||
@@ -448,6 +466,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.ZettaReady = zettaReady
 		lake.Status.SchemaPhase = schemaPhase
 		lake.Status.SchemaVersion = schemaVersion
+		lake.Status.ImageManifest = manifest.Status
 		lake.Status.BackupReady = backupReady
 		lake.Status.LastBackupTime = lastBackupTime
 		lake.Status.DataServices = dataServices
@@ -460,6 +479,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		}
 	}
 	result := lakeRequeue(&lake, controlRowsChanging, zettaReady, storeReady)
+	// A manifest being read is looked at sooner.
+	if manifest.Requeue > 0 && (result.RequeueAfter == 0 || manifest.Requeue < result.RequeueAfter) {
+		result.RequeueAfter = manifest.Requeue
+	}
 	// The next check of the Lake's Stripe key, or a payments removal, may be due sooner.
 	if payments.Requeue > 0 && (result.RequeueAfter == 0 || payments.Requeue < result.RequeueAfter) {
 		result.RequeueAfter = payments.Requeue
@@ -1620,13 +1643,23 @@ func lakeBackupTimesEqual(a, b *metav1.Time) bool {
 	return a.Time.Equal(b.Time)
 }
 
-// reconcileLakeControlDBSchema applies lake's control-plane schema the way OramaCloudV1 applies
-// the dashboard's (controldb.go): the SQL rendered into an owned ConfigMap and declared as an owned
-// PostgresSchema, whose controller runs the idempotent migration Job (wait for the DB, skip if the
-// guard table exists, apply in one transaction) and records the applied version. The version is a
-// content hash of the SQL and guard, so changing either starts a new apply. With Postgres
-// disabled both objects are torn down.
-func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake *oramav1alpha1.Lake, ns string, lbls map[string]string) error {
+// reconcileLakeControlDBSchema declares lake's control-plane schema as an owned PostgresSchema.
+//
+// For an image whose manifest is supported (lake_manifest.go, #936) the PostgresSchema runs
+// `lake migrate --wait-seconds 600` from the image itself (by digest when known), with
+// LAKE_CONTROL_DB_URI from the CNPG app Secret. Its version is the image digest, so the migration
+// runs once per digest, and the Deployment waits for it.
+//
+// For an image that predates `lake manifest` (manifest nil or unsupported) it applies the vendored
+// schema the way OramaCloudV1 applies the dashboard's (controldb.go): the SQL rendered into an
+// owned ConfigMap, whose idempotent psql Job waits for the DB, skips if the guard table and every
+// recorded migration exist, and applies in one transaction. The version is a content hash of the
+// SQL and guard, so changing either starts a new apply.
+//
+// With Postgres disabled both objects are torn down.
+func (r *LakeReconciler) reconcileLakeControlDBSchema(
+	ctx context.Context, lake *oramav1alpha1.Lake, ns string, lbls map[string]string, manifest *oramav1alpha1.LakeImageManifest,
+) error {
 	cmName := lakeControlDB(lake.Name) + "-migrations"
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: ns}}
 	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB(lake.Name) + "-schema", Namespace: ns}}
@@ -1634,6 +1667,39 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 		if err := deleteIfExists(ctx, r.Client, ps); err != nil {
 			return err
 		}
+		return deleteIfExists(ctx, r.Client, cm)
+	}
+	if lakeManifestSupported(manifest) {
+		image := manifest.ImageRef
+		if image == "" {
+			image = lake.Spec.Image
+		}
+		var pullSecrets []corev1.LocalObjectReference
+		if lake.Spec.PullSecretName != "" {
+			pullSecrets = []corev1.LocalObjectReference{{Name: lake.Spec.PullSecretName}}
+		}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ps, func() error {
+			ps.Labels = withLabels(lbls, lakeInstancePodLabels(lake))
+			ps.Spec = oramav1alpha1.PostgresSchemaSpec{
+				ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: lakeControlDB(lake.Name) + "-app", Key: "uri"},
+				Version:             lakeImageSchemaVersion(lake, manifest),
+				// Informational here: lake migrate checks the newest guard itself.
+				GuardTable: manifest.GuardTable,
+				Image:      image,
+				Migrate: &oramav1alpha1.PostgresSchemaMigrate{
+					Args:            slices.Clone(manifest.MigrateArgs),
+					DatabaseEnv:     manifest.DatabaseEnv,
+					FailOnExitCodes: slices.Clone(lakeMigrateFailOnExitCodes),
+					RunAsUser:       ptrInt64(lakeRunAsUser),
+					RunAsGroup:      ptrInt64(lakeRunAsGroup),
+				},
+				ImagePullSecrets: pullSecrets,
+			}
+			return controllerutil.SetControllerReference(lake, ps, r.Scheme)
+		}); err != nil {
+			return err
+		}
+		// The image carries its schema: the vendored copy is no longer mounted.
 		return deleteIfExists(ctx, r.Client, cm)
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {

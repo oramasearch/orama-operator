@@ -287,9 +287,11 @@ owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
 production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching
 `internal/controller/lake_controller.go`. The schema's source of truth is `oramasearch/lake` `db/schema.sql`;
-`assets/lake-schema.sql` is a byte-identical vendored copy (a test checks its pinned SHA-256;
-`hack/check-lake-schema.py` compares the upstream bytes). Schema apply gates Lake workload rollout;
-see `docs/lake/schema.md`. The operator serves
+an image from lake#1147 onward carries it and the operator runs `lake migrate` from the image, reading
+its Stripe events, products and guard tables from `lake manifest` (#936, `lake_manifest.go`), so a
+lake release is only the `image:` in a set file. For older images `assets/lake-schema.sql` is a
+byte-identical vendored copy (a test checks its pinned SHA-256; `hack/check-lake-schema.py` compares
+the upstream bytes). Schema apply gates Lake workload rollout; see `docs/lake/schema.md`. The operator serves
 liquid's authenticated deployment REST/MCP contract from its manager Service; see
 `docs/control-plane/README.md`. The chart ClusterRole is
 hand-maintained: a new owned kind needs its entry there or the manager CrashLoops on cache sync.

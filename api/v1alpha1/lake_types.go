@@ -783,9 +783,17 @@ type LakeStatus struct {
 	// SchemaPhase mirrors the owned PostgresSchema: Pending | Applying | Applied | Failed.
 	// +optional
 	SchemaPhase string `json:"schemaPhase,omitempty"`
-	// SchemaVersion is the applied schema's content hash (sha256:<12 hex>), from the PostgresSchema.
+	// SchemaVersion is the applied schema version, from the PostgresSchema: the vendored schema's
+	// content hash (sha256:<12 hex>), or image:<digest> when the image migrates itself
+	// (orama-operator#936).
 	// +optional
 	SchemaVersion string `json:"schemaVersion,omitempty"`
+	// ImageManifest is what the Lake's image reported through `lake manifest`, read once per image
+	// by a Job (orama-operator#936): its schema, the Stripe events it handles and its Stripe
+	// products. Supported is false for an image that predates the command; the operator then uses
+	// its vendored schema and lists.
+	// +optional
+	ImageManifest *LakeImageManifest `json:"imageManifest,omitempty"`
 	// BackupReady is true when the ScheduledBackup exists and the newest CNPG Backup completed.
 	// +optional
 	BackupReady bool `json:"backupReady,omitempty"`
@@ -814,6 +822,59 @@ type LakeStatus struct {
 	// Phase is a coarse summary in the operator's vocabulary: Progressing, Ready, Degraded.
 	// +optional
 	Phase string `json:"phase,omitempty"`
+}
+
+// LakeImageManifest is the part of a lake image's `lake manifest` the operator acts on.
+type LakeImageManifest struct {
+	// Image is the spec.image the manifest was read from.
+	Image string `json:"image"`
+	// ImageRef is the image by digest, as the manifest pod ran it (from its imageID); the migration
+	// Job runs this reference, so it runs the bytes the manifest came from. Empty when the runtime
+	// did not report one.
+	// +optional
+	ImageRef string `json:"imageRef,omitempty"`
+	// Supported is false when the image predates `lake manifest` (it exits 2 with its usage text
+	// and no JSON): the operator then applies its vendored schema and uses its own Stripe lists.
+	Supported bool `json:"supported"`
+	// Version and Revision are the lake release and source commit the image reports.
+	// +optional
+	Version string `json:"version,omitempty"`
+	// +optional
+	Revision string `json:"revision,omitempty"`
+	// SchemaVersion is the embedded schema's sha256:<12 hex>.
+	// +optional
+	SchemaVersion string `json:"schemaVersion,omitempty"`
+	// LatestMigration is the newest migration the embedded schema records.
+	// +optional
+	LatestMigration string `json:"latestMigration,omitempty"`
+	// GuardTable is the guard table the newest migration creates.
+	// +optional
+	GuardTable string `json:"guardTable,omitempty"`
+	// GuardTables are every *_guard table the schema creates: what a restore rehearsal counts.
+	// +optional
+	GuardTables []string `json:"guardTables,omitempty"`
+	// Migrations are every migration the schema records: what a restore rehearsal requires.
+	// +optional
+	Migrations []string `json:"migrations,omitempty"`
+	// MigrateArgs are the migration command's arguments, wait flag included.
+	// +optional
+	MigrateArgs []string `json:"migrateArgs,omitempty"`
+	// DatabaseEnv is the variable the migration command reads the control database URI from.
+	// +optional
+	DatabaseEnv string `json:"databaseEnv,omitempty"`
+	// StripeWebhookEvents are the Stripe events the image handles: the Lake's webhook endpoint
+	// subscribes to exactly these.
+	// +optional
+	StripeWebhookEvents []string `json:"stripeWebhookEvents,omitempty"`
+	// StripeProducts are the products the image bills under: the Lake's PaymentCatalog.
+	// +optional
+	StripeProducts []LakeStripeProduct `json:"stripeProducts,omitempty"`
+}
+
+// LakeStripeProduct is one product a lake image bills under.
+type LakeStripeProduct struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // LakeDataServiceStatus reports whether a Lake data service has proven lifecycle procedures.

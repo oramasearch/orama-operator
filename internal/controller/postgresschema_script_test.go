@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
 // TestSchemaMigrationSedMatchesGo runs the Job script's sed extraction over the vendored lake
@@ -159,7 +161,7 @@ func TestRehearsalQueriesNameMissingMigrations(t *testing.T) {
 	if !strings.Contains(postgresConnectionVerificationScript, `"$MIGRATIONS_QUERY"`) {
 		t.Error("failover verification does not check missing migrations")
 	}
-	job := verificationJobSpec("source", "", "secret", false)
+	job := verificationJobSpec(&oramav1alpha1.Lake{}, "source", "", "secret", false)
 	found := false
 	for _, env := range job.Template.Spec.Containers[0].Env {
 		if env.Name == "MIGRATIONS_QUERY" && env.Value == postgresMissingMigrationsQuery {

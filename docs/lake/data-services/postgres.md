@@ -61,7 +61,9 @@ After CNPG is healthy, a digest-pinned `postgres:18-alpine` Job queries all sche
 `0027_analytics_services` and `stores_guard` from `0028_stores`. The same query lists, as
 `missing_migrations=`, every migration recorded in the vendored lake schema
 (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`) that the database's `schema_migrations`
-lacks. The Job fails if that list is non-empty on either side, before comparing. Comparison alone
+lacks. For a Lake whose image has `lake manifest`, the guard tables and the migrations are the
+image's own (`status.imageManifest.guardTables` and `.migrations`,
+[#936](https://github.com/oramasearch/orama-operator/issues/936)). The Job fails if that list is non-empty on either side, before comparing. Comparison alone
 cannot see a gap present in both databases, and neither the guard counts nor the newest version show
 an earlier-numbered migration that never applied: on 2026-10-05, `0067_workspace_store` merged after
 `0068` and `0069` had applied, and the newest version stayed `0069`
