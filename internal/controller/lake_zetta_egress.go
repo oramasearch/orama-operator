@@ -55,6 +55,14 @@ import (
 // zettaEgressAllowEnv is the engine's allowlist variable.
 const zettaEgressAllowEnv = "ZETTA_EGRESS_ALLOW"
 
+// lakeDeploymentEgressAllow is the lake Deployment's own ZETTA_EGRESS_ALLOW (lake#1097). lake installs it
+// as the policy of zetta's client, which it uses only for in-cluster services: the bus Zetta and the
+// workspace Zettas (port 4800), agent services and service wrappers (8080). Workspace namespaces are
+// created at runtime, so they are matched by suffix rather than listed, which would roll lake on
+// every new workspace; nothing outside the cluster is admitted, and the namespace's NetworkPolicy
+// still decides which in-cluster services lake reaches.
+const lakeDeploymentEgressAllow = "*.svc.cluster.local"
+
 // zettaEgressDeny is the allowlist that admits nothing but loopback.
 const zettaEgressDeny = ""
 
