@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.9.1](v0.9.1.md) — 2026-10-24. A patch for lake v0.5.0: its schema through `0098`, the Clerk
+  secret key, and the Clerk session and Stripe subscription webhook events. **Roll it before the lake
+  v0.5.0 image.**
 - [v0.9.0](v0.9.0.md) — 2026-10-23. The operator side of zetta v0.5.0 (approved connector
   destinations on every workspace Zetta), nonprod Stripe payments per environment, Cloud v1 production
   dashboard credentials, the qualified HPES image and an optional Ably reference. 9 pull requests.
