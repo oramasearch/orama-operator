@@ -607,6 +607,7 @@ The shared `VolumeSpec` is available at `spec.components.engine.writer.storage`,
 |---|---|---|---|
 | `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to the default, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
 | `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
+| `storage.approveDataDeletion` | bool | `false` | `false`: a volume the operator can't change in place (another class, or larger than a declared `size`) is left as it is, and `StorageApplied` says so. `true`: the operator replaces it, erasing its data ([below](#replacing-a-volume-storageapprovedatadeletion)). |
 
 For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
 `cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
@@ -643,42 +644,28 @@ See [component reconciliation](components.md#component-storage) for scope and ex
 
 ### Replacing a volume (`storage.approveDataDeletion`)
 
-A claim's class, a StatefulSet's claim template and a CNPG Cluster's storage class cannot change, and a
-StatefulSet's claims outlive it, so a volume on another class, or larger than its declared size, cannot reach
-its declared storage in place ([#915](https://github.com/oramasearch/orama-operator/issues/915)). With
-`approveDataDeletion: true` in that volume's `storage`, the operator replaces it, and **its data is lost**.
-With `false`, the default, it leaves the volume alone and `StorageApplied` reports the difference, with the
-hint that replacing the volume needs `approveDataDeletion`.
+A volume's class can't change, and a StatefulSet's claims outlive it, so a volume on another class, or larger
+than its declared `size`, can only reach its declared storage by being replaced
+([#915](https://github.com/oramasearch/orama-operator/issues/915)). With `approveDataDeletion: true` the operator
+does that, and the volume's data is lost:
 
-| Field | Type | Default | Behavior |
-|---|---|---|---|
-| `storage.approveDataDeletion` | bool | `false` | Allows the operator to replace this volume, erasing its data, when it cannot reach the declared class or size in place. Only what is declared counts: an omitted `size` never replaces a volume grown past `10Gi`, and an omitted `storageClassName` never replaces one on a non-default class. Copying the data to the new volume is not supported yet. |
+```yaml
+engine:
+  writer:
+    storage: {size: 512Gi, storageClassName: managed-csi-premium, approveDataDeletion: true}
+```
 
-Before reconciling any component, every pass compares each approved volume with what is on the cluster:
+- **A StatefulSet's volume** (writer, readers, analytics, broker, cache, search, HARVEST's Mongo): the claims
+  that differ, and the StatefulSet, are deleted and created again. Claims that already match are kept.
+- **The control DB**: the CNPG Cluster is deleted and created again, and its schemas, reference rows and `c1`
+  row run again on the new database.
+- **Analytics** also restarts analytics-processor, which creates ClickHouse's tables when it starts.
 
-- **A StatefulSet's volume** (writer, readers, analytics, broker, cache, search, HARVEST's Mongo): each data
-  claim on another class, or larger than declared, is deleted with its UID as a precondition, and the
-  StatefulSet is deleted in the foreground. A claim already on the declared class and size is kept. The
-  StatefulSet also goes when its claim template names another class, so no new claim is made on the old
-  one. A new analytics volume also gets its retention Job and analytics-processor again, because the
-  processor creates ClickHouse's tables only when it starts.
-- **The control DB**: when the Cluster's claims are on another class (or, before it has claims, its spec
-  names one), or its size is larger than declared, the Cluster is deleted with its claims. The control DB's
-  `PostgresSchema`s and the `c1` row's Job go first, and again on every pass until the old Cluster is gone, so
-  an interrupted pass never leaves them behind. The
-  ordinary reconcile then creates a new database, its schemas, reference rows and `c1` row. CNPG generates a
-  new owner password (`<cr>-controldb-app`); analytics-processor and index-builder roll when it changes.
-
-While anything is being deleted, the phase is `Progressing`, `Ready` and `StorageApplied` are
-`False / ReplacingStorage` with what is left listed in sorted order, and no component is reconciled, so nothing
-is created again on a claim being deleted. Once it is gone, the ordinary reconcile creates the StatefulSets and
-the control DB on new volumes from the current spec. A claim or StatefulSet another controller owns is never
-replaced: the pass stops with an error naming it.
-
-The setting is part of the volume's desired state, not a one-time request: it applies to any later change of
-the declared storage too. Leave it `false` on a volume whose data must be kept, and set it only for the change
-that needs it. The leaf cluster must run an operator whose CRD has the field before a set carries it, because
-an older CRD drops the unknown field.
+It is desired state, not a one-time request: every pass compares the spec with the cluster, leaves a matching
+volume alone, and handles a later change the same way. Only declared values count, so `true` with no `size`
+never erases a volume that grew past `10Gi`. While a replacement runs, no component is reconciled, and `Ready`
+and `StorageApplied` are `False / ReplacingStorage` with what is left. A claim another controller owns is
+never replaced. Copying the data to the new volume is not supported yet.
 
 ### `status.conditions[ClusterRowReady]`
 
