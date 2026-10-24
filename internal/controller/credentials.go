@@ -6,7 +6,9 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -21,16 +23,14 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Stack-wide credentials (#307): the broker admin user and the Redis password, each in one Secret
-// that every client reads by secretKeyRef, the analytics key the readers and analytics-processor
-// share (#386), and the master API key: the Secret spec.masterAPIKeySecretRef names, or, when it names
-// none, <cr>-master-api-key, generated once (#615). A
+// Stack-wide credentials (#307, #570): each internal key lives in one Secret, shared by its
+// consumers through explicit secretKeyRef env. The master API key comes from the Secret named by
+// spec.masterAPIKeySecretRef or a generated <cr>-master-api-key (#615). A
 // workload's template carries credentialsHashKey, the digest of the credential Secrets it reads, so
 // a changed value rolls exactly the workloads that use it.
 //
 // The generated Secrets carry the component label "credentials", which no teardown removes:
-// disabling the broker or cache keeps its password, so a retained data volume still matches it on
-// re-enable, and disabling analytics-processor or ClickHouse keeps the analytics key.
+// disabling a component keeps its credential for re-enable and retained volumes.
 
 const (
 	credentialsComponent = "credentials"
@@ -74,6 +74,27 @@ func analyticsKeySecretName(oc *oramav1alpha1.OramaCloudV1) string {
 	return oc.Name + "-analytics-api-key"
 }
 
+func clickhouseAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-clickhouse-auth"
+}
+func typesenseAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-typesense-auth"
+}
+func cronSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-cron-secret" }
+func decrypterAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-decrypter-auth"
+}
+func indexBuilderAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-index-builder-auth"
+}
+func deploymentAPISecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-deployment-api-auth"
+}
+
+func clickhousePasswordEnv(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
+	return secretKeyEnv("CLICKHOUSE_PASSWORD", clickhouseAuthSecretName(oc), "CLICKHOUSE_PASSWORD")
+}
+
 // credentialKeys are the keys each generated credential Secret must hold, nonempty.
 func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 	switch secret {
@@ -95,6 +116,18 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 		return []string{harvestNotificationKey}
 	case analyticsKeySecretName(oc):
 		return []string{analyticsKeyEnvName}
+	case clickhouseAuthSecretName(oc):
+		return []string{"CLICKHOUSE_PASSWORD"}
+	case typesenseAuthSecretName(oc):
+		return []string{"TYPESENSE_API_KEY"}
+	case cronSecretName(oc):
+		return []string{"CRON_SECRET"}
+	case decrypterAuthSecretName(oc):
+		return []string{"DECRYPTER_API_SECRET_BASE64", "API_SECRET"}
+	case indexBuilderAuthSecretName(oc):
+		return []string{"API_SECRET"}
+	case deploymentAPISecretName(oc):
+		return []string{"DEPLOYMENT_API_API_KEY"}
 	case generatedMasterAPIKeySecretName(oc):
 		if masterAPIKeyGenerated(oc) {
 			return []string{masterAPIKeyEnvName}
@@ -187,6 +220,7 @@ func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 // index-builder sends (#574), and HARVEST's two keys, each 64 hex characters: <cr>-harvest-sign,
 // the control key index-builder sends and harvest-master checks, and <cr>-harvest-notification,
 // harvest-master's own notification signing key.
+// It also creates stack-internal ClickHouse, Typesense, cron, decrypter and index-builder keys (#570).
 // An existing Secret, generated or
 // supplied, is never changed. Each one is then read back, so a Secret that won a create race is the
 // one checked: a missing, empty or unsupported value fails the reconcile, naming the Secret and key.
@@ -223,7 +257,7 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		}},
 		// HARVEST's keys follow ingestion too: index-builder reads the control key even where
 		// harvest is off, and both keep their values while harvest-master is away.
-		{local: c.Ingestion.Enabled, name: harvestSignSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+		{local: c.Ingestion.Enabled || c.Dashboard.Enabled, name: harvestSignSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
 			return map[string][]byte{harvestSignKey: []byte(k)}
 		}},
 		{local: c.Ingestion.Enabled, name: harvestNotificationSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
@@ -233,6 +267,25 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		// re-enabling the processor or ClickHouse finds the same key.
 		{local: true, name: analyticsKeySecretName(oc), values: func(k string) map[string][]byte {
 			return map[string][]byte{analyticsKeyEnvName: []byte(k)}
+		}},
+		{local: true, name: clickhouseAuthSecretName(oc), values: func(k string) map[string][]byte {
+			return map[string][]byte{"CLICKHOUSE_PASSWORD": []byte(k)}
+		}},
+		{local: true, name: typesenseAuthSecretName(oc), values: func(k string) map[string][]byte {
+			return map[string][]byte{"TYPESENSE_API_KEY": []byte(k)}
+		}},
+		{local: c.Dashboard.Enabled, name: cronSecretName(oc), values: func(k string) map[string][]byte {
+			return map[string][]byte{"CRON_SECRET": []byte(k)}
+		}},
+		{local: c.Ingestion.Enabled || c.SearchWorkers.Enabled, name: decrypterAuthSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+			// index-builder decodes the base64 before sending x-api-key; the receiver checks k.
+			return map[string][]byte{"DECRYPTER_API_SECRET_BASE64": []byte(base64.StdEncoding.EncodeToString([]byte(k))), "API_SECRET": []byte(k)}
+		}},
+		{local: c.Ingestion.Enabled, name: indexBuilderAuthSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+			return map[string][]byte{"API_SECRET": []byte(k)}
+		}},
+		{local: c.Ingestion.Enabled, name: deploymentAPISecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+			return map[string][]byte{"DEPLOYMENT_API_API_KEY": []byte(k)}
 		}},
 		// Only when the CR names no master key Secret; a named one is supplied, never created.
 		{local: masterAPIKeyGenerated(oc), name: generatedMasterAPIKeySecretName(oc), values: func(k string) map[string][]byte {
@@ -356,6 +409,16 @@ const credentialCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0
 
 func checkCredentialValue(sec *corev1.Secret, key string) error {
 	v, ok := sec.Data[key]
+	if key == "DECRYPTER_API_SECRET_BASE64" && ok && len(v) > 0 {
+		decoded, err := base64.StdEncoding.DecodeString(string(v))
+		if err != nil || len(decoded) == 0 {
+			return fmt.Errorf("credential Secret %s/%s key %s must be base64 of nonempty bytes", sec.Namespace, sec.Name, key)
+		}
+		if receiver, exists := sec.Data["API_SECRET"]; exists && !bytes.Equal(decoded, receiver) {
+			return fmt.Errorf("credential Secret %s/%s keys DECRYPTER_API_SECRET_BASE64 and API_SECRET disagree", sec.Namespace, sec.Name)
+		}
+		return nil
+	}
 	switch {
 	case !ok:
 		return fmt.Errorf("credential Secret %s/%s has no key %s", sec.Namespace, sec.Name, key)

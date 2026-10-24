@@ -226,13 +226,13 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
 - **`<cr>-config` ConfigMap** (shared, non-sensitive) — service DNS for
   Postgres/ClickHouse/Redis/RabbitMQ/Typesense/DISCO/OramaCore, ports, Typesense +
   Keycloak non-secret config. Reconciled every pass.
-- **Per-component secrets** `<cr>-<component>-secret` — each holds **only the dummy
-  credentials that component needs** (`componentSecretData`). e.g. `search-secret` =
-  `TYPESENSE_API_KEY`; `cache-secret` and `broker-secret` = empty (their passwords are generated,
+- **Per-component secrets** `<cr>-<component>-secret` — each holds only remaining dummy
+  third-party settings (`componentSecretData`). `search-secret`, `analytics-secret`,
+  `cache-secret` and `broker-secret` are empty; their credentials are generated,
   see [Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo));
   `engine-secret` = the LLM keys (`GROQ_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_API_KEY`) + `HF_TOKEN`;
   a third-party key that names its own Secret is not seeded ([#571](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo));
-  `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
+  `dashboard-secret` = remaining third-party settings (its **Postgres
   credentials come from its own role's `<cr>-controldb-dashboard` Secret**, not here — #32, #99). No component Secret
   holds `MASTER_API_KEY`: every consumer reads `spec.masterAPIKeySecretRef`. **No shared blob** —
   a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
@@ -263,8 +263,7 @@ PVCs are left behind (data preserved). Idempotent — `enable → disable → en
   `jwtIssuer(oc)`, which is `spec.jwtIssuer`, or `orama-cloud` when that is empty, the same
   function the writer's JWT provider reads.
 
-**Validated on AKS (2026-07-08):** per-component secrets are generated (the
-`search-secret` holds only `TYPESENSE_API_KEY`, **not** the Cloudflare token); the
+**Validated on AKS (2026-07-08):** per-component secrets were generated; the
 cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boot
 `1/1` off their scoped secrets.
 
@@ -287,12 +286,18 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL`, redis-http `SRH_CONNECTION_STRING` |
 | `<cr>-redis-http` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where the cache runs locally | redis-http `SRH_TOKEN`, dashboard `REDIS_CACHE_TOKEN` ([below](#the-upstash-rest-shim-redis_httpgo-562)) |
 | `<cr>-hpes` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | HPES `API_KEY`, index-builder `ORAMA_EMBEDDINGS_BEARER` ([below](#hpes-index-builders-embeddings-hpesgo-574)) |
-| `<cr>-harvest-sign` | `HARVEST_SIGN` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | index-builder `HARVEST_SIGN` (sent as `Authorization: Bearer`), harvest-master `HARVEST_SIGNATURE` (checked): one value under two names ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
+| `<cr>-harvest-sign` | `HARVEST_SIGN` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion or the dashboard runs | index-builder `HARVEST_SIGN`, dashboard `SCRAPER_SIGNATURE` (sent as `?signature=`), harvest-master `HARVEST_SIGNATURE` (checked): one control key under three names ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
 | `<cr>-harvest-notification` | `NOTIFICATION_SIGNATURE` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | harvest-master `NOTIFICATION_SIGNATURE` only ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
 | `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
+| `<cr>-clickhouse-auth` | `CLICKHOUSE_PASSWORD` | the bootstrap step, on every stack | ClickHouse, analytics-processor, dashboard, workers, DISCO and the analytics retention Job |
+| `<cr>-typesense-auth` | `TYPESENSE_API_KEY` | the bootstrap step, on every stack | Typesense and index-builder |
+| `<cr>-cron-secret` | `CRON_SECRET` | the bootstrap step, when the dashboard is enabled | dashboard and its CronJobs, whether or not the crons are enabled yet |
+| `<cr>-decrypter-auth` | `DECRYPTER_API_SECRET_BASE64`, `API_SECRET` | the bootstrap step, where ingestion or search workers run | index-builder sends the decoded value as `x-api-key`; openai-decrypter checks it as `API_SECRET` |
+| `<cr>-index-builder-auth` | `API_SECRET` | the bootstrap step, where ingestion runs | index-builder checks incoming deploy requests |
+| `<cr>-deployment-api-auth` | `DEPLOYMENT_API_API_KEY` | the bootstrap step, where ingestion runs | index-builder sends it to its configured deployment API; the receiver contract still needs qualification |
 | `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`), index-builder, workers, dashboard, the e2e runner; never a reader ([#795](https://github.com/oramasearch/orama-operator/issues/795)) |
 
-- **Generated once.** Where the store runs in this cluster (enabled, not `mode: external`, not
+- **Generated once.** For broker and cache, where the store runs in this cluster (enabled, not `mode: external`, not
   `placement: central` on a read region) the operator creates the Secret with a random 48-character
   hex password, owner-referenced to the CR and labelled component `credentials`, which no teardown
   removes: disabling the broker or cache keeps its password for the retained volume. An existing
@@ -301,6 +306,9 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   created the same way on every stack, whatever analytics-processor and ClickHouse are set to, so
   re-enabling either finds the same key. It is internal to the readers and the processor, so it is
   generated, never copied from the managing cluster, and it can only read and erase search events.
+- **Upgrade cleanup.** Bootstrap removes old `dev-*` placeholder values for retired internal keys
+  from existing component Secrets, including ones for disabled components. It preserves any
+  user-supplied values and other component settings; a second pass makes no changes.
 - **Checked.** A broker, cache or analytics key Secret missing a key, or holding an empty value or a
   character outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails
   the reconcile with `Ready=False` naming the Secret and key, and is left as it is. The bootstrap
@@ -365,7 +373,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker; `<cr>-broker-users` the writer and readers; `<cr>-broker-harvest`
   harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master and index-builder; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers on the reader-only config
+  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master, index-builder and the dashboard; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers on the reader-only config
   and analytics-processor, never the writer; the master key the writer, index-builder, workers and
   dashboard, never a reader. analytics-processor's hash also covers its component
   Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
@@ -1142,10 +1150,10 @@ host is set)**.
   Deployment.
 - **harvest-master** (`ingestion.go`) — HARVEST's job API on 8080. It refuses to start without
   `HARVEST_SIGNATURE` of at least 32 characters, and signs job status notifications with
-  `NOTIFICATION_SIGNATURE`. Both come by `secretKeyRef` from Secrets the bootstrap step generates
-  once where ingestion runs, never replaced:
+  `NOTIFICATION_SIGNATURE`. Both come by `secretKeyRef` from generated Secrets. The control key
+  exists while ingestion or the dashboard is enabled; the notification key follows ingestion:
   - `HARVEST_SIGNATURE` ← `<cr>-harvest-sign` key `HARVEST_SIGN`, the same key index-builder sends
-    as `Authorization: Bearer` (its `HARVEST_SIGN`). One value, two names, so the two cannot drift.
+    as `?signature=` (its `HARVEST_SIGN`) and the dashboard sends as `SCRAPER_SIGNATURE`.
   - `NOTIFICATION_SIGNATURE` ← `<cr>-harvest-notification`, an independent key that only
     harvest-master holds. The receiver of a notification is the URL in the job's own configuration,
     and nothing in the stack sets one: the dashboard sends none, and the operator sets no
@@ -1157,8 +1165,8 @@ host is set)**.
     variable at startup needs HARVEST to let it start without one.
 
   `HARVEST_SIGN` is no longer seeded as a `dev-*` placeholder into index-builder's or
-  harvest-master's component Secret; one an older Secret still holds is shadowed by the explicit
-  entry.
+  harvest-master's component Secret; an old placeholder is pruned on upgrade and any retained
+  user-supplied value is shadowed by the explicit env entry.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
 - **Third-party keys from their own Secrets** ([#571](https://github.com/oramasearch/orama-operator/issues/571),
@@ -1426,11 +1434,10 @@ outside service. Per-key sources, and whether each must equal Prod 1, are in the
 
 - The dashboard's `AIRBYTE_*` keys are left out: they go away with Airbyte (bridge decisions of
   2026-10-16, 12a) and are not copied.
-- `CRON_SECRET` reaches the dashboard through `dashboard.envFrom`, and the in-cluster CronJobs
-  ([operator#17](https://github.com/oramasearch/orama-operator/issues/17)) read it from the same
-  Secret key, resolved from the dashboard's own `envFrom` and `env`, so there is no second reference
-  to keep in step. Only the dashboard and those CronJobs share it, so its value is new for Prod 2, not
-  copied from Prod 1, and it lives in the environment Secret the set delivers.
+- `CRON_SECRET` comes from `<cr>-cron-secret` as an explicit dashboard env entry. The in-cluster
+  CronJobs ([operator#17](https://github.com/oramasearch/orama-operator/issues/17)) read the same
+  key. An older value in `dashboard.env` or `dashboard.envFrom` is ignored by the dashboard and is
+  no longer required in the set's copied environment Secret.
 - No Firebase keys: sign-in moves to Clerk before the cutover and Prod 2 needs no Firebase server
   keys (bridge decisions of 2026-10-16, 1 and 2). Clerk's keys are added with orama-bridge#180.
 - `NEXT_PUBLIC_APP_URL`, `ORAMACORE_PLACEMENT_CLUSTER_ID` and `REDIS_CACHE_URL` are set by the
@@ -1440,7 +1447,7 @@ outside service. Per-key sources, and whether each must equal Prod 1, are in the
 - **Prerequisites recorded, not solved here.** Analytics use the in-cluster ClickHouse, with no copied
   `CLICKHOUSE_*` key. The dashboard's `runClickhouse` (`src/lib/clickhouse/index.ts`) posts JSON
   `{sql, queryVariables}` with Basic auth to a URL, while the operator gives it a bare service name in
-  `CLICKHOUSE_HOST` and a placeholder `CLICKHOUSE_PASSWORD`; nothing here makes that connection work.
+  `CLICKHOUSE_HOST` and the generated `CLICKHOUSE_PASSWORD`; the query path still needs live proof.
   `REDIS_CACHE_URL`/`REDIS_CACHE_TOKEN` feed `@upstash/redis` over HTTP (`src/lib/redis/redis.ts`),
   not the in-cluster Redis TCP service. Where the cache runs, the operator sets both to the in-stack
   `serverless-redis-http` shim ([below](#the-upstash-rest-shim-redis_httpgo-562)); a value the set
@@ -1540,17 +1547,15 @@ member cluster's `purpose` tag as the label `orama.cloud/purpose` on every pass
 ([infrastructure/README.md](infrastructure/README.md)). There is no field or flag for it. On a
 production stack (`dashboard_production.go`):
 
-- `CRON_SECRET` and `STRIPE_WEBHOOK_SECRET` must each come from the user's own Secrets: a
-  `dashboard.envFrom` Secret or a `dashboard.env` `secretKeyRef`, resolved with the same precedence as
-  the container's environment. A literal, a ConfigMap, or a value in the operator's
-  `<cr>-dashboard-secret` does not count.
-- Each value must be non-empty and must not be any placeholder `componentSecretData` seeds.
-- `CRON_SECRET` is required whether or not the crons are enabled: the routes are served either way.
+- `CRON_SECRET` comes from the generated `<cr>-cron-secret`, which the dashboard and its CronJobs
+  share whether the crons are enabled or not.
+- `STRIPE_WEBHOOK_SECRET` must come from a user's `dashboard.envFrom` Secret or a `dashboard.env`
+  `secretKeyRef`. Its value must be non-empty and must not be an operator placeholder.
 - `STRIPE_SECRET_KEY` must come from `dashboard.stripeSecretKeySecretRef` and be a live-mode restricted
   key (`rk_live_`): never the account's full secret key, never a test-mode key
   ([below](#the-dashboards-stripe-key-a-restricted-key-of-its-own-802)).
-- The operator seeds no placeholder for these three into `<cr>-dashboard-secret`. One seeded earlier
-  stays in that Secret and is never read, because the user's source wins.
+- The operator seeds no placeholder for these three into `<cr>-dashboard-secret`. A value seeded
+  earlier may remain there, but the generated cron key and the Stripe references take precedence.
 
 Otherwise the dashboard step fails before the Deployment is written, with `Ready=False`
 (`ReconcileError`) naming each missing setting and never a value. A fresh stack gets no dashboard; a

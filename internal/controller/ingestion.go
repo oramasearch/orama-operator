@@ -41,7 +41,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 			port:      8080,
 			env:       append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
 			// controlDBAppSecret is its DATABASE_URL (pgURIEnv): a new control DB has a new password.
-			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
+			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), typesenseAuthSecretName(oc), decrypterAuthSecretName(oc), indexBuilderAuthSecretName(oc), deploymentAPISecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
 			resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
 		}); err != nil {
 			return err
@@ -93,7 +93,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 
 const (
 	// harvestSignKey is the key of <cr>-harvest-sign: HARVEST's control key, which index-builder
-	// sends as "Authorization: Bearer" (its HARVEST_SIGN) and harvest-master checks (its
+	// sends as ?signature= (its HARVEST_SIGN) and harvest-master checks (its
 	// HARVEST_SIGNATURE, at least 32 characters). One value under two names.
 	harvestSignKey = "HARVEST_SIGN"
 	// harvestNotificationKey is the key of <cr>-harvest-notification: harvest-master's private HMAC
@@ -171,6 +171,10 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		{Name: "DECRYPTER_BASE_URL", Value: "http://" + n + "-openai-decrypter:8080"},
 		{Name: "HARVEST_MASTER_ENDPOINT", Value: "http://" + n + "-harvest-master:8080"},
 		secretKeyEnv("HARVEST_SIGN", harvestSignSecretName(oc), harvestSignKey), // = harvest-master's HARVEST_SIGNATURE
+		secretKeyEnv("TYPESENSE_API_KEY", typesenseAuthSecretName(oc), "TYPESENSE_API_KEY"),
+		secretKeyEnv("DECRYPTER_API_SECRET_BASE64", decrypterAuthSecretName(oc), "DECRYPTER_API_SECRET_BASE64"),
+		secretKeyEnv("API_SECRET", indexBuilderAuthSecretName(oc), "API_SECRET"),
+		secretKeyEnv("DEPLOYMENT_API_API_KEY", deploymentAPISecretName(oc), "DEPLOYMENT_API_API_KEY"),
 		{Name: "REST_API_AUTHORIZATION_HEADER_PRIVATE_KEY_PATH", Value: "/etc/index-builder/rest-api-private-key.pem"},
 	}
 }

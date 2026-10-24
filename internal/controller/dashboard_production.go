@@ -29,11 +29,10 @@ import (
 // OramaCloudV1Set writes its member cluster's `purpose` tag as the instancePurposeLabel on every pass
 // (managedset_controller.go memberLabels). On a production instance:
 //
-//   - every variable in dashboardProductionAuthEnv must come from the user's own sources, a
-//     dashboard.envFrom Secret or a dashboard.env secretKeyRef, the same way dashboardCronSecret finds
-//     CRON_SECRET; a literal, a ConfigMap or the operator's <cr>-dashboard-secret does not count;
+//   - STRIPE_WEBHOOK_SECRET must come from a dashboard.envFrom Secret or a dashboard.env
+//     secretKeyRef; a literal, ConfigMap or component Secret does not count;
 //   - its value must be non-empty and must not be one of the operator's seeded placeholders;
-//   - CRON_SECRET is required whether or not the crons are enabled;
+//   - CRON_SECRET comes from the generated <cr>-cron-secret whether or not crons are enabled;
 //   - STRIPE_SECRET_KEY comes from spec.components.dashboard.stripeSecretKeySecretRef, and its value
 //     is a live-mode restricted key (rk_live_), never the account's full secret key (sk_) nor a
 //     test-mode key (#802, LSR-140): the dashboard holds only the Stripe permissions it uses;
@@ -54,14 +53,13 @@ func isProduction(oc *oramav1alpha1.OramaCloudV1) bool {
 // dashboardProductionAuthEnv is each variable a production dashboard must take from the user's own
 // Secrets, with what it protects.
 var dashboardProductionAuthEnv = []struct{ name, protects string }{
-	{"CRON_SECRET", "the cron routes' bearer"},
 	{"STRIPE_WEBHOOK_SECRET", "the Stripe webhook signature"},
 }
 
 // dashboardProductionUnseeded is every dashboard variable the operator never seeds a placeholder for
 // on a production instance: dashboardProductionAuthEnv and the Stripe key.
 func dashboardProductionUnseeded() []string {
-	names := []string{"STRIPE_SECRET_KEY"}
+	names := []string{"STRIPE_SECRET_KEY", "CRON_SECRET"}
 	for _, v := range dashboardProductionAuthEnv {
 		names = append(names, v.name)
 	}

@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"strings"
@@ -101,6 +102,9 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 		return err
 	}
 	if err := r.ensureCredentialSecrets(ctx, oc); err != nil {
+		return err
+	}
+	if err := r.pruneRetiredComponentCredentials(ctx, oc); err != nil {
 		return err
 	}
 	// The engine's broker users' passwords (#99), before the engine step hashes them, so a fresh
@@ -216,7 +220,7 @@ func componentSecretData(component string) map[string]string {
 			"HF_TOKEN":          "dev-huggingface-token",
 		}
 	case "search":
-		return map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key"}
+		return map[string]string{}
 	case "cache":
 		// The Redis password is generated into <cr>-cache-auth (credentials.go), not seeded here.
 		return map[string]string{}
@@ -225,11 +229,11 @@ func componentSecretData(component string) map[string]string {
 		// config by an init container (reconcileBroker), not seeded here.
 		return map[string]string{}
 	case "analytics":
-		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
+		return map[string]string{}
 	case "analytics-processor": // pulls /v1/analytics -> ClickHouse
-		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
+		return map[string]string{}
 	case "disco":
-		return map[string]string{"DISCO_SECRET": "dev-disco-secret", "CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
+		return map[string]string{"DISCO_SECRET": "dev-disco-secret"}
 	case "keycloak":
 		return map[string]string{"KC_BOOTSTRAP_ADMIN_PASSWORD": "dev-keycloak-password"}
 	case "pgadmin": // pgAdmin4 web login (PGADMIN_DEFAULT_EMAIL is non-secret, set in the Deployment env)
@@ -243,22 +247,17 @@ func componentSecretData(component string) map[string]string {
 		// The Ably key and Cloudflare pair are not seeded when their references are set
 		// (componentKeyRefs). Non-secret URLs/constants are set as plain env in reconcileIngestion.
 		return map[string]string{
-			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
-			"ABLY_API_KEY":                "sandbox.dummy:sandboxdummyablysecret000000",
-			"API_SECRET":                  "dev-index-builder-api-secret",
-			"DEPLOYMENT_API_API_KEY":      "dev-deployment-api-key",
-			"DECRYPTER_API_SECRET_BASE64": "ZGV2LWRlY3J5cHRlci1zZWNyZXQ=", // base64("dev-decrypter-secret")
-			"APIFY_TOKEN":                 "dev-apify-token",
-			"DISCO_SECRET_KEY":            "dev-disco-secret",
-			"CLOUDFLARE_API_TOKEN":        "dev-cloudflare-token",
-			"CLOUDFLARE_ACCOUNT_ID":       "dev-cloudflare-account",
+			"ABLY_API_KEY":          "sandbox.dummy:sandboxdummyablysecret000000",
+			"APIFY_TOKEN":           "dev-apify-token",
+			"DISCO_SECRET_KEY":      "dev-disco-secret",
+			"CLOUDFLARE_API_TOKEN":  "dev-cloudflare-token",
+			"CLOUDFLARE_ACCOUNT_ID": "dev-cloudflare-account",
 		}
 	case "harvest": // crawler worker (one-shot): S3 exports, Ably, job-signing
 		return map[string]string{
 			"AWS_ACCESS_KEY_ID":     "dev",
 			"AWS_SECRET_ACCESS_KEY": "dev-secret",
 			"ABLY_API_KEY":          "sandbox.dummy:sandboxdummyablysecret000000",
-			"HARVEST_SIGN":          "dev-harvest-signature",
 		}
 	case "harvest-master": // crawler master (job API): worker-image pull creds
 		// HARVEST_SIGNATURE and NOTIFICATION_SIGNATURE are not seeded: they come from the generated
@@ -273,7 +272,6 @@ func componentSecretData(component string) map[string]string {
 			// (the dashboard signs the OramaCore writer JWT); JWT_ISSUER is in the config.
 			// POSTGRES_PASSWORD is sourced from the CNPG-generated <cr>-controldb-app Secret via
 			// an explicit env in reconcileDashboard (#32) — not the dummy.
-			"CLICKHOUSE_PASSWORD":      "dev-clickhouse-password",
 			"FIREBASE_SERVICE_ACCOUNT": "dev-firebase-service-account-json",
 			"STRIPE_SECRET_KEY":        "dev-stripe-secret-key",
 			"STRIPE_WEBHOOK_SECRET":    "dev-stripe-webhook-secret",
@@ -282,17 +280,79 @@ func componentSecretData(component string) map[string]string {
 		}
 	case "workers": // the CF workers bundle — RAG answer path + telemetry
 		return map[string]string{
-			"OPENAI_API_KEY":      "dev-openai-api-key",
-			"GROQ_API_KEY":        "dev-groq-api-key",
-			"ANTHROPIC_API_KEY":   "dev-anthropic-api-key",
-			"CLICKHOUSE_PASSWORD": "dev-clickhouse-password",
-			"QSTASH_TOKEN":        "dev-qstash-token",
-			"DISCO_SECRET":        "dev-disco-secret",
-			"SENTRY_DSN":          "dev-sentry-dsn",
+			"OPENAI_API_KEY":    "dev-openai-api-key",
+			"GROQ_API_KEY":      "dev-groq-api-key",
+			"ANTHROPIC_API_KEY": "dev-anthropic-api-key",
+			"QSTASH_TOKEN":      "dev-qstash-token",
+			"DISCO_SECRET":      "dev-disco-secret",
+			"SENTRY_DSN":        "dev-sentry-dsn",
 		}
 	default:
 		return nil // no secret (e.g. selenium, harvest-mongo)
 	}
+}
+
+// Keys formerly seeded into component Secrets now live in generated credential Secrets. Prune only
+// the old placeholder values on upgrade; preserve any user-supplied value in these Secrets.
+func retiredComponentCredentialKeys(component string) []string {
+	switch component {
+	case "search":
+		return []string{"TYPESENSE_API_KEY"}
+	case "analytics", "analytics-processor", "disco", "workers":
+		return []string{"CLICKHOUSE_PASSWORD"}
+	case "dashboard":
+		return []string{"CLICKHOUSE_PASSWORD", "CRON_SECRET", "REDIS_CACHE_TOKEN", "SCRAPER_SIGNATURE"}
+	case "index-builder":
+		return []string{"TYPESENSE_API_KEY", "API_SECRET", "DEPLOYMENT_API_API_KEY", "DECRYPTER_API_SECRET_BASE64", "HARVEST_SIGN", "ORAMA_EMBEDDINGS_BEARER"}
+	case "harvest":
+		return []string{"HARVEST_SIGN"}
+	case "harvest-master":
+		return []string{"HARVEST_SIGNATURE", "NOTIFICATION_SIGNATURE"}
+	}
+	return nil
+}
+
+func retiredCredentialPlaceholder(key string, value []byte) bool {
+	if strings.HasPrefix(string(value), "dev-") {
+		return true
+	}
+	if key == "DECRYPTER_API_SECRET_BASE64" {
+		decoded, err := base64.StdEncoding.DecodeString(string(value))
+		return err == nil && strings.HasPrefix(string(decoded), "dev-")
+	}
+	return false
+}
+
+// pruneRetiredComponentCredentials removes obsolete copies even when a component is disabled or
+// has no running workload (the harvest worker is one example). It never creates a component Secret.
+func (r *OramaCloudV1Reconciler) pruneRetiredComponentCredentials(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	for _, component := range secretComponents {
+		keys := retiredComponentCredentialKeys(component)
+		if len(keys) == 0 {
+			continue
+		}
+		sec := &corev1.Secret{}
+		name := componentSecretName(oc, component)
+		if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, sec); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("read component Secret %s/%s: %w", oc.Namespace, name, err)
+		}
+		changed := false
+		for _, key := range keys {
+			if value, found := sec.Data[key]; found && retiredCredentialPlaceholder(key, value) {
+				delete(sec.Data, key)
+				changed = true
+			}
+		}
+		if changed {
+			if err := r.Update(ctx, sec); err != nil {
+				return fmt.Errorf("prune retired keys from component Secret %s/%s: %w", oc.Namespace, name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // ensureComponentSecret creates a component's scoped secret (create-if-absent, dummy
