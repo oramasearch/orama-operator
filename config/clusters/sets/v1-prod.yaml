@@ -129,16 +129,11 @@
 #   Images: the template pins the newest build of every component by digest, the images v1-nonprod
 #     runs (orama-bridge decisions 2026-10-23, 3, which replaces the release-tag requirement of
 #     2026-10-17), and v1-eu adds the production dashboard built from public.env.v1-prod.
-#   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
-#     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
-#     (search and index-builder),
-#     DECRYPTER_API_SECRET_BASE64 (index-builder's x-api-key to
-#     openai-decrypter, index-manager apps/index-builder/src/embeddings/openai.ts; openai-decrypter gets
-#     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder).
-#     Read-only EU inspection (2026-10-23) confirms those component Secret fields still match the
-#     operator's dev seeds; current workloads consume them through envFrom or explicit references.
-#     Decrypter receiver authentication and the dashboard deployment-API key contract still need
-#     qualification; DEPLOYMENT_API_API_KEY is not wired to the dedicated dashboard PRIVATE_API_KEY.
+#   #570 makes ClickHouse, Typesense, cron, decrypter and index-builder's internal keys generated
+#     by the operator. This set must wait for that code to roll and pass live proof before apply;
+#     the 2026-10-23 read-only EU inspection found the old component Secret dev seeds still in use.
+#     The dashboard deployment-API key contract still needs qualification:
+#     DEPLOYMENT_API_API_KEY is not wired to the dashboard's PRIVATE_API_KEY.
 #     HARVEST's worker still seeds a dummy HARVEST_SIGN; verify the eventual
 #     crawler-job wiring separately. The index-builder/master pair and Redis HTTP token are generated.
 #   The dashboard's Stripe key (#802, LSR-140, #885): the v1-eu-only reference below is prepared,

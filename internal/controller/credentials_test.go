@@ -1002,7 +1002,7 @@ func TestExistingAnalyticsKeyIsKept(t *testing.T) {
 	if want := secretDataHash(h.secret("v1-broker-users"), got); tmpls["reader"].Annotations[credentialsHashKey] != want {
 		t.Error("the readers do not carry the existing key's hash")
 	}
-	if want := secretDataHash(got, h.secret("v1-analytics-processor-secret")); tmpls["analytics-processor"].Annotations[credentialsHashKey] != want {
+	if want := secretDataHash(got, h.secret("v1-clickhouse-auth")); tmpls["analytics-processor"].Annotations[credentialsHashKey] != want {
 		t.Error("analytics-processor does not carry the existing key's hash")
 	}
 }
@@ -1074,7 +1074,7 @@ func TestAnalyticsKeyCreateRace(t *testing.T) {
 		t.Fatal("the operator overwrote the Secret that won the race")
 	}
 	broker, component := &corev1.Secret{}, &corev1.Secret{}
-	for name, sec := range map[string]*corev1.Secret{"v1-broker-users": broker, "v1-analytics-processor-secret": component} {
+	for name, sec := range map[string]*corev1.Secret{"v1-broker-users": broker, "v1-clickhouse-auth": component} {
 		if err := cl.Get(ctx, types.NamespacedName{Namespace: "orama-system", Name: name}, sec); err != nil {
 			t.Fatal(err)
 		}

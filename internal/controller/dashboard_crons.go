@@ -34,7 +34,7 @@ import (
 // reach Prod 1 while DNS moves. Everything is created suspended: the two stacks must never crawl,
 // bill or probe at once, and the cutover unsuspends them through the set file.
 //
-// Configuration errors (no Secret source for CRON_SECRET, a missing Secret or key, a same-name object
+// Configuration errors (an invalid generated CRON_SECRET, a same-name object
 // this CR does not control) fail the dashboard step, which reports Ready=False with the reason
 // ReconcileError. Run outcomes show in Job status and logs, not in the stack's readiness.
 
@@ -68,10 +68,9 @@ var e2eCanaryScript string
 // errCronsNeedDashboard is the reconcile's copy of the CRD rule, for objects that bypass admission.
 var errCronsNeedDashboard = errors.New("dashboard.crons requires the dashboard enabled; set dashboard.crons.enabled to false as well")
 
-// dashboardCronSecret returns the Secret key the dashboard's own CRON_SECRET comes from, so the
-// CronJobs send the bearer the dashboard checks (dashboardEnvSecretKey).
-func dashboardCronSecret(oc *oramav1alpha1.OramaCloudV1, sources []dashboardEnvSource) (*corev1.SecretKeySelector, error) {
-	return dashboardEnvSecretKey(oc, sources, "CRON_SECRET", "dashboard.crons", "the CronJobs")
+// dashboardCronSecret returns the generated Secret key shared by the dashboard and its CronJobs.
+func dashboardCronSecret(oc *oramav1alpha1.OramaCloudV1) *corev1.SecretKeySelector {
+	return &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: cronSecretName(oc)}, Key: "CRON_SECRET"}
 }
 
 // dashboardEnvSecretKey returns the Secret key the dashboard's own variable name comes from, so a
@@ -162,13 +161,14 @@ func suspended(s *bool) bool { return s == nil || *s }
 // dashboard's Deployment and Service. The crons' own inputs are checked before the first CronJob is
 // written; the canary's are checked in reconcileE2ECanary, so a missing canary Secret never keeps
 // the dashboard crons from being written.
-func (r *OramaCloudV1Reconciler) reconcileDashboardCrons(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, sources []dashboardEnvSource) error {
+func (r *OramaCloudV1Reconciler) reconcileDashboardCrons(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	c := oc.Spec.Components.Dashboard.Crons
-	secret, err := dashboardCronSecret(oc, sources)
-	if err != nil {
+	secret := dashboardCronSecret(oc)
+	if err := r.requireSecretKeys(ctx, oc, "dashboard.crons CRON_SECRET", secret.Name, secret.Key); err != nil {
 		return err
 	}
-	if err := r.requireSecretKeys(ctx, oc, "dashboard.crons CRON_SECRET", secret.Name, secret.Key); err != nil {
+	credentialHash, err := r.credentialsHash(ctx, oc, cronSecretName(oc))
+	if err != nil {
 		return err
 	}
 	image := dashboardCronsImage
@@ -185,7 +185,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboardCrons(ctx context.Context, oc
 			ctr.Env = []corev1.EnvVar{{Name: "CRON_SECRET", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: secret}}}
 			ctr.Resources = *resourceReqs("32Mi", "10m", "64Mi")
 			ctr.SecurityContext = nonRootSecurityContext(curlUID, curlGID)
-		})
+		}, map[string]string{credentialsHashKey: credentialHash})
 		if err != nil {
 			return fmt.Errorf("dashboard cron %s: %w", dc.name, err)
 		}
@@ -272,7 +272,7 @@ func (r *OramaCloudV1Reconciler) reconcileE2ECanary(ctx context.Context, oc *ora
 // successful and three failed Jobs kept, no retry, an hour's TTL) plus whatever pod sets. Fields are
 // assigned one by one, so the API's defaults survive and a steady spec writes nothing. A same-name
 // CronJob this CR does not control is a conflict and is left unchanged.
-func (r *OramaCloudV1Reconciler) upsertCronJob(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, schedule string, suspend bool, deadline int64, pod func(*corev1.PodSpec)) error {
+func (r *OramaCloudV1Reconciler) upsertCronJob(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, schedule string, suspend bool, deadline int64, pod func(*corev1.PodSpec), annotations ...map[string]string) error {
 	cj := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cj, func() error {
 		if err := refuseForeign(oc, "CronJob", cj); err != nil {
@@ -289,6 +289,9 @@ func (r *OramaCloudV1Reconciler) upsertCronJob(ctx context.Context, oc *oramav1a
 		job := &cj.Spec.JobTemplate.Spec
 		job.BackoffLimit, job.ActiveDeadlineSeconds, job.TTLSecondsAfterFinished = int32Ptr(0), int64Ptr(deadline), int32Ptr(3600)
 		job.Template.Labels = lbls
+		if len(annotations) > 0 {
+			job.Template.Annotations = annotations[0]
+		}
 		spec := &job.Template.Spec
 		spec.RestartPolicy = corev1.RestartPolicyNever
 		spec.AutomountServiceAccountToken = boolPtr(false)

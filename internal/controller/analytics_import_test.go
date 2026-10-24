@@ -514,7 +514,7 @@ func TestAnalyticsRetentionJobKeepsThirtyDays(t *testing.T) {
 		t.Fatalf("Job spec = %+v", job.Spec)
 	}
 	c := pod.Containers[0]
-	wantEnv := []corev1.EnvVar{secretKeyEnv("CLICKHOUSE_PASSWORD", "v1-analytics-secret", "CLICKHOUSE_PASSWORD")}
+	wantEnv := []corev1.EnvVar{secretKeyEnv("CLICKHOUSE_PASSWORD", "v1-clickhouse-auth", "CLICKHOUSE_PASSWORD")}
 	if c.Image != clickhouseImage || !reflect.DeepEqual(c.Command, []string{"sh", "-c", script}) || !reflect.DeepEqual(c.Env, wantEnv) ||
 		len(c.EnvFrom) != 0 || !reflect.DeepEqual(c.SecurityContext, hardenedSecurityContext()) {
 		t.Errorf("retention container = %+v", c)

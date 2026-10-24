@@ -126,7 +126,7 @@ func (h *engineHarness) effectiveEnv(c corev1.Container) map[string]string {
 var operatorDashboardEnvFrom = []corev1.EnvFromSource{configMapSource("v1-config"), secretSource("v1-dashboard-secret"), secretSource("v1-jwt")}
 
 func operatorDashboardEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
-	return []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
+	return []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL"), clickhousePasswordEnv(oc), secretKeyEnv("CRON_SECRET", cronSecretName(oc), "CRON_SECRET")}
 }
 
 // The issue's worked example: the user's sources follow the operator's, the explicit selector wins
@@ -148,7 +148,7 @@ func TestDashboardEnvWorkedExample(t *testing.T) {
 	if !reflect.DeepEqual(c.EnvFrom, wantFrom) {
 		t.Fatalf("envFrom = %+v, want %+v", c.EnvFrom, wantFrom)
 	}
-	wantEnv := append(operatorDashboardEnv(oc), secretKeyEnv("STRIPE_SECRET_KEY", "stripe-test", "api-key"))
+	wantEnv := append(operatorDashboardEnv(oc)[:3], secretKeyEnv("STRIPE_SECRET_KEY", "stripe-test", "api-key"), clickhousePasswordEnv(oc), secretKeyEnv("CRON_SECRET", cronSecretName(oc), "CRON_SECRET"))
 	if !reflect.DeepEqual(c.Env, wantEnv) {
 		t.Fatalf("env = %+v, want %+v", c.Env, wantEnv)
 	}
@@ -501,8 +501,8 @@ func TestDashboardEnvOptionalReferences(t *testing.T) {
 	if last := c.EnvFrom[len(c.EnvFrom)-1]; !reflect.DeepEqual(last, src) {
 		t.Errorf("last envFrom = %+v, want the optional reference as written", last)
 	}
-	if last := c.Env[len(c.Env)-1]; !reflect.DeepEqual(last, sel) {
-		t.Errorf("last env = %+v, want the optional selector as written", last)
+	if got := envNamed(c.Env, sel.Name); !reflect.DeepEqual(got, &sel) {
+		t.Errorf("optional env = %+v, want the selector as written", got)
 	}
 	hash := h.dashboardHash()
 	if hash == "" {
@@ -547,7 +547,7 @@ func TestDashboardEnvOptionalReferences(t *testing.T) {
 // references.
 func TestDashboardEnvUnconfiguredTemplate(t *testing.T) {
 	template := func(dash func(*oramav1alpha1.DashboardSpec)) corev1.PodTemplateSpec {
-		h := newEngineHarness(t, dashOC(dash))
+		h := newEngineHarness(t, dashOC(dash), secretOf("v1-clickhouse-auth", map[string]string{"CLICKHOUSE_PASSWORD": "fixed-clickhouse"}), secretOf("v1-cron-secret", map[string]string{"CRON_SECRET": "fixed-cron"}))
 		h.mustRun()
 		return h.dashboard().Spec.Template
 	}
@@ -570,13 +570,13 @@ func TestDashboardEnvUnconfiguredTemplate(t *testing.T) {
 	if !reflect.DeepEqual(literal.Annotations, base.Annotations) {
 		t.Errorf("literal and fieldRef env added annotations %v", literal.Annotations)
 	}
-	if n := len(literal.Spec.Containers[0].Env); n != 5 {
-		t.Errorf("literal env: %d variables, want the operator's three plus two", n)
+	if n := len(literal.Spec.Containers[0].Env); n != 7 {
+		t.Errorf("literal env: %d variables, want the operator's five plus two", n)
 	}
 
 	h := newEngineHarness(t, dashOC(func(d *oramav1alpha1.DashboardSpec) {
 		d.EnvFrom = []corev1.EnvFromSource{secretSource("extra")}
-	}), secretOf("extra", map[string]string{"SLACK_TOKEN": "t"}))
+	}), secretOf("extra", map[string]string{"SLACK_TOKEN": "t"}), secretOf("v1-clickhouse-auth", map[string]string{"CLICKHOUSE_PASSWORD": "fixed-clickhouse"}), secretOf("v1-cron-secret", map[string]string{"CRON_SECRET": "fixed-cron"}))
 	h.mustRun()
 	if h.dashboardHash() == "" {
 		t.Fatal("a referenced Secret should add the hash")

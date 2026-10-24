@@ -199,7 +199,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 	}); err != nil {
 		return err
 	}
-	componentSecret := componentSecretName(oc, "analytics-processor")
+	clickhouseSecret := clickhouseAuthSecretName(oc)
 	// The shared, non-secret ConfigMap only.
 	envFrom := []corev1.EnvFromSource{sharedConfigEnvFrom(oc)}
 	render := corev1.Container{
@@ -211,7 +211,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		EnvFrom: envFrom,
 		Env: []corev1.EnvVar{
 			analyticsKeyEnv(oc),
-			secretKeyEnv("CLICKHOUSE_PASSWORD", componentSecret, "CLICKHOUSE_PASSWORD"),
+			clickhousePasswordEnv(oc),
 			pgURIEnv(oc, "PG_URI"),
 		},
 		VolumeMounts: []corev1.VolumeMount{
@@ -232,7 +232,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		podAnnotations: map[string]string{configHashKey: hex.EncodeToString(sum[:])},
 		// Every Secret the render init reads, so a changed analytics key, ClickHouse or Postgres
 		// password rolls the processor.
-		credentialSecrets: []string{analyticsKeySecretName(oc), componentSecret, controlDBAppSecret(oc)},
+		credentialSecrets: []string{analyticsKeySecretName(oc), clickhouseSecret, controlDBAppSecret(oc)},
 		volumes: []corev1.Volume{
 			{Name: "config-tmpl", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}}},
@@ -385,11 +385,15 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsRetention(ctx context.Context
 	}
 	sum := sha256.Sum256([]byte(script))
 	hash := hex.EncodeToString(sum[:])
+	credentialHash, err := r.credentialsHash(ctx, oc, clickhouseAuthSecretName(oc))
+	if err != nil {
+		return err
+	}
 	job := &batchv1.Job{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: analyticsRetentionName(oc)}, job)
+	err = r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: analyticsRetentionName(oc)}, job)
 	switch {
 	case apierrors.IsNotFound(err):
-		job = analyticsRetentionJob(oc, script, hash)
+		job = analyticsRetentionJob(oc, script, hash, credentialHash)
 		if err := controllerutil.SetControllerReference(oc, job, r.Scheme); err != nil {
 			return err
 		}
@@ -400,7 +404,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsRetention(ctx context.Context
 		return fmt.Errorf("Job %s is not controlled by OramaCloudV1 %s", job.Name, oc.Name)
 	case !job.DeletionTimestamp.IsZero():
 		return nil // its deletion event reconciles again
-	case job.Annotations[analyticsRetentionHashKey] != hash || jobFailed(job):
+	case job.Annotations[analyticsRetentionHashKey] != hash || job.Annotations[credentialsHashKey] != credentialHash || jobFailed(job):
 		policy := metav1.DeletePropagationForeground
 		err := r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &policy,
 			Preconditions: &metav1.Preconditions{UID: &job.UID, ResourceVersion: &job.ResourceVersion}})
@@ -415,13 +419,13 @@ func analyticsRetentionWanted(oc *oramav1alpha1.OramaCloudV1) bool {
 	return c.AnalyticsProcessor.Enabled && c.Analytics.Enabled && c.Analytics.Mode != "external"
 }
 
-func analyticsRetentionJob(oc *oramav1alpha1.OramaCloudV1, script, hash string) *batchv1.Job {
+func analyticsRetentionJob(oc *oramav1alpha1.OramaCloudV1, script, hash string, credentialHash ...string) *batchv1.Job {
 	lbls := labelsFor(oc, "analytics-retention")
 	c := corev1.Container{
 		Name:            "retention",
 		Image:           storeImage(oc, "analytics", clickhouseImage),
 		Command:         []string{"sh", "-c", script},
-		Env:             []corev1.EnvVar{secretKeyEnv("CLICKHOUSE_PASSWORD", componentSecretName(oc, "analytics"), "CLICKHOUSE_PASSWORD")},
+		Env:             []corev1.EnvVar{clickhousePasswordEnv(oc)},
 		Resources:       *resourceReqs("128Mi", "10m", "256Mi"),
 		SecurityContext: hardenedSecurityContext(),
 	}
@@ -444,6 +448,10 @@ func analyticsRetentionJob(oc *oramav1alpha1.OramaCloudV1, script, hash string) 
 				},
 			},
 		},
+	}
+	if len(credentialHash) != 0 {
+		job.Annotations[credentialsHashKey] = credentialHash[0]
+		job.Spec.Template.Annotations = map[string]string{credentialsHashKey: credentialHash[0]}
 	}
 	boundV1PodStorage(&job.Spec.Template.Spec)
 	return job
@@ -483,12 +491,17 @@ func (r *OramaCloudV1Reconciler) reconcileSearchWorkers(ctx context.Context, oc 
 		return r.teardownByComponent(ctx, oc, searchWorkerNames...)
 	}
 	for _, w := range searchWorkerNames {
-		if err := r.reconcileApp(ctx, oc, appDef{
+		def := appDef{
 			component: w,
 			image:     componentImage(oc, w, w),
 			port:      8080,
 			resources: resourcesOr(oc.Spec.Components.SearchWorkers.Resources, resourceReqs("64Mi", "25m", "256Mi")),
-		}); err != nil {
+		}
+		if w == "openai-decrypter" {
+			def.env = []corev1.EnvVar{secretKeyEnv("API_SECRET", decrypterAuthSecretName(oc), "API_SECRET")}
+			def.credentialSecrets = []string{decrypterAuthSecretName(oc)}
+		}
+		if err := r.reconcileApp(ctx, oc, def); err != nil {
 			return err
 		}
 	}

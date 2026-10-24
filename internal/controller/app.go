@@ -389,8 +389,8 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "workers", image: img, port: 8080, replicas: w.Replicas,
-		env:               append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, keyRefEnv(refs)...),
-		credentialSecrets: append([]string{masterKey}, keyRefSecrets(refs)...),
+		env:               append([]corev1.EnvVar{masterAPIKeyEnv(oc), clickhousePasswordEnv(oc)}, keyRefEnv(refs)...),
+		credentialSecrets: append([]string{masterKey, clickhouseAuthSecretName(oc)}, keyRefSecrets(refs)...),
 		resources:         resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }
@@ -451,6 +451,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	// replace any but the owned ones.
 	env := append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, dashboardDBEnv(oc)...)
 	credentialSecrets := append([]string{masterKey}, dashboardDBSecrets(oc)...)
+	credentialSecrets = append(credentialSecrets, clickhouseAuthSecretName(oc), cronSecretName(oc))
 	// The restricted Stripe key from its own Secret (#802): an explicit entry, which dashboard.env
 	// cannot replace (validateDashboardEnv refuses STRIPE_SECRET_KEY while the reference is set).
 	env = append(env, keyRefEnv(stripeRefs)...)
@@ -476,6 +477,9 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if rowID != "" {
 		env = append(env, corev1.EnvVar{Name: dashboardPlacementClusterEnv, Value: rowID})
 	}
+	env = overrideEnv(env, d.Env)
+	// Generated internal keys win over any old value still supplied by dashboard.env or envFrom.
+	env = overrideEnv(env, []corev1.EnvVar{clickhousePasswordEnv(oc), secretKeyEnv("CRON_SECRET", cronSecretName(oc), "CRON_SECRET")})
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
 	if err := r.reconcileApp(ctx, oc, appDef{
@@ -484,7 +488,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		port:              3000,
 		ingressHost:       d.Host,
 		ingressExtraHosts: d.ExtraHosts,
-		env:               overrideEnv(env, d.Env),
+		env:               env,
 		credentialSecrets: credentialSecrets,
 		extraEnvFrom:      d.EnvFrom,
 		envHash:           envHash,
@@ -500,7 +504,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if !d.Crons.Enabled {
 		return nil
 	}
-	return r.reconcileDashboardCrons(ctx, oc, sources)
+	return r.reconcileDashboardCrons(ctx, oc)
 }
 
 // jwtIssuerHashKey is the dashboard pod-template annotation holding jwtIssuerHash.

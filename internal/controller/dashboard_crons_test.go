@@ -143,7 +143,7 @@ func TestDashboardCronsRenderProd1Schedules(t *testing.T) {
 		if c.Image != pinnedCurlImage || len(c.Command) != 3 || c.Command[0] != "/bin/sh" || c.Command[2] != dashboardCronScript(w[1]) {
 			t.Errorf("%s: image %q command %q", name, c.Image, c.Command)
 		}
-		wantEnv := []corev1.EnvVar{secretKeyEnv("CRON_SECRET", "dash-env", "CRON_SECRET")}
+		wantEnv := []corev1.EnvVar{secretKeyEnv("CRON_SECRET", "v1-cron-secret", "CRON_SECRET")}
 		if !reflect.DeepEqual(c.Env, wantEnv) || len(c.EnvFrom) != 0 {
 			t.Errorf("%s: env %+v envFrom %+v", name, c.Env, c.EnvFrom)
 		}
@@ -305,121 +305,43 @@ func TestDashboardCronsNeverTouchAForeignSameNameCronJob(t *testing.T) {
 	}
 }
 
-func TestDashboardCronSecretPrecedence(t *testing.T) {
-	sec := func(name, prefix string, data map[string]string) dashboardEnvSource {
-		return dashboardEnvSource{Kind: "Secret", Name: name, Prefix: prefix, Data: data}
-	}
-	cm := func(name string, data map[string]string) dashboardEnvSource {
-		return dashboardEnvSource{Kind: "ConfigMap", Name: name, Data: data}
-	}
-	has := map[string]string{"CRON_SECRET": "x"}
-	cases := []struct {
-		name    string
-		env     []corev1.EnvVar
-		sources []dashboardEnvSource
-		want    *corev1.SecretKeySelector
-		err     string
-	}{
-		{name: "the last Secret holding it wins", sources: []dashboardEnvSource{sec("a", "", has), sec("b", "", has)},
-			want: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "b"}, Key: "CRON_SECRET"}},
-		{name: "a later source without it does not win", sources: []dashboardEnvSource{sec("a", "", has), sec("b", "", map[string]string{"OTHER": "x"})},
-			want: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "a"}, Key: "CRON_SECRET"}},
-		{name: "a prefix selects the underlying key", sources: []dashboardEnvSource{sec("a", "CRON_", map[string]string{"SECRET": "x", "CRON_SECRET": "y"})},
-			want: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "a"}, Key: "SECRET"}},
-		{name: "a prefix that cannot produce the name is skipped", sources: []dashboardEnvSource{sec("a", "", has), sec("b", "X_", has)},
-			want: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "a"}, Key: "CRON_SECRET"}},
-		{name: "an absent optional source is skipped", sources: []dashboardEnvSource{sec("a", "", has), sec("gone", "", nil)},
-			want: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "a"}, Key: "CRON_SECRET"}},
-		{name: "a later ConfigMap overriding a Secret fails", sources: []dashboardEnvSource{sec("a", "", has), cm("c", has)},
-			err: "the dashboard takes CRON_SECRET from ConfigMap c (dashboard.envFrom[1]); it must come from a Secret"},
-		{name: "a Secret after a ConfigMap wins", sources: []dashboardEnvSource{cm("c", has), sec("a", "", has)},
-			want: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "a"}, Key: "CRON_SECRET"}},
-		{name: "an explicit env secretKeyRef wins over envFrom", env: []corev1.EnvVar{secretKeyEnv("CRON_SECRET", "explicit", "cron")},
-			sources: []dashboardEnvSource{sec("a", "", has)},
-			want:    &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "explicit"}, Key: "cron"}},
-		{name: "the last env entry wins", env: []corev1.EnvVar{{Name: "CRON_SECRET", Value: "literal"}, secretKeyEnv("CRON_SECRET", "explicit", "cron")},
-			want: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "explicit"}, Key: "cron"}},
-		{name: "an optional env reference is required anyway", env: []corev1.EnvVar{{Name: "CRON_SECRET", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: "explicit"}, Key: "cron", Optional: optional()}}}},
-			want: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "explicit"}, Key: "cron"}},
-		{name: "an env literal fails", env: []corev1.EnvVar{{Name: "CRON_SECRET", Value: "literal"}}, sources: []dashboardEnvSource{sec("a", "", has)},
-			err: "dashboard.env sets CRON_SECRET, but not from a Secret key"},
-		{name: "an env ConfigMap key fails", env: []corev1.EnvVar{configMapKeyEnv("CRON_SECRET", "c", "cron")},
-			err: "dashboard.env sets CRON_SECRET, but not from a Secret key"},
-		{name: "no source fails", sources: []dashboardEnvSource{sec("a", "", map[string]string{"OTHER": "x"})},
-			err: "dashboard.crons needs CRON_SECRET"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			oc := cronOC(func(d *oramav1alpha1.DashboardSpec) { d.Env = tc.env })
-			got, err := dashboardCronSecret(oc, tc.sources)
-			if tc.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.err) {
-					t.Fatalf("error = %v, want %q", err, tc.err)
-				}
-				return
-			}
-			if err != nil || !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("got %+v, %v; want %+v", got, err, tc.want)
-			}
-		})
+func TestDashboardCronSecretUsesGeneratedKey(t *testing.T) {
+	oc := cronOC(func(d *oramav1alpha1.DashboardSpec) {
+		d.Env = []corev1.EnvVar{secretKeyEnv("CRON_SECRET", "legacy", "cron")}
+	})
+	got := dashboardCronSecret(oc)
+	want := &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "v1-cron-secret"}, Key: "CRON_SECRET"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("generated cron key = %+v; want %+v", got, want)
 	}
 }
 
-func TestDashboardCronsConfigurationErrors(t *testing.T) {
-	cases := []struct {
-		name string
-		oc   *oramav1alpha1.OramaCloudV1
-		objs []client.Object
-		err  string
-	}{
-		{name: "an optional source that is absent", oc: cronOC(func(d *oramav1alpha1.DashboardSpec) {
-			d.EnvFrom = []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "dash-env"}, Optional: optional()}}}
-		}), err: "dashboard.crons needs CRON_SECRET"},
-		{name: "an empty key", oc: cronOC(nil), objs: []client.Object{secretOf("dash-env", map[string]string{"CRON_SECRET": ""})},
-			err: "dashboard.crons CRON_SECRET: Secret orama-system/dash-env has no non-empty key CRON_SECRET"},
-		{name: "an explicit optional reference to a missing Secret", oc: cronOC(func(d *oramav1alpha1.DashboardSpec) {
-			d.EnvFrom = nil
-			d.Env = []corev1.EnvVar{{Name: "CRON_SECRET", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "missing"}, Key: "cron", Optional: optional()}}}}
-		}), err: "dashboard.crons CRON_SECRET: Secret orama-system/missing does not exist"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newEngineHarness(t, append([]client.Object{tc.oc}, tc.objs...)...)
-			err := h.mustFail(tc.err)
-			if strings.Contains(err.Error(), cronValue) || strings.Contains(err.Error(), canaryKey) {
-				t.Fatalf("the error carries a secret value: %v", err)
-			}
-			if crons := h.cronJobs(); len(crons) != 0 {
-				t.Fatalf("CronJobs %v created despite the error", cronNames(crons))
-			}
-			if cond := meta.FindStatusCondition(h.stored().Status.Conditions, "Ready"); cond == nil || cond.Reason != "ReconcileError" {
-				t.Fatalf("Ready condition %+v", cond)
-			}
-		})
+func TestDashboardCronsRejectInvalidGeneratedKey(t *testing.T) {
+	h := newEngineHarness(t, cronOC(nil), dashEnvSecret(), secretOf("v1-cron-secret", map[string]string{"CRON_SECRET": ""}))
+	h.mustFail("credential Secret orama-system/v1-cron-secret key CRON_SECRET is empty")
+	if len(h.cronJobs()) != 0 {
+		t.Fatal("CronJobs created with an empty generated key")
 	}
 }
 
-func TestDashboardCronsRecoverWhenTheKeyReturns(t *testing.T) {
-	h := newEngineHarness(t, cronOC(nil), secretOf("dash-env", map[string]string{"OTHER": "x"}))
-	h.mustFail("dashboard.crons needs CRON_SECRET")
-	h.setSecret("dash-env", "CRON_SECRET", cronValue)
+func TestDashboardCronKeyChangeRollsDashboard(t *testing.T) {
+	h := newEngineHarness(t, cronOC(nil), dashEnvSecret())
 	h.mustRun()
-	want := []corev1.EnvVar{secretKeyEnv("CRON_SECRET", "dash-env", "CRON_SECRET")}
-	before := h.cronJobs()
-	if len(before) != 3 {
-		t.Fatalf("CronJobs %v after the key returned", cronNames(before))
+	before := h.dashboard().Spec.Template.Annotations[credentialsHashKey]
+	beforeCrons := h.cronJobs()
+	h.setSecret("v1-cron-secret", "CRON_SECRET", "new-cron-key")
+	h.mustRun()
+	after := h.dashboard().Spec.Template.Annotations[credentialsHashKey]
+	if before == after {
+		t.Fatal("dashboard credentials hash did not change")
 	}
-	// A new value is read by the next Job through the same reference: nothing is rewritten.
-	h.setSecret("dash-env", "CRON_SECRET", "cron-value-rotated")
-	h.mustRun()
 	for name, cj := range h.cronJobs() {
+		want := []corev1.EnvVar{secretKeyEnv("CRON_SECRET", "v1-cron-secret", "CRON_SECRET")}
 		if got := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: env %+v", name, got)
 		}
-		if cj.ResourceVersion != before[name].ResourceVersion {
-			t.Errorf("%s rewritten by a value change", name)
+		if beforeCrons[name].Spec.JobTemplate.Spec.Template.Annotations[credentialsHashKey] == cj.Spec.JobTemplate.Spec.Template.Annotations[credentialsHashKey] {
+			t.Errorf("%s template hash did not change", name)
 		}
 	}
 }
