@@ -324,20 +324,29 @@ type EngineSpec struct {
 	Envoy bool `json:"envoy,omitempty"`
 }
 
-// VolumeSpec configures a new volume and operator-managed increases to existing storage.
-// StatefulSet claim templates are immutable; existing claims grow independently.
+// VolumeSpec is the desired state of a component's data volume. The operator grows an existing
+// volume in place. A different class or a smaller size cannot be applied in place: the operator
+// replaces the volume, erasing its data, only when approveDataDeletion is true.
 type VolumeSpec struct {
 	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-	// component's default (10Gi) even without API defaulting. Shrinking
-	// existing storage is unsupported.
+	// component's default (10Gi) even without API defaulting. An existing volume grows in place;
+	// a size smaller than an existing volume's replaces it only with approveDataDeletion.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
 	Size *resource.Quantity `json:"size,omitempty"`
-	// StorageClassName selects a class at creation. Omission uses the cluster default
-	// for new volumes and retains the existing class. Existing classes cannot change.
+	// StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+	// and retains the existing class. An existing volume on another class is replaced only with
+	// approveDataDeletion.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	StorageClassName *string `json:"storageClassName,omitempty"`
+	// ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+	// declared class or size in place (another class, or a smaller size): it deletes the volume,
+	// erasing its data, and the component starts again on a new one. False, the default, leaves
+	// the volume as it is and reports the difference in status.conditions[StorageApplied].
+	// Copying the data to the new volume is not supported yet.
+	// +optional
+	ApproveDataDeletion bool `json:"approveDataDeletion,omitempty"`
 }
 
 type WriterSpec struct {
@@ -452,6 +461,10 @@ type IngestionSpec struct {
 	// 7Gi and 2 CPUs with a 10Gi memory limit, sized for the six models it loads, on CPU.
 	// +optional
 	HPESResources *corev1.ResourceRequirements `json:"hpesResources,omitempty"`
+	// HarvestMongoStorage configures the data volume of HARVEST's Mongo (default 10Gi and the
+	// cluster default class), like every other data store's storage.
+	// +optional
+	HarvestMongoStorage *VolumeSpec `json:"harvestMongoStorage,omitempty"`
 }
 
 // WorkersSpec configures the ported Cloudflare Workers, bundled into ONE image and

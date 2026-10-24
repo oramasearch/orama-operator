@@ -600,20 +600,21 @@ it changes.
 
 ### Component storage
 
-The shared `VolumeSpec` is available at `spec.components.engine.writer.storage`, `spec.components.engine.reader.storage` and at
-`spec.components.{analytics,cache,broker,search,controlDB}.storage`.
+The shared `VolumeSpec` is available at `spec.components.engine.writer.storage`, `spec.components.engine.reader.storage`,
+`spec.components.{analytics,cache,broker,search,controlDB}.storage` and `spec.components.ingestion.harvestMongoStorage` (HARVEST's Mongo).
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
 | `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to the default, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
 | `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
+| `storage.approveDataDeletion` | bool | `false` | `false`: a volume the operator can't change in place (another class, or larger than a declared `size`) is left as it is, and `StorageApplied` says so. `true`: the operator replaces it, erasing its data ([below](#replacing-a-volume-storageapprovedatadeletion)). |
 
 For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
 `cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
 For an `OramaCloudV1Set`, put the component settings under `spec.template.components`.
 `reader.storage` applies to every reader's claim, `data-<cr>-reader-<n>`; it defaults to `10Gi`, and production's
-size is explained in [components.md](components.md#engine-internalcontrollerenginego). HARVEST Mongo retains its existing
-`10Gi`/default-class behavior and gains no storage API.
+size is explained in [components.md](components.md#engine-internalcontrollerenginego). `ingestion.harvestMongoStorage` works like
+every other store's `storage`, and is managed while ingestion and HARVEST are enabled.
 
 New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates
 remain intact because Kubernetes makes them immutable. The operator grows each matching claim's
@@ -621,7 +622,9 @@ storage request itself, including retained claims and claims created later from 
 The template's old size does not cause a storage mismatch. For controlDB it grows the CNPG
 Cluster's configured size; CNPG owns expansion of its PVCs. Other CNPG storage keys remain intact.
 
-Existing volumes cannot shrink or change class. Removing `storage` after growth requests the
+An existing volume grows in place. A different class or a smaller size cannot be applied in place:
+the operator replaces the volume when its `storage.approveDataDeletion` is `true`
+([below](#replacing-a-volume-storageapprovedatadeletion)), and otherwise reports the difference. Removing `storage` after growth requests the
 `10Gi` default and can therefore report an unsupported shrink. Restore the grown request to clear
 that rejection. A larger reported capacity alone is not a shrink: provisioners can round capacity
 above the request. A claim with a class mismatch receives no size update, even if growth was also
@@ -638,6 +641,34 @@ The condition observes the current generation and recovers after accepted settin
 retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
 while locally managed storage exists, even with Ready workloads, and writes status only on change.
 See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
+
+### Replacing a volume (`storage.approveDataDeletion`)
+
+A volume's class can't change, and a StatefulSet's claims outlive it, so a volume on another class, or larger
+than its declared `size`, can only reach its declared storage by being replaced
+([#915](https://github.com/oramasearch/orama-operator/issues/915)). With `approveDataDeletion: true` the operator
+does that, and the volume's data is lost:
+
+```yaml
+engine:
+  writer:
+    storage:
+      size: 512Gi
+      storageClassName: managed-csi-premium
+      approveDataDeletion: true
+```
+
+- **A StatefulSet's volume** (writer, readers, analytics, broker, cache, search, HARVEST's Mongo): the claims
+  that differ, and the StatefulSet, are deleted and created again. Claims that already match are kept.
+- **The control DB**: the CNPG Cluster is deleted and created again, and its schemas, reference rows and `c1`
+  row run again on the new database.
+- **Analytics** also restarts analytics-processor, which creates ClickHouse's tables when it starts.
+
+It is desired state, not a one-time request: every pass compares the spec with the cluster, leaves a matching
+volume alone, and handles a later change the same way. Only declared values count, so `true` with no `size`
+never erases a volume that grew past `10Gi`. While a replacement runs, no component is reconciled, and `Ready`
+and `StorageApplied` are `False / ReplacingStorage` with what is left. A claim another controller owns is
+never replaced. Copying the data to the new volume is not supported yet.
 
 ### `status.conditions[ClusterRowReady]`
 

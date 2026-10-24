@@ -372,7 +372,7 @@ func envNamesOf(env []corev1.EnvVar) []string {
 // public host, which gives it the operator Zetta pair (operator#557).
 func wantLakeOperatorEnv(postgres, deployments bool) []string {
 	names := []string{
-		"LAKE_ADMIN_TOKEN", "LAKE_STORE_ROOT", "LAKE_SEALING_PUBLIC_KEY", "LAKE_SEALING_KID",
+		"LAKE_ADMIN_TOKEN", "LAKE_STORE_ROOT", "LAKE_SEALING_PUBLIC_KEY", "LAKE_SEALING_KID", "ZETTA_EGRESS_ALLOW",
 		"LAKE_APPS_WILDCARD", "LAKE_APPS_RUNTIME_IMAGE", "LAKE_METHODOLOGY_RUNTIME_IMAGE", "LAKE_MCP_RUNNER_IMAGE",
 	}
 	if postgres {
