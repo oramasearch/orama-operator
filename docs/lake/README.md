@@ -93,6 +93,13 @@ lake through Clerk's Backend API, writes a production instance's DNS records, an
 environments. See [`clerk.md`](clerk.md) (operator#541), which also lists the one-time dashboard
 steps and the Secrets to create.
 
+## A customer's own domain
+
+With `spec.customDomain` the Lake also answers on a host the customer owns (white label). The
+operator publishes the CNAME and ownership TXT the customer creates, verifies both by DNS, routes
+the host with its own HTTP-01 certificate, and then makes it the Lake's public host, keeping
+`spec.host` as an alias. See [`custom-domains.md`](custom-domains.md) (operator#947).
+
 ## Payments
 
 With `spec.payments` (a Stripe mode and a Secret with the account and two restricted keys), the

@@ -17,6 +17,9 @@ import (
 // LakeSpec defines the desired state of Lake.
 // +kubebuilder:validation:XValidation:rule="!has(self.payments) || (has(self.host) && size(self.host) > 0)",message="spec.payments needs spec.host: the payment webhook endpoint is https://<host>/billing/stripe/webhook"
 // +kubebuilder:validation:XValidation:rule="!has(self.payments) || (has(self.billing) && self.billing.enabled)",message="spec.payments needs spec.billing.enabled: a Lake with billing off takes no payments"
+// +kubebuilder:validation:XValidation:rule="!has(self.customDomain) || (has(self.host) && size(self.host) > 0 && has(self.ingressEnabled) && self.ingressEnabled)",message="spec.customDomain needs spec.host and spec.ingressEnabled: the Orama host stays the Lake's alias and the custom host is routed through the Lake's ingress"
+// +kubebuilder:validation:XValidation:rule="!has(self.customDomain) || (self.customDomain.host != self.host && (!has(self.apexHost) || self.customDomain.host != self.apexHost))",message="spec.customDomain.host must differ from spec.host and spec.apexHost"
+// +kubebuilder:validation:XValidation:rule="!has(self.customDomain) || !has(self.env) || !self.env.exists(e, e.name == 'LAKE_PUBLIC_HOST' || e.name == 'LAKE_HOST_ALIASES' || e.name == 'LAKE_CONTROL_HOST')",message="with spec.customDomain the operator sets LAKE_PUBLIC_HOST, LAKE_HOST_ALIASES and LAKE_CONTROL_HOST: remove them from spec.env"
 type LakeSpec struct {
 	// Namespace the lake workloads are deployed into. Created if missing.
 	// +kubebuilder:default=lake-dev
@@ -192,6 +195,18 @@ type LakeSpec struct {
 	// +optional
 	ApexHost string `json:"apexHost,omitempty"`
 
+	// CustomDomain serves this Lake on a host in a zone the customer owns, white-labelled
+	// (orama-operator#947, docs/lake/custom-domains.md). The operator writes no DNS record in the
+	// customer's zone: it publishes in status.customDomain the CNAME and the ownership TXT record the
+	// customer creates, checks both by DNS lookup, and only then routes the host, with its own
+	// Let's Encrypt certificate (HTTP-01) that cert-manager renews. Once the certificate is issued
+	// the Lake's public host becomes CustomDomain.Host (LAKE_PUBLIC_HOST); spec.host keeps working
+	// as an alias (LAKE_HOST_ALIASES) and stays the Lake's name on the operator's control rows
+	// (LAKE_CONTROL_HOST). Removing it removes the route, the certificate and the variables.
+	// It needs IngressEnabled and Host.
+	// +optional
+	CustomDomain *LakeCustomDomainSpec `json:"customDomain,omitempty"`
+
 	// Clerk signs people in through a Clerk instance (operator#541, docs/lake/clerk.md). With the
 	// instance's secret key the operator keeps the instance configured for lake through Clerk's
 	// Backend API (the `lake` JWT template, the Lake's allowed origins, the webhook endpoint at
@@ -243,6 +258,63 @@ type LakeSpec struct {
 	// snapshot.storage.k8s.io CRDs. See docs/lake/volume-snapshots.md.
 	// +optional
 	Snapshots LakeSnapshotsSpec `json:"snapshots,omitempty"`
+}
+
+// LakeCustomDomainSpec is a host the customer owns, served by the Lake.
+type LakeCustomDomainSpec struct {
+	// Host is the customer's host name, for example data.example.com. It must be a name the
+	// customer can point a CNAME at: one below their zone's apex, or the apex with a provider that
+	// flattens CNAMEs.
+	// +kubebuilder:validation:MinLength=4
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`
+	Host string `json:"host"`
+}
+
+// LakeCustomDomainStatus is the customer domain as the operator last observed it.
+type LakeCustomDomainStatus struct {
+	// Host is the spec.customDomain.host this status is for.
+	Host string `json:"host"`
+	// Phase is Pending (the records are not both found yet), Verified (both found; the route and
+	// its certificate are being made) or Routed (the host is served with an issued certificate,
+	// and is the Lake's public host).
+	// +kubebuilder:validation:Enum=Pending;Verified;Routed
+	Phase string `json:"phase"`
+	// Records are the DNS records the customer creates in their zone: the CNAME that routes the
+	// host to this cluster, the TXT record that proves they own it, and any record a Clerk
+	// instance on their domain asks for. Found says whether the last lookup saw it.
+	// +optional
+	Records []LakeCustomerDNSRecord `json:"records,omitempty"`
+	// VerifiedTime is when both records were first found for Host. Verification is not undone by
+	// a later failed lookup; Records shows what the lookup sees now.
+	// +optional
+	VerifiedTime *metav1.Time `json:"verifiedTime,omitempty"`
+	// CertificateReady is whether the host's certificate is issued and valid.
+	// +optional
+	CertificateReady bool `json:"certificateReady,omitempty"`
+	// CertificateNotAfter is when the issued certificate expires; cert-manager renews it before.
+	// +optional
+	CertificateNotAfter *metav1.Time `json:"certificateNotAfter,omitempty"`
+	// Message says what is missing, in plain words.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// LakeCustomerDNSRecord is one DNS record the customer creates in their own zone.
+type LakeCustomerDNSRecord struct {
+	// Purpose is routing (sends the host to this cluster), ownership (proves the customer controls
+	// the name) or clerk (a record a Clerk instance on the customer's domain needs).
+	// +kubebuilder:validation:Enum=routing;ownership;clerk
+	Purpose string `json:"purpose"`
+	// Type is CNAME, A, AAAA or TXT.
+	Type string `json:"type"`
+	// Name is the record's full name.
+	Name string `json:"name"`
+	// Value is what the record holds: the CNAME target, the address, or the TXT text.
+	Value string `json:"value"`
+	// Found is whether the operator's last lookup saw the record with this value.
+	// +optional
+	Found bool `json:"found,omitempty"`
 }
 
 // LakeClerkSpec is the Clerk instance a Lake signs people in through.
@@ -815,6 +887,10 @@ type LakeStatus struct {
 	// Sealing publishes the cluster-bound recipient used by authoring tools and lake.
 	// +optional
 	Sealing *LakeSealingStatus `json:"sealing,omitempty"`
+	// CustomDomain reports spec.customDomain: the records the customer creates, whether they are
+	// found, and whether the host is routed (docs/lake/custom-domains.md). Absent without it.
+	// +optional
+	CustomDomain *LakeCustomDomainStatus `json:"customDomain,omitempty"`
 	// Conditions includes StoreReady, BackupReady, ZettaReady, and FeaturesReady, including invalid
 	// configuration details.
 	// +optional

@@ -41,6 +41,7 @@ cluster can differ only by their own `dnsSecretRef`.
 
 | The Lake | The Issuer's solvers | So |
 |---|---|---|
+| Has a `spec.customDomain` (any of the rows below too) | First, HTTP-01 with the selector `dnsNames: [<customer host>]` | The customer's host is always HTTP-01: a `dnsNames` match wins over the zone's `dnsZones` DNS-01 selector and over a solver with no selector ([`custom-domains.md`](custom-domains.md)) |
 | Has a `dnsSecretRef`, and its zone's name is known (`EdgeZonePolicy` `status.zone`) | DNS-01 through the Secret's `token`, with the selector `dnsZones: [<zone>]`; then HTTP-01 with no selector | The zone and every name under it (the Lake's host, apex, wildcards, apps and named environments in the zone) use DNS-01: cert-manager always prefers a solver whose `dnsZones` matches over one with no selector. A custom domain in another zone uses HTTP-01 |
 | Has a `dnsSecretRef`, zone not read yet (or never readable) | DNS-01 alone, no selector | Every name uses DNS-01, as before HTTP-01 existed. A name outside the zone cannot be issued until the zone is read |
 | Has no `dnsSecretRef` (an install that brings its own DNS) | HTTP-01 alone | Every host is issued through HTTP-01. The Lake renders no wildcard Ingress and asks for no wildcard certificate: wildcards need DNS-01 |
@@ -83,6 +84,7 @@ answers it with a temporary Ingress of the Lake's ingress class (`spec.ingressCl
 |---|---|---|
 | `lake-<name>` (Lake namespace) | `host`, `apexHost` | One per host through ingress-shim (`applyIngressTLS`), Secret `<host>-tls`. A hand-supplied `spec.tls.secretName` replaces them |
 | `lake-<name>-apps-wildcard` (Lake namespace) | `*.<apps wildcard>` (default `*.<host>`) | The apps wildcard certificate, Secret `wildcard.<suffix>-tls` |
+| `lake-<name>-custom-domain` (Lake namespace) | `spec.customDomain.host`, once verified | Its own `Certificate` `<host>-tls`, HTTP-01 through a solver selected for that name alone; none of the edge settings below, because the customer's users do not come through Orama's zone ([`custom-domains.md`](custom-domains.md)) |
 | `lake-<name>-preview-wildcard` (Lake namespace) | `*.<previewWildcard>`, when set | The preview wildcard certificate |
 | A `LakeApp`'s Ingress (workspace namespace) | The app's host | Under the apps wildcard (one label): a copy of the wildcard certificate. Any other host: its own `Certificate` `<host>-tls` in the Lake namespace, owned by the `LakeApp` |
 | A `LakeEnvironment`'s Ingress (workspace namespace) | The environment's host and its domains | A preview host: a copy of the preview wildcard certificate. A named host and each domain: its own `Certificate` in the Lake namespace, owned by the `LakeEnvironment` |
