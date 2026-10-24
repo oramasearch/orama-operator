@@ -1005,6 +1005,7 @@ UNION ALL SELECT 'model_token_prices_guard=' || count(*) FROM model_token_prices
 UNION ALL SELECT 'email_recovery_limits_guard=' || count(*) FROM email_recovery_limits_guard
 UNION ALL SELECT 'cloud_order_entitlements_guard=' || count(*) FROM cloud_order_entitlements_guard
 UNION ALL SELECT 'authentication_attempts_guard=' || count(*) FROM authentication_attempts_guard
+UNION ALL SELECT 'account_balances_guard=' || count(*) FROM account_balances_guard
 `
 
 // postgresMissingMigrationsQuery returns, space-separated, every migration the vendored lake schema

@@ -4909,3 +4909,62 @@ CREATE TABLE IF NOT EXISTS authentication_attempts_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO schema_migrations(version) VALUES ('0098_authentication_attempts') ON CONFLICT DO NOTHING;
+-- 0099_account_balances (lake#1114, liquid-bridge decision 67, docs/api/billing.md#balance): a
+-- prepaid balance per account on lake.live. Billing records, so in the control plane (decision 56):
+-- the account's row (settings, the last refresh, which crossings' emails went, auto top-up), its
+-- credits (paid top-ups, once per provider reference) and its charges (each month's usage at the
+-- list in force, refreshed by the store root's owner; usage itself stays in each workspace Zetta).
+-- The balance is the credits minus the charges. Amounts are millionths of a US dollar.
+CREATE TABLE IF NOT EXISTS account_balances (
+    customer_id                     uuid        PRIMARY KEY REFERENCES customers(id) ON DELETE CASCADE,
+    first_top_up_at                 timestamptz,
+    overdraft_limit_micros          bigint      CHECK (overdraft_limit_micros IS NULL OR
+                                                       overdraft_limit_micros BETWEEN 0 AND 1000000000000),
+    charges_refreshed_at            timestamptz,
+    refresh_error                   text        NOT NULL DEFAULT '' CHECK (length(refresh_error) <= 1024),
+    refresh_failed_at               timestamptz,
+    limit_warning_notified_at       timestamptz,
+    negative_notified_at            timestamptz,
+    blocked_notified_at             timestamptz,
+    auto_top_up                     boolean     NOT NULL DEFAULT false,
+    auto_top_up_threshold_micros    bigint      NOT NULL DEFAULT 5000000
+                                                CHECK (auto_top_up_threshold_micros BETWEEN 0 AND 1000000000000),
+    auto_top_up_amount_micros       bigint      NOT NULL DEFAULT 20000000
+                                                CHECK (auto_top_up_amount_micros BETWEEN 1 AND 1000000000000),
+    auto_top_up_payment_method      text        NOT NULL DEFAULT ''
+                                                CHECK (length(auto_top_up_payment_method) <= 255),
+    auto_top_up_pending             text        NOT NULL DEFAULT '' CHECK (length(auto_top_up_pending) <= 255),
+    auto_top_up_started_at          timestamptz,
+    auto_top_up_sequence            bigint      NOT NULL DEFAULT 0 CHECK (auto_top_up_sequence >= 0),
+    auto_top_up_day                 date,
+    auto_top_ups_today              integer     NOT NULL DEFAULT 0 CHECK (auto_top_ups_today >= 0),
+    auto_top_up_off_reason          text        NOT NULL DEFAULT ''
+                                                CHECK (length(auto_top_up_off_reason) <= 1024),
+    auto_top_up_failure_notified_at timestamptz,
+    version                         bigint      NOT NULL DEFAULT 1 CHECK (version >= 1),
+    updated_at                      timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS account_balance_credits (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id   uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    kind          text        NOT NULL CHECK (kind IN ('top_up', 'auto_top_up')),
+    amount_micros bigint      NOT NULL CHECK (amount_micros > 0),
+    provider      text        NOT NULL CHECK (provider ~ '^[a-z][a-z0-9_]{0,31}$'),
+    reference     text        NOT NULL CHECK (length(reference) BETWEEN 1 AND 255),
+    event_id      text        NOT NULL DEFAULT '' CHECK (length(event_id) <= 255),
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (provider, reference)
+);
+CREATE INDEX IF NOT EXISTS account_balance_credits_by_customer
+    ON account_balance_credits (customer_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS account_balance_charges (
+    customer_id   uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    period        text        NOT NULL CHECK (period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+    amount_micros bigint      NOT NULL CHECK (amount_micros >= 0),
+    price_list_id text        NOT NULL DEFAULT '' CHECK (length(price_list_id) <= 64),
+    invoice_id    uuid        REFERENCES billing_invoices(id) ON DELETE SET NULL,
+    refreshed_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (customer_id, period)
+);
+CREATE TABLE IF NOT EXISTS account_balances_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0099_account_balances') ON CONFLICT DO NOTHING;
