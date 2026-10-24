@@ -31,17 +31,46 @@ func TestSchemaMigrationSedMatchesGo(t *testing.T) {
 	if !reflect.DeepEqual(fromSed, fromGo) {
 		t.Fatalf("sed found %d versions, Go found %d:\nsed: %v\ngo:  %v", len(fromSed), len(fromGo), fromSed, fromGo)
 	}
-	if want := strings.Count(lakeSchemaSQL, "INSERT INTO schema_migrations (version) VALUES ('"); len(fromGo) != want {
+	want := strings.Count(lakeSchemaSQL, "INSERT INTO schema_migrations (version) VALUES ('") +
+		strings.Count(lakeSchemaSQL, "INSERT INTO schema_migrations(version) VALUES ('")
+	if len(fromGo) != want {
 		t.Fatalf("extracted %d versions, schema has %d migration records", len(fromGo), want)
 	}
-	found := false
-	for _, version := range fromGo {
-		if version == "0067_workspace_store" {
-			found = true
+	// 0098 is written schema_migrations(version), with no space (#948).
+	for _, wanted := range []string{"0067_workspace_store", "0098_authentication_attempts"} {
+		found := false
+		for _, version := range fromGo {
+			if version == wanted {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s not extracted", wanted)
 		}
 	}
-	if !found {
-		t.Fatal("0067_workspace_store not extracted")
+}
+
+// TestSchemaMigrationPatternAcceptsOptionalWhitespace covers #948: a migration record written
+// `schema_migrations(version)` (no space, as lake writes 0098) or with a tab is extracted by both the
+// Go pattern and the Job's sed.
+func TestSchemaMigrationPatternAcceptsOptionalWhitespace(t *testing.T) {
+	schema := "INSERT INTO schema_migrations (version) VALUES ('0097_cloud_order_entitlements') ON CONFLICT DO NOTHING;\n" +
+		"INSERT INTO schema_migrations(version) VALUES ('0098_authentication_attempts') ON CONFLICT DO NOTHING;\n" +
+		"  INSERT INTO schema_migrations\t(version) VALUES ('0099_account_balances') ON CONFLICT DO NOTHING;\n"
+	want := []string{"0097_cloud_order_entitlements", "0098_authentication_attempts", "0099_account_balances"}
+	if got := schemaMigrationVersions(schema); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Go pattern found %v, want %v", got, want)
+	}
+	path := filepath.Join(t.TempDir(), "schema.sql")
+	if err := os.WriteFile(path, []byte(schema), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("sh", "-c", pgSchemaMigrationSed+" "+path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("sed: %v\n%s", err, output)
+	}
+	if got := strings.Fields(string(output)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("sed found %v, want %v", got, want)
 	}
 }
 
@@ -102,12 +131,16 @@ func runPgMigrationScript(t *testing.T, schema string, env ...string) string {
 // the newest guard but missing an earlier migration's schema_migrations row re-applies the schema.
 func TestPgMigrationScriptDecidesFromEveryMigration(t *testing.T) {
 	all := schemaMigrationVersions(lakeSchemaSQL)
-	var withoutStore []string
-	for _, version := range all {
-		if version != "0067_workspace_store" {
-			withoutStore = append(withoutStore, version)
+	without := func(skip string) []string {
+		var kept []string
+		for _, version := range all {
+			if version != skip {
+				kept = append(kept, version)
+			}
 		}
+		return kept
 	}
+	withoutStore := without("0067_workspace_store")
 	cases := []struct {
 		name    string
 		schema  string
@@ -119,6 +152,9 @@ func TestPgMigrationScriptDecidesFromEveryMigration(t *testing.T) {
 		{name: "guard present, earlier migration missing", schema: lakeSchemaSQL, applies: true,
 			env:     []string{"FAKE_GUARD=1", "FAKE_MIGRATIONS_TABLE=1", "FAKE_APPLIED=" + strings.Join(withoutStore, " ")},
 			message: "workspace_volumes_guard present but schema_migrations lacks: 0067_workspace_store"},
+		{name: "guard present, no-space migration missing", schema: lakeSchemaSQL, applies: true,
+			env:     []string{"FAKE_GUARD=1", "FAKE_MIGRATIONS_TABLE=1", "FAKE_APPLIED=" + strings.Join(without("0098_authentication_attempts"), " ")},
+			message: "workspace_volumes_guard present but schema_migrations lacks: 0098_authentication_attempts"},
 		{name: "guard present, every migration recorded", schema: lakeSchemaSQL,
 			env:     []string{"FAKE_GUARD=1", "FAKE_MIGRATIONS_TABLE=1", "FAKE_APPLIED=" + strings.Join(all, " ")},
 			message: "schema already applied (workspace_volumes_guard present, every schema_migrations row recorded) — nothing to do"},
