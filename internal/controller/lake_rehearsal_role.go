@@ -15,7 +15,19 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-const lakeRehearsalRoleName = "lake_rehearsal"
+const (
+	lakeRehearsalRoleName = "lake_rehearsal"
+	// lakeRehearsalLakeLabel names the Lake a rehearsal's scratch namespace and verifier pods
+	// belong to. The Lake's network sandbox admits verifier pods carrying it to the control
+	// database (allow-rehearsal-ingress-to-controldb).
+	lakeRehearsalLakeLabel = "orama.cloud/rehearsal-lake"
+	lakeRehearsalAppName   = "lake-postgres-rehearsal"
+)
+
+// lakeRehearsalPodLabels are the labels of a rehearsal verifier pod for one Lake.
+func lakeRehearsalPodLabels(lake string) map[string]string {
+	return map[string]string{"app.kubernetes.io/name": lakeRehearsalAppName, lakeRehearsalLakeLabel: lake}
+}
 
 func lakeRehearsalSecretName(lake *oramav1alpha1.Lake) string {
 	return lakeControlDB(lake.Name) + "-rehearsal"

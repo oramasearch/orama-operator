@@ -69,6 +69,32 @@ spec:
     - {name: clerk-lake-prod, namespace: lake, as: clerk-secret-key}
     - {name: stripe-live, namespace: lake, as: stripe}
   deletionPolicy: Retain
+  # Restore rehearsals (orama-operator#127, docs/lake/restore-rehearsals.md). Each entry becomes a
+  # LakeRestoreRehearsal on its member's cluster that restores into a throwaway scratch namespace
+  # and never touches the live claim, database, snapshots or backups. Commented out until the
+  # managing cluster runs an operator that knows spec.restoreRehearsals and the leaves run one with
+  # the store rehearsal and the rehearsal network allowance (the release after v0.9.5): applied
+  # earlier, the API server refuses the unknown field. Uncommenting and applying this file is
+  # Steve's consent. A rehearsal's spec cannot change: to run one again, add a new name.
+  #
+  # The store: restores the newest ready CSI snapshot of lake-<member>-store and reads every file.
+  # restoreRehearsals:
+  # - name: shared-store-restore-20261024
+  #   member: shared
+  #   spec: {service: store, operation: restore, from: latest}
+  # - name: shared-us-store-restore-20261024
+  #   member: shared-us
+  #   spec: {service: store, operation: restore, from: latest}
+  #
+  # The control database: needs spec.postgres.backup enabled (no CNPG Backup exists for either
+  # member on 2026-10-24, orama-operator#957) and spec.postgres.image pinned by digest
+  # (orama-operator#958). Until both, it fails at once with the reason and makes nothing.
+  # - name: shared-postgres-restore-20261024
+  #   member: shared
+  #   spec: {service: postgres, operation: restore, from: latest}
+  # - name: shared-us-postgres-restore-20261024
+  #   member: shared-us
+  #   spec: {service: postgres, operation: restore, from: latest}
   secrets:
   - name: oramasearch-dockerhub
     namespace: lake

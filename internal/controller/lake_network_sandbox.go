@@ -431,6 +431,19 @@ func lakeInternalIngressAllowances(
 		{"allow-e2e-ingress-to-lake", "The LakeE2ETest runner Job in this Lake's namespace calls the Lake API (REST, MCP and liquid sync) as a freshly signed-up test person.", lakePods,
 			[]networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(lakeE2ELabel)}}}},
 			int32(lakeContainerPort(lake))},
+		// A LakeRestoreRehearsal's read-only verifier compares the live control database with the
+		// restored one (a Job in the rehearsal's scratch namespace) or checks it after a failover (a
+		// Job in this namespace). Without this every Postgres rehearsal on a sandboxed Lake fails at
+		// "read-only rehearsal login is unavailable". Only verifier pods of this Lake are let in,
+		// from this namespace or from a scratch namespace the operator labelled for this Lake.
+		{"allow-rehearsal-ingress-to-controldb", "LakeRestoreRehearsal verifier Jobs read the control database with the read-only rehearsal login, from this namespace or from this Lake's scratch namespace.", databasePods,
+			[]networkingv1.NetworkPolicyPeer{
+				{PodSelector: &metav1.LabelSelector{MatchLabels: lakeRehearsalPodLabels(lake.Name)}},
+				{
+					NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{lakeRehearsalLakeLabel: lake.Name}},
+					PodSelector:       &metav1.LabelSelector{MatchLabels: lakeRehearsalPodLabels(lake.Name)},
+				},
+			}, 5432},
 	}
 	policies := make([]oramav1alpha1.NetworkSandboxPolicy, 0, len(paths))
 	for _, path := range paths {

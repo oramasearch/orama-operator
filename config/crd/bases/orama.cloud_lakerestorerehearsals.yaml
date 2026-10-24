@@ -62,8 +62,10 @@ spec:
               from:
                 default: latest
                 description: |-
-                  From selects the completed CNPG Backup. Empty or latest selects the newest completed backup;
-                  any other value is the name of a Backup object owned by the Lake control DB.
+                  From selects what is restored. Empty or latest selects the newest completed CNPG Backup
+                  (postgres) or the newest ready VolumeSnapshot the operator took of the store (store). Any
+                  other value is the name of a Backup owned by the Lake control DB, or of an operator-taken
+                  store VolumeSnapshot, in the Lake's namespace.
                 type: string
               lakeRef:
                 description: LakeRef names the cluster-scoped Lake whose data service
@@ -78,9 +80,13 @@ spec:
                 - failover
                 type: string
               service:
-                description: Service is the data service to rehearse.
+                description: |-
+                  Service is what is rehearsed: postgres, the CNPG control database restored from its CNPG
+                  object-store Backups, or store, Lake's store volume restored from the operator's CSI
+                  VolumeSnapshots of it (docs/lake/volume-snapshots.md). The store supports only restore.
                 enum:
                 - postgres
+                - store
                 type: string
               targetImage:
                 description: |-
@@ -98,6 +104,8 @@ spec:
             - message: targetImage is required for upgrade
               rule: self.operation != 'upgrade' || (has(self.targetImage) && size(self.targetImage)
                 > 0)
+            - message: the store service supports only the restore operation
+              rule: self.service != 'store' || self.operation == 'restore'
           status:
             description: LakeRestoreRehearsalStatus records a durable lifecycle rehearsal
               outcome.
@@ -106,6 +114,11 @@ spec:
                 description: CompletedAt is set once with the terminal outcome and
                   Lake status recording.
                 format: date-time
+                type: string
+              evidence:
+                description: |-
+                  Evidence is what the verifier reported on success or failure: for a store restore, the
+                  restored volume's file count, size and top-level entries.
                 type: string
               message:
                 description: Message describes the current stage or terminal outcome.
@@ -134,6 +147,11 @@ spec:
               selectedBackup:
                 description: SelectedBackup is the CNPG Backup object selected for
                   a restore or upgrade.
+                type: string
+              selectedSnapshot:
+                description: |-
+                  SelectedSnapshot is the store VolumeSnapshot selected for a store restore, in the Lake's
+                  namespace.
                 type: string
               startedAt:
                 description: StartedAt is set once when the controller accepts the

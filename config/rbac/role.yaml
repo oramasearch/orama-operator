@@ -555,6 +555,8 @@ rules:
   resources:
   - volumesnapshotcontents
   verbs:
+  - create
+  - delete
   - get
   - list
   - patch

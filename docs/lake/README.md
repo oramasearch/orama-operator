@@ -22,9 +22,12 @@ key and publishes its recipient in status; namespaced `LakeSealedSecret` resourc
 cluster-bound ciphertext into owned, labelled Kubernetes Secrets without putting plaintext in the
 authored resource ([sealed-secrets.md](sealed-secrets.md)). `kubectl get lake` reports managed and
 unmanaged data-service counts, and operation-level status never implies untested protection;
-`LakeRestoreRehearsal` automates Postgres restore, scratch upgrade and replicated failover proof
+`LakeRestoreRehearsal` automates Postgres restore, scratch upgrade and replicated failover proof,
+and a store restore from the store's CSI snapshots
 ([data-services/README.md](data-services/README.md),
-[data-services/postgres.md](data-services/postgres.md)).
+[data-services/postgres.md](data-services/postgres.md)). A `LakeSet` declares rehearsals of its
+members in `spec.restoreRehearsals`; the lake-prod runbook, with what backups exist per region, is
+[restore-rehearsals.md](restore-rehearsals.md).
 
 Desired deployment events in the operator's Zetta control plane become Lake-owned
 `LakeEnvironment` CRs: one restricted, quota-bound `untrusted` runtime namespace per named or

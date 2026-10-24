@@ -100,5 +100,8 @@ either side lacks a migration the vendored lake schema records, records success 
 resources. See [Postgres data-service rehearsals](data-services/postgres.md) for restore, upgrade,
 and failover details.
 
-The live recovery rehearsal remains deferred until `lake-prod-backups-r2` is available. Do not run
-it on AKS `Lake/prod` as part of an operator code change.
+The live recovery rehearsal remains deferred until backups are enabled. On lake.live the Lakes are
+`shared` (EU) and `shared-us` (US) on the production leaf clusters, and on 2026-10-24 neither had
+`spec.postgres.backup` enabled: no Barman object store, no `ScheduledBackup`, no CNPG `Backup`.
+What exists, what is missing and how the rehearsal is declared from the `lake-prod` set file are in
+[restore rehearsals](restore-rehearsals.md). Do not run it as part of an operator code change.
