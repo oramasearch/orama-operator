@@ -16,7 +16,7 @@
 # Apply it only once orama-production-cluster-02 runs an operator with orama-operator#920: an older CRD
 # drops storage.approveDataDeletion, and v1-eu's sandbox volumes would stay on Standard SSD.
 # Juan chose to leave the live sandbox-shaped set unchanged until this production file is ready
-# (#885, 2026-10-23). Both live members remain Ready=False at the dashboard authentication gate.
+# (#885, 2026-10-23). Both live members are now Ready; standalone auth is tracked in #929.
 #
 # Secrets
 # -------
@@ -35,7 +35,7 @@
 #                                                        (cloudflare.apiTokenSecretRef); limited to the orama.ing
 #                                                        zone and the account's KV and R2 storage
 # Copied, v1-eu member only (`secrets` under the member, so v1-us never receives them):
-#   clerk-lake-prod (lake)  publishableKey, secretKey    the dashboard's Clerk keys, Lake's production instance
+#   clerk-cloud-v1-prod (orama-system) publishableKey, secretKey  Cloud v1's own production Clerk instance
 #   v1-prod-master-api-key  MASTER_API_KEY               masterAPIKeySecretRef -> writer, analytics processor,
 #                                                        index-builder, workers, dashboard, and the target-local
 #                                                        `c1` row (#447). Must equal Prod 1's
@@ -76,7 +76,7 @@
 #
 #   Not copied: AIRBYTE_WEBHOOK_SECRET and every AIRBYTE_* (Airbyte removed, bridge decisions 2026-10-16
 #   #12a); Firebase keys (sign-in is Clerk before the cutover, decisions #1, #2).
-#   Sign-in comes from the Clerk keys in lake/clerk-lake-prod (copied, v1-eu only; orama-bridge#244).
+#   Sign-in comes from the Clerk keys in orama-system/clerk-cloud-v1-prod (copied, v1-eu only; orama-bridge#250).
 #   idp.provider stays unset: the operator reads it only for keycloak.
 #
 # Generated (never copied, never shared between members):
@@ -162,8 +162,8 @@
 #     Scoped Vercel production candidates are staged privately where available, not installed.
 #     PRIVATE_API_KEY is prepared in this source (64 hex characters); the target import consumer
 #     reads the same dashboard source. Shared email/Slack inputs require isolation review.
-#     Clerk keys come from lake/clerk-lake-prod, copied into v1-eu by this set; app.orama.ing must be
-#     registered as a satellite of Lake's production instance, with clerk.app.orama.ing its CNAME.
+#     Clerk keys come from orama-system/clerk-cloud-v1-prod, copied only into v1-eu.
+#     Its standalone Frontend API is clerk.orama.ing; dashboard sign-in stays on app.orama.ing/login.
 #     controlDB.stripePrices carries Prod 1's live-mode price IDs (#378).
 #     REDIS_CACHE_URL/TOKEN and NEXT_PUBLIC_APP_URL in envFrom are overridden by operator env entries;
 #     uploads endpoint/bucket/region/access keys likewise use the owned R2 Secret once provisioned.
@@ -191,11 +191,9 @@ spec:
       namespace: orama-system
     - name: v1-prod-dashboard-stripe
       namespace: orama-system
-    # Lake's production Clerk instance (keys publishableKey, secretKey). The dashboard is its satellite
-    # on app.orama.ing (orama-bridge#244; replaces decisions of 21 October, 6, whose clerk.orama.com is
-    # Orama Console's).
-    - name: clerk-lake-prod
-      namespace: lake
+    # Cloud v1's standalone production Clerk instance (orama-bridge#250).
+    - name: clerk-cloud-v1-prod
+      namespace: orama-system
     spec:
       profile: medium
       jwtIssuer: https://app.orama.ing
@@ -223,9 +221,9 @@ spec:
       images:
         overrides:
           # The production dashboard: dashboard dev 56f355da built with orama-cloud-v1-bridge
-          # build/images/dashboard/public.env.v1-prod (app.orama.ing, Lake's production Clerk); recorded in
-          # orama-cloud-v1-bridge#17.
-          dashboard: oramasearch/dashboard:v1-prod-56f355da@sha256:4276ee5301ee610b28d0c2f06d208ce4a454f4b2a58abdf75abfa2fab8727050
+          # build/images/dashboard/public.env.v1-prod (app.orama.ing, standalone Cloud v1 Clerk);
+          # recorded in orama-cloud-v1-bridge#19.
+          dashboard: oramasearch/dashboard:v1-prod-56f355da-cv1@sha256:79a3df5f1a1f899c7e39c68ed2c2dfafde97913a3ddb3fab14f8b979ce61bc6b
       # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
       # default is Standard SSD. v1-eu was created as a sandbox on 10Gi Standard SSD volumes, which
       # cannot change class in place, so each volume approves its replacement (approveDataDeletion,
@@ -265,22 +263,16 @@ spec:
           enabled: true
           host: app.orama.ing
           # app.orama.com is added as an extra host at the cutover, which decides whether it serves
-          # the dashboard or redirects to app.orama.ing. Until then it stays Prod 1's.
+          # the dashboard directly at cutover (orama-bridge#246). Until then it stays Prod 1's.
           envFrom:
           - secretRef: { name: v1-prod-dashboard-env }
-          # Clerk sign-in as a satellite of Lake's production instance. The NEXT_PUBLIC_* values are
-          # also compiled into the image (public.env.v1-prod); the server reads them at runtime, so the
-          # two must match. The dashboard refuses Lake's keys unless app.orama.ing is registered as the
-          # instance's satellite.
+          # Cloud v1's own Clerk application, with sign-in on /login. Public runtime values
+          # match the image's build/images/dashboard/public.env.v1-prod inputs.
           env:
           - name: CLERK_SECRET_KEY
-            valueFrom: {secretKeyRef: {name: clerk-lake-prod, key: secretKey}}
+            valueFrom: {secretKeyRef: {name: clerk-cloud-v1-prod, key: secretKey}}
           - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-            valueFrom: {secretKeyRef: {name: clerk-lake-prod, key: publishableKey}}
-          - {name: NEXT_PUBLIC_CLERK_IS_SATELLITE, value: "true"}
-          - {name: NEXT_PUBLIC_CLERK_DOMAIN, value: app.orama.ing}
-          - {name: NEXT_PUBLIC_CLERK_SIGN_IN_URL, value: https://accounts.lake.live/sign-in}
-          - {name: NEXT_PUBLIC_CLERK_SIGN_UP_URL, value: https://accounts.lake.live/sign-up}
+            valueFrom: {secretKeyRef: {name: clerk-cloud-v1-prod, key: publishableKey}}
           - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app.orama.ing/auth/complete}
           - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app.orama.ing/auth/complete}
           stripeSecretKeySecretRef:
