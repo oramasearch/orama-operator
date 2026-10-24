@@ -25,6 +25,10 @@ spec:
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
+      # Order email (lake docs/api/orders.md#email): Orama's Resend key, sending-only for lake.live;
+      # the sender defaults to "Lake <orders@lake.live>" (lake.live verified in Resend).
+      - name: LAKE_RESEND_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-resend, key: api_key}}
       # Production on lake.live (decision 64, #513): the EU region, and the region picker at the apex.
       host: eu.lake.live
       apexHost: lake.live
@@ -55,6 +59,10 @@ spec:
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
+      # Order email (lake docs/api/orders.md#email): Orama's Resend key, sending-only for lake.live;
+      # the sender defaults to "Lake <orders@lake.live>" (lake.live verified in Resend).
+      - name: LAKE_RESEND_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-resend, key: api_key}}
       host: us.lake.live
       region:
         label: United States
@@ -71,6 +79,8 @@ spec:
   - name: lake-prod-openai
     namespace: lake
   - name: lake-prod-stripe
+    namespace: lake
+  - name: lake-prod-resend
     namespace: lake
   template:
     # lake.live hosts: the token scoped to the lake.live zone only (decision 64).
