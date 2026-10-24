@@ -197,8 +197,9 @@ spec:
         # R2 upload signing (dashboard#186), the new-device sign-in code (dashboard#190), custom system
         # prompts read from the writer (dashboard#192) and GitHub sign-in hidden until #245 (dashboard#193);
         # built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-dev, recorded in
-        # orama-cloud-v1-bridge#22.
-        dashboard: oramasearch/dashboard:v1-dev-acb8b744-cv1@sha256:a2901ce946ff06490627b9c5074f72ba50026417f1196d0dfcc43f4622cc17ae
+        # orama-cloud-v1-bridge#23. Sentry shares the Orama project with environment v1-dev
+        # and dashboard@79abacb32d8461c06531ba7a906ab559890a907b (dashboard#194).
+        dashboard: oramasearch/dashboard:v1-dev-79abacb3-sentry@sha256:1fdf0fd4a1a9d50b8a4808d7992612d4bcdbde3f41e7e8de4ff730a4f65d9d70
         # The combined OramaCore engine from oramacore-private develop 91a1b086: caca2a59 (v1.2.39 with
         # oramacore#340, #341 and #343) plus the security fixes LSR-063, -064, -149 to -155, -234 and -235.
         oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-91a1b086@sha256:c55d42b1dbf1d057ca14001bf3fedf883ab06573386fd87c8e4557d7e5aed05a
