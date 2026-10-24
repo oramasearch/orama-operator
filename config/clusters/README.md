@@ -141,6 +141,12 @@ and key provenance before applying a set that names it.
 | `stripe-live` | `lake` | live mode, for `lake-prod` |
 | `stripe-v1-dev` | `orama-system` | the `dev` sandbox, for `v1-dev` |
 
+The production EU member now declares `billing.enabled: true` and live `payments`, using
+`lake/stripe-live` copied as `stripe`. US retains its legacy env entries until EU's gate passes;
+its separate follow-up removes the common `lake-prod-stripe` copy after the last reader moves.
+The [sets index](sets/README.md) describes the staged file state. Verify the live source and obtain
+the production go-ahead before applying; this declaration alone does not prove active payments.
+
 ### Moving a member to `spec.billing`
 
 The `lake-nonprod` set declares `billing.enabled: true`; its migration is pending a reviewed
