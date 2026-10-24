@@ -1182,6 +1182,7 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		"LAKE_SEALING_PUBLIC_KEY":        {},
 		"LAKE_SERVICE_DIR":               {},
 		"LAKE_STORE_ROOT":                {},
+		zettaEgressAllowEnv:              {},
 	}
 	var explicitAppsWildcard *corev1.EnvVar
 	for i := range lake.Spec.Env {
@@ -1197,6 +1198,10 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		{Name: "LAKE_STORE_ROOT", Value: lakeStorePath},
 		{Name: "LAKE_SEALING_PUBLIC_KEY", Value: base64.RawURLEncoding.EncodeToString(sealing.PublicKey)},
 		{Name: "LAKE_SEALING_KID", Value: sealing.KID},
+		// lake's own allowlist for zetta's client (lake#1097), which refuses all but loopback without
+		// one: lake reaches its bus Zetta, its workspace Zettas, agent services and service wrappers
+		// through it, all in the cluster. The namespace's network policy decides which of them.
+		{Name: zettaEgressAllowEnv, Value: lakeDeploymentEgressAllow},
 	}
 	if explicitAppsWildcard != nil {
 		env = append(env, *explicitAppsWildcard.DeepCopy())

@@ -545,7 +545,7 @@ Lake opens one libliquid store per customer below
 the operator's variables in the container spec. The operator ignores custom entries named
 `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`,
 `LAKE_DATA_PLANE_URL`, `LAKE_DATA_PLANE_TOKEN`, `LAKE_INTERNAL_URL`,
-`LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, or `LAKE_STORE_ROOT`, so the reconciled Secret,
+`LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, `LAKE_STORE_ROOT` or `ZETTA_EGRESS_ALLOW`, so the reconciled Secret,
 Service, and volume contracts always win. `LAKE_APPS_WILDCARD` is the exception: an explicit entry
 wins over `spec.apps.wildcard`, and the operator renders it only once.
 
@@ -563,7 +563,12 @@ Lake reads these configurable variables:
 The operator additionally supplies `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`,
 `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, `LAKE_DATA_PLANE_URL`,
 `LAKE_DATA_PLANE_TOKEN`, `LAKE_SEALING_PUBLIC_KEY`,
-`LAKE_SEALING_KID`, and `LAKE_STORE_ROOT` from managed resources.
+`LAKE_SEALING_KID`, and `LAKE_STORE_ROOT` from managed resources, and `ZETTA_EGRESS_ALLOW=*.svc.cluster.local`:
+lake installs it as the allowlist of zetta's client, which it uses for its bus Zetta, its workspace
+Zettas, agent services and service wrappers, all in the cluster. Without it zetta v0.5.0's client
+reaches only loopback ([lake#1097](https://github.com/oramasearch/lake/issues/1097)). Workspace
+namespaces are made at runtime, so they are matched by suffix rather than listed; the namespace's
+NetworkPolicy still decides which in-cluster services lake reaches.
 
 ```sh
 kubectl create namespace lake
