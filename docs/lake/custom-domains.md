@@ -144,6 +144,6 @@ brings its own DNS) gets a routing record pointing at the load balancer itself.
 - **Apps and previews under the customer's name.** `spec.apps.wildcard` and `spec.previewWildcard`
   need wildcard certificates, which need DNS-01 in the customer's zone (an `_acme-challenge` CNAME
   delegated to a zone Orama controls). Until then a white-labelled Lake's apps stay under the Orama
-  apps wildcard.
+  apps wildcard ([operator#962](https://github.com/oramasearch/orama-operator/issues/962)).
 - **The managing cluster's view.** A `LakeSet` member reports the Lake's phase, not its customer
   records; read them on the member's cluster.
