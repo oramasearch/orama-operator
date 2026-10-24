@@ -1000,6 +1000,11 @@ UNION ALL SELECT 'billing_contacts_guard=' || count(*) FROM billing_contacts_gua
 UNION ALL SELECT 'account_deletion_guard=' || count(*) FROM account_deletion_guard
 UNION ALL SELECT 'saml_sign_in_guard=' || count(*) FROM saml_sign_in_guard
 UNION ALL SELECT 'root_recovery_participants_guard=' || count(*) FROM root_recovery_participants_guard
+UNION ALL SELECT 'clerk_revocation_guard=' || count(*) FROM clerk_revocation_guard
+UNION ALL SELECT 'model_token_prices_guard=' || count(*) FROM model_token_prices_guard
+UNION ALL SELECT 'email_recovery_limits_guard=' || count(*) FROM email_recovery_limits_guard
+UNION ALL SELECT 'cloud_order_entitlements_guard=' || count(*) FROM cloud_order_entitlements_guard
+UNION ALL SELECT 'authentication_attempts_guard=' || count(*) FROM authentication_attempts_guard
 `
 
 // postgresMissingMigrationsQuery returns, space-separated, every migration the vendored lake schema

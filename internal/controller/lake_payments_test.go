@@ -273,7 +273,10 @@ func TestLakePaymentsGiveTheStripeEnvOnlyOnceEverythingIsInPlace(t *testing.T) {
 		URL:         "https://testing.lake.example/billing/stripe/webhook",
 		Events: []string{
 			"checkout.session.async_payment_failed", "checkout.session.async_payment_succeeded", "checkout.session.completed",
-			"checkout.session.expired", "invoice.paid", "invoice.payment_failed", "invoice.voided",
+			"checkout.session.expired", "customer.subscription.created", "customer.subscription.deleted",
+			"customer.subscription.paused", "customer.subscription.resumed", "customer.subscription.updated",
+			"invoice.marked_uncollectible", "invoice.paid", "invoice.payment_action_required", "invoice.payment_failed",
+			"invoice.updated", "invoice.voided",
 		},
 		APIVersion: "2024-06-20", App: "lake", SigningSecretName: "lake-testing-payments-webhook",
 	}
