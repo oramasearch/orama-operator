@@ -9,8 +9,10 @@
 # an object merges field by field, a list replaces the template's list), so a member cannot remove a
 # template field. The template holds only what both members share; each member carries the rest.
 #
-# NOT READY FOR CUTOVER. Applying this file needs Steve's explicit consent, and it is not applied while
-# any item under "Blocked" below remains.
+# NOT READY FOR CUTOVER. Applying this file needs Steve's explicit consent. Since 2026-10-24 it brings
+# v1-eu up on its production names under orama.ing, production's root domain (Juan, orama-bridge#244),
+# for the end-to-end test there, with no customer data copied and every cron and import suspended.
+# The items under "Blocked" below must be closed before the cutover, not before that test.
 # Juan chose to leave the live sandbox-shaped set unchanged until this production file is ready
 # (#885, 2026-10-23). Both live members remain Ready=False at the dashboard authentication gate.
 #
@@ -27,8 +29,12 @@
 # Copied, set level (both members):
 #   oramasearch-dockerhub   .dockerconfigjson            every pod's imagePullSecrets (images.pullSecretName)
 #   cloudflare-api-token    token, zoneID, accountID     CloudflareDNSRecord, KV namespaces, the stack's
-#                                                        Let's Encrypt DNS-01 Issuer (cloudflare.apiTokenSecretRef)
+#                                                        Let's Encrypt DNS-01 Issuer (cloudflare.apiTokenSecretRef);
+#                                                        oramadev.net only, so v1-us uses it and v1-eu does not
 # Copied, v1-eu member only (`secrets` under the member, so v1-us never receives them):
+#   cloudflare-api-token-orama-ing  token, zoneID, accountID  the same uses for v1-eu, limited to the
+#                                                        orama.ing zone and the account's KV and R2 storage
+#   clerk-lake-prod (lake)  publishableKey, secretKey    the dashboard's Clerk keys, Lake's production instance
 #   v1-prod-master-api-key  MASTER_API_KEY               masterAPIKeySecretRef -> writer, analytics processor,
 #                                                        index-builder, workers, dashboard, and the target-local
 #                                                        `c1` row (#447). Must equal Prod 1's
@@ -69,7 +75,7 @@
 #
 #   Not copied: AIRBYTE_WEBHOOK_SECRET and every AIRBYTE_* (Airbyte removed, bridge decisions 2026-10-16
 #   #12a); Firebase keys (sign-in is Clerk before the cutover, decisions #1, #2).
-#   Sign-in comes from the Clerk keys in v1-prod-dashboard-env (#311, decisions 2026-10-16 #1, #2).
+#   Sign-in comes from the Clerk keys in lake/clerk-lake-prod (copied, v1-eu only; orama-bridge#244).
 #   idp.provider stays unset: the operator reads it only for keycloak.
 #
 # Generated (never copied, never shared between members):
@@ -119,17 +125,9 @@
 # #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
 # #562 the Redis HTTP shim): required values this file cannot carry yet. Each needs its prerequisite first; none is
 # worked around here, and no internal password is copied to bypass a missing generator.
-#   Images: production digest selections and qualification remain incomplete (Steve, 2026-10-17).
-#     Existing build records do not prove every production workload is qualified. Our own images
-#     need reviewed release tags (main-<sha> or vX.Y.Z) and digests. Verify before an apply:
-#     - oramacore-writer, oramacore-reader: the v1.2.39 side-only images (#308, orama-cloud-v1-bridge#5),
-#       and the reader with oramacore#340/#341. Without both overrides the engine runs the combined
-#       image, which the template sets to oramasearch/oramacore-cloud-v1 with #340/#341 (#597). Its
-#       readers still never hold the writer's master key: they render combined-reader.yaml (#795).
-#     - dashboard: Clerk images have run on v1-dev (orama-bridge#187); production Clerk configuration,
-#       build inputs, image selection and cutover proof remain prerequisites (orama-bridge#188).
-#     - analytics-processor: qualify a production digest with the 0.0.0.0:8080 listener patch (#421);
-#       an older v1-sandbox build record alone does not prove that patch is present.
+#   Images: the template pins the newest build of every component by digest, the images v1-nonprod
+#     runs (orama-bridge decisions 2026-10-23, 3, which replaces the release-tag requirement of
+#     2026-10-17), and v1-eu adds the production dashboard built from public.env.v1-prod.
 #   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
 #     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
 #     (search and index-builder),
@@ -163,8 +161,9 @@
 #     Scoped Vercel production candidates are staged privately where available, not installed.
 #     PRIVATE_API_KEY is prepared in this source (64 hex characters); the target import consumer
 #     reads the same dashboard source. Shared email/Slack inputs require isolation review.
-#     Clerk keys are absent from this source Secret; production instance/satellite configuration and
-#     controlDB.stripePrices with live-mode Stripe price IDs (#378) still need preparation.
+#     Clerk keys come from lake/clerk-lake-prod, copied into v1-eu by this set; app.orama.ing must be
+#     registered as a satellite of Lake's production instance, with clerk.app.orama.ing its CNAME.
+#     controlDB.stripePrices carries Prod 1's live-mode price IDs (#378).
 #     REDIS_CACHE_URL/TOKEN and NEXT_PUBLIC_APP_URL in envFrom are overridden by operator env entries;
 #     uploads endpoint/bucket/region/access keys likewise use the owned R2 Secret once provisioned.
 apiVersion: orama.cloud/v1alpha1
@@ -177,10 +176,205 @@ spec:
   # Customers keep reading through collections.orama.com, whose worker forwards to
   # ORAMACORE_READ_URLS.c1; the cutover runbook points that at https://reader.orama.ing and repoints
   # app.orama.com, which gets no DNS record from the operator (an extra host never does).
-  # v1-eu (orama-production-cluster-02) is out of the set while its sandbox stack is removed: under
-  # deletionPolicy Retain the set lets it go and stops managing it, then its namespace is deleted
-  # (Steve's consent; its claims are on the 10Gi default class, which a StatefulSet cannot change), and
-  # the next commit adds it back with the production values on orama.ing (orama-bridge#244).
+  - clusterRef: orama-production-cluster-02
+    name: v1-eu
+    namespace: v1-eu
+    secrets:
+    - name: v1-prod-master-api-key
+      namespace: orama-system
+    - name: v1-prod-llm-keys
+      namespace: orama-system
+    - name: v1-prod-dashboard-env
+      namespace: orama-system
+    - name: v1-prod-dashboard-stripe
+      namespace: orama-system
+    # A Cloudflare token limited to the orama.ing zone (DNS, zone settings, certificates) and the
+    # account's Workers KV and R2 storage: v1-eu's DNS records, its Let's Encrypt DNS-01 Issuer, its
+    # KV namespaces and its R2 buckets. The set-level cloudflare-api-token writes oramadev.net only.
+    - name: cloudflare-api-token-orama-ing
+      namespace: orama-system
+    # Lake's production Clerk instance (keys publishableKey, secretKey). The dashboard is its satellite
+    # on app.orama.ing (orama-bridge#244; replaces decisions of 21 October, 6, whose clerk.orama.com is
+    # Orama Console's).
+    - name: clerk-lake-prod
+      namespace: lake
+    spec:
+      profile: medium
+      jwtIssuer: https://app.orama.ing
+      masterAPIKeySecretRef:
+        name: v1-prod-master-api-key
+      # Prod 1's providers, models and selector. Keys come from v1-prod-llm-keys.
+      llm:
+        default: groq
+        providers:
+        - name: openai
+          models: [gpt-5.2]
+          apiKeySecretRef: { name: v1-prod-llm-keys }
+        - name: google
+          models: [gemini-2.0-flash-001]
+          apiKeySecretRef: { name: v1-prod-llm-keys }
+        - name: groq
+          models: [openai/gpt-oss-120b]
+          apiKeySecretRef: { name: v1-prod-llm-keys }
+        - name: anthropic
+          models: [claude-sonnet-4-5]
+          apiKeySecretRef: { name: v1-prod-llm-keys }
+        automaticEmbeddingsSelector: { provider: openai, model: gpt-5.2 }
+      cloudflare:
+        apiTokenSecretRef:
+          name: cloudflare-api-token-orama-ing
+        manageLoadBalancers: false     # no geo load balancer across the members yet
+      images:
+        overrides:
+          # The production dashboard: dashboard dev 56f355da built with orama-cloud-v1-bridge
+          # build/images/dashboard/public.env.v1-prod (app.orama.ing, Lake's production Clerk); recorded in
+          # orama-cloud-v1-bridge#17.
+          dashboard: oramasearch/dashboard:v1-prod-56f355da@sha256:4276ee5301ee610b28d0c2f06d208ce4a454f4b2a58abdf75abfa2fab8727050
+      # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
+      # default is Standard SSD. A volume's class cannot change after it is created.
+      components:
+        engine:
+          enabled: true
+          envoy: true
+          writer:
+            gpu: false
+            host: writer.orama.ing
+            # Prod 1's writer root volume is 500 GiB (snapshot of vol-0b8dcc408f8ea762f, orama-bridge
+            # production-changes.md; oramacore-aws terraform/live/prod/main.tf root_volume_size = 500)
+            # with 343 GiB free on 2026-10-12 (techops-docs incident-2026-10-12-reader-stalls.md, "Host
+            # storage"): about 157 GiB used, OS included. A larger size here grows the claim (#505).
+            storage: { size: 512Gi, storageClassName: managed-csi-premium }
+            # jwksURL unset: the writer reads the dashboard's keys in-cluster. Prod 2 has one cluster
+            # row, the operator's `c1`, whose writer_url the dashboard mints the audience from
+            # (decisions 2026-10-16 #9).
+            jwt:
+              audiences:
+              - https://writer.orama.ing
+          reader:
+            host: reader.orama.ing
+            replicas: 2
+            # Each reader's disk is 512Gi, #382's default: about twice the largest Prod 1 reader's use
+            # (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3). A larger size grows them (#505).
+            storage: { size: 512Gi, storageClassName: managed-csi-premium }
+        dashboard:
+          enabled: true
+          host: app.orama.ing
+          # app.orama.com is added as an extra host at the cutover, which decides whether it serves
+          # the dashboard or redirects to app.orama.ing. Until then it stays Prod 1's.
+          envFrom:
+          - secretRef: { name: v1-prod-dashboard-env }
+          # Clerk sign-in as a satellite of Lake's production instance. The NEXT_PUBLIC_* values are
+          # also compiled into the image (public.env.v1-prod); the server reads them at runtime, so the
+          # two must match. The dashboard refuses Lake's keys unless app.orama.ing is registered as the
+          # instance's satellite.
+          env:
+          - name: CLERK_SECRET_KEY
+            valueFrom: {secretKeyRef: {name: clerk-lake-prod, key: secretKey}}
+          - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+            valueFrom: {secretKeyRef: {name: clerk-lake-prod, key: publishableKey}}
+          - {name: NEXT_PUBLIC_CLERK_IS_SATELLITE, value: "true"}
+          - {name: NEXT_PUBLIC_CLERK_DOMAIN, value: app.orama.ing}
+          - {name: NEXT_PUBLIC_CLERK_SIGN_IN_URL, value: https://accounts.lake.live/sign-in}
+          - {name: NEXT_PUBLIC_CLERK_SIGN_UP_URL, value: https://accounts.lake.live/sign-up}
+          - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app.orama.ing/auth/complete}
+          - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app.orama.ing/auth/complete}
+          stripeSecretKeySecretRef:
+            name: v1-prod-dashboard-stripe
+            key: STRIPE_SECRET_KEY
+          # Prod 1's Vercel crons as CronJobs; the cutover sets suspend: false in this file.
+          crons:
+            enabled: true
+            suspend: true
+        docs:
+          enabled: true
+          host: docs.orama.ing
+        controlDB:
+          enabled: true
+          mode: in-cluster
+          # PlanetScale holds 531 MB on a 10 GB disk (techops-docs planetscale.md, 2026-07-07).
+          storage: { size: 10Gi, storageClassName: managed-csi-premium }
+          # Prod 1's live-mode Stripe prices, read from its subscription_plans and stripe_addon_prices
+          # on 2026-10-24 (read-only); every ID is one of the operator's reference rows. Plans not listed
+          # (base, base+, enterprise, open source) have no Stripe price on Prod 1 either.
+          stripePrices:
+            plans:
+            - {id: 28c01974-de01-40a5-be0b-d640f060bbfe, monthly: price_1SZPClEY25vqz92s5Dje1uuN, yearly: price_1SZPD2EY25vqz92sEtxndqYW}   # build
+            - {id: 46246ab8-4389-418f-a7f5-fb629cc659a6, monthly: price_1SZPDmEY25vqz92sQ5J55jpH, yearly: price_1SZPE2EY25vqz92suQh1Bd7P}   # scale
+            addons:
+            - {id: 2265b381-5458-4b25-9edb-237d746e87d5, priceID: price_1SZ19tEY25vqz92sbq4Vazy1}   # base ai_sessions_base
+            - {id: eeb72c29-b8d1-477f-ade4-527bd682e4f5, priceID: price_1SZ1FXEY25vqz92suhajuO9r}   # base ai_sessions_premium
+            - {id: 32ac1099-87ff-49e7-8140-7caf0438a8d9, priceID: price_1SZ1BtEY25vqz92sYnsCFoL2}   # base ai_sessions_pro
+            - {id: c55f46f6-1f72-4670-aaed-47defd3852ef, priceID: price_1SZ16FEY25vqz92sJxQCDZZJ}   # base extra_documents
+            - {id: 3a549bbb-1c25-40bb-8077-f974e3c1f97e, priceID: price_1SZ114EY25vqz92sL0ZKdaJt}   # base extra_indexes
+            - {id: ff6f4595-ad00-4f22-8c96-cee67c93306e, priceID: price_1SZ0xkEY25vqz92sOFOf4cHG}   # base extra_project
+            - {id: 3a71548d-ccd5-4f94-a1e1-10e2a3d3a112, priceID: price_1SZ0Z3EY25vqz92scbxlNuJT}   # base few_shots_upgrade
+            - {id: 086af6fd-3ab6-4e5d-b095-2a0625f865d1, priceID: price_1SZ19tEY25vqz92sWLJoXwba}   # build ai_sessions_base
+            - {id: 174f95cc-02ce-4986-8b92-a103acf71281, priceID: price_1SZ1FXEY25vqz92s8IvAX1LU}   # build ai_sessions_premium
+            - {id: 5d885a0e-2930-4dc0-8959-77b581b179ee, priceID: price_1SZ1BtEY25vqz92s5h6YKoLi}   # build ai_sessions_pro
+            - {id: 313bcf6b-ba4a-472b-ac13-2666063e9477, priceID: price_1SZ16FEY25vqz92sJOM8FhYA}   # build extra_documents
+            - {id: 0ce86e08-0ea4-4b8b-9baf-bac907fc836e, priceID: price_1SZ114EY25vqz92s451HdUK1}   # build extra_indexes
+            - {id: 3c3b49f4-c664-4273-8d85-08d140e84e1a, priceID: price_1SZ0xkEY25vqz92sWTtCfeZ7}   # build extra_project
+            - {id: 6daeda62-cbb6-47ee-9e65-41e09ba363e7, priceID: price_1SZ0VPEY25vqz92sSJMFomgI}   # build full_analytics
+            - {id: c36ae842-1925-4c86-a2af-7ed590fba1be, priceID: price_1SZ0NyEY25vqz92sQgmBhgzQ}   # build raw_analytics
+            - {id: eeec97e8-abd2-4982-9fb0-b14996c317a2, priceID: price_1SZ19tEY25vqz92soorDUd7l}   # scale ai_sessions_base
+            - {id: ca92196f-a643-46ca-be46-8fe6cde5fa6f, priceID: price_1SZ1FXEY25vqz92sDQXhQbk6}   # scale ai_sessions_premium
+            - {id: a128a420-7327-4ccd-afa6-3eee64b15635, priceID: price_1SZ1BtEY25vqz92sELkTghOC}   # scale ai_sessions_pro
+            - {id: 94cffc17-9f12-4883-ade0-1d93012aea44, priceID: price_1SZ16FEY25vqz92sSINgudYi}   # scale extra_documents
+            - {id: d47de792-ace8-4747-9ebf-bcf6c748e38f, priceID: price_1SZ114EY25vqz92sQZnsZgxP}   # scale extra_indexes
+            - {id: fb125974-3077-4c83-b9c9-c6f1735873b9, priceID: price_1SZ0xkEY25vqz92s7VWQPdnD}   # scale extra_project
+            - {id: 4d15ac28-b018-4dba-82fd-48e15d4080f5, priceID: price_1SZ0VPEY25vqz92s6YDI2M2D}   # scale full_analytics
+            - {id: 71bc6838-1321-4c1d-af2a-dc732c1bb6c6, priceID: price_1SZ0SGEY25vqz92siRc8LMUl}   # scale raw_analytics
+        analytics:
+          enabled: true
+          mode: in-cluster
+          # 30 days kept, starting fresh (bridge decisions 2026-10-16 #4). ClickHouse Cloud's
+          # oramacore_analytics_search_raw is 468.30 GiB for 16,979,167 rows, ~29.6 KB a row
+          # (techops-docs clickhouse.md, 2026-07-07); 8,318,162 searches in 90 days (orama-bridge#138,
+          # 2026-10-08) give ~82 GiB per 30 days. Doubled for headroom and rounded up.
+          storage: { size: 200Gi, storageClassName: managed-csi-premium }
+        analyticsProcessor:
+          enabled: true
+          # The cutover sets suspend: false in this file.
+          import:
+            enabled: true
+            suspend: true
+        cache:
+          enabled: true
+          mode: in-cluster
+          # 10Gi, the default, on purpose: measuring Prod 1's Upstash Redis is deferred (bridge decisions
+          # 2026-10-17 #22), and no source records its data size (techops-docs has only its billing,
+          # evidence/upstash-billing-2026-07-08.md). The class is set now because it cannot change
+          # later; the size can grow once Prod 1 is measured.
+          storage: { size: 10Gi, storageClassName: managed-csi-premium }
+        broker:
+          enabled: true
+          mode: in-cluster
+          # The oramacore-operations stream is capped at 5 GB on Prod 1 (techops-docs aws.md) and by the
+          # operator (datastore.go brokerOperationsStreamMaxBytes); four times the cap.
+          storage: { size: 20Gi, storageClassName: managed-csi-premium }
+        search:
+          enabled: true
+          mode: in-cluster
+          # 10Gi, the default, on purpose: measuring Prod 1's Typesense is deferred (bridge decisions
+          # 2026-10-17 #22), and no source records its data size. The class is set now because it
+          # cannot change later; the size can grow once Prod 1 is measured.
+          storage: { size: 10Gi, storageClassName: managed-csi-premium }
+        ingestion:
+          enabled: true
+          harvest: true
+        workers:
+          enabled: true
+          replicas: 2
+        searchWorkers:
+          enabled: true
+        # Prod 1's DISCO hosting is unconfirmed (its GCP project was deleted; techops-docs disco.md,
+        # orama-bridge retirement-register R31), and the cutover plan does not move it.
+        disco:
+          enabled: false
+        # No pgAdmin is recorded on Prod 1, whose control DB is PlanetScale (techops-docs planetscale.md;
+        # the admin surface is open as orama-bridge Q25/R43).
+        pgAdmin:
+          enabled: false
   # Juan chose no US dashboard (#885, 2026-10-23): it has no production dashboard role and receives
   # no dashboard credentials. Applying this file removes its dashboard and CronJobs and lets later
   # components reconcile. The live set stays unchanged until the production apply is approved.
