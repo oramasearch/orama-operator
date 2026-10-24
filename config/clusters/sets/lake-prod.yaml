@@ -25,6 +25,10 @@ spec:
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
+      # Order email (lake docs/api/orders.md#email): Orama's Resend key, sending-only for lake.live;
+      # the sender defaults to "Lake <orders@lake.live>" (lake.live verified in Resend).
+      - name: LAKE_RESEND_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-resend, key: api_key}}
       # Production on lake.live (decision 64, #513): the EU region, and the region picker at the apex.
       host: eu.lake.live
       apexHost: lake.live
@@ -55,6 +59,10 @@ spec:
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
+      # Order email (lake docs/api/orders.md#email): Orama's Resend key, sending-only for lake.live;
+      # the sender defaults to "Lake <orders@lake.live>" (lake.live verified in Resend).
+      - name: LAKE_RESEND_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-resend, key: api_key}}
       host: us.lake.live
       region:
         label: United States
@@ -72,11 +80,13 @@ spec:
     namespace: lake
   - name: lake-prod-stripe
     namespace: lake
+  - name: lake-prod-resend
+    namespace: lake
   template:
     # lake.live hosts: the token scoped to the lake.live zone only (decision 64).
     dnsSecretRef:
       name: cloudflare-api-token-lake-live
-    image: oramasearch/lake:v0.4.0
+    image: oramasearch/lake:v0.5.1
     ingressEnabled: true
     postgres:
       enabled: true
@@ -87,7 +97,7 @@ spec:
     # Zetta release is rolled on purpose: without this they would follow the operator's default
     # (orama-operator#588) the moment a new operator rolls.
     services:
-      zettaImage: oramasearch/zetta:main-4015ef76
+      zettaImage: oramasearch/zetta:v0.5.0
     store:
       accessModes:
       - ReadWriteOnce
@@ -95,5 +105,5 @@ spec:
       storageClassName: managed-csi
     zetta:
       enabled: true
-      image: oramasearch/zetta:main-4015ef76
+      image: oramasearch/zetta:v0.5.0
       replicas: 1
