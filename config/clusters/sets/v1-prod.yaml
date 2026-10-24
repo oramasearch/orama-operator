@@ -220,10 +220,10 @@ spec:
         manageLoadBalancers: false     # no geo load balancer across the members yet
       images:
         overrides:
-          # The production dashboard: dashboard dev 56f355da built with orama-cloud-v1-bridge
-          # build/images/dashboard/public.env.v1-prod (app.orama.ing, standalone Cloud v1 Clerk);
-          # recorded in orama-cloud-v1-bridge#19.
-          dashboard: oramasearch/dashboard:v1-prod-56f355da-cv1@sha256:79a3df5f1a1f899c7e39c68ed2c2dfafde97913a3ddb3fab14f8b979ce61bc6b
+          # The production dashboard: dashboard dev 0aa9652a (with the new-device sign-in code,
+          # dashboard#190) built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-prod
+          # (app.orama.ing, standalone Cloud v1 Clerk); recorded in orama-cloud-v1-bridge#20.
+          dashboard: oramasearch/dashboard:v1-prod-0aa9652a-cv1@sha256:cb1ec96b7a3dea6384aea111c3437904dce3fde724219c24c4303def426a814d
       # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
       # default is Standard SSD. v1-eu was created as a sandbox on 10Gi Standard SSD volumes, which
       # cannot change class in place, so each volume approves its replacement (approveDataDeletion,
