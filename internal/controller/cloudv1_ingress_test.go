@@ -328,10 +328,12 @@ func TestExtraHostsGetNoDNSRecord(t *testing.T) {
 	h.setAddress("dashboard", "192.0.2.9")
 	h.setAddress("writer", "192.0.2.10")
 	h.setAddress("reader", "192.0.2.11")
+	h.setAddress("docs", "192.0.2.12")
 	h.publish(oc)
 
 	want := map[string]oramav1alpha1.CloudflareDNSRecordSpec{
 		"v1-dev-dashboard-dns": {SecretRef: "cloudflare-api-token", Name: publicDashboardHost, Content: "192.0.2.9", Proxied: true},
+		"v1-dev-docs-dns":      {SecretRef: "cloudflare-api-token", Name: publicDocsHost, Content: "192.0.2.12", Proxied: true},
 		"v1-dev-writer-dns":    {SecretRef: "cloudflare-api-token", Name: publicWriterHost, Content: "192.0.2.10", Proxied: true},
 		"v1-dev-reader-dns":    {SecretRef: "cloudflare-api-token", Name: publicReaderHost, Content: "192.0.2.11", Proxied: true},
 	}
