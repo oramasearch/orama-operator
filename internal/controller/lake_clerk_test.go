@@ -330,7 +330,7 @@ func TestAClerkDevelopmentInstanceIsConfiguredForLakeAndTheLakeGetsItsKeys(t *te
 	}
 	endpoint := clerk.endpoints[0]
 	if endpoint["url"] != "https://lake-dev.oramadev.net/identity/clerk-webhook" ||
-		!reflect.DeepEqual(endpoint["eventTypes"], []any{"session.revoked", "user.created", "user.deleted", "user.updated"}) {
+		!reflect.DeepEqual(endpoint["eventTypes"], []any{"session.ended", "session.removed", "session.revoked", "user.created", "user.deleted", "user.updated"}) {
 		t.Errorf("endpoint = %v", endpoint)
 	}
 	clerk.mu.Unlock()
@@ -342,6 +342,9 @@ func TestAClerkDevelopmentInstanceIsConfiguredForLakeAndTheLakeGetsItsKeys(t *te
 	}
 	if ref := env["LAKE_CLERK_WEBHOOK_SECRET"].ValueFrom; ref == nil || ref.SecretKeyRef.Name != "lake-dev-clerk" || ref.SecretKeyRef.Key != "webhookSecret" {
 		t.Errorf("LAKE_CLERK_WEBHOOK_SECRET = %+v", env["LAKE_CLERK_WEBHOOK_SECRET"])
+	}
+	if ref := env["LAKE_CLERK_SECRET_KEY"].ValueFrom; ref == nil || ref.SecretKeyRef.Name != "clerk-secret-key" || ref.SecretKeyRef.Key != "secretKey" {
+		t.Errorf("LAKE_CLERK_SECRET_KEY = %+v, want the Lake's own spec.clerk.secretKeySecretRef", env["LAKE_CLERK_SECRET_KEY"])
 	}
 	var owned corev1.Secret
 	if err := h.c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-dev-clerk"}, &owned); err != nil {

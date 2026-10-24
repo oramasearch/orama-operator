@@ -103,6 +103,10 @@ because two Lakes can bill in one account (`shared` and `shared-us` in live mode
 The endpoint subscribes to the events lake's Stripe handler takes (lake `src/api/stripe.cpp`):
 
 - `invoice.paid`, `invoice.payment_failed` and `invoice.voided`, which lake handles today;
+- `customer.subscription.created`, `.updated`, `.deleted`, `.paused` and `.resumed`, and
+  `invoice.updated`, `invoice.marked_uncollectible` and `invoice.payment_action_required`, which set a
+  cloud order's paid-through date, provider status and retry invoice since lake v0.5.0
+  ([lake#972](https://github.com/oramasearch/lake/issues/972));
 - `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
   `checkout.session.async_payment_failed` and `checkout.session.expired`, for the order sheet of
   [lake#833](https://github.com/oramasearch/lake/issues/833).

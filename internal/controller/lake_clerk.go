@@ -68,8 +68,11 @@ const (
 	lakeClerkRetry   = time.Minute
 )
 
-// The Clerk events lake handles at /identity/clerk-webhook (lake#765).
-var lakeClerkWebhookEvents = []string{"session.revoked", "user.created", "user.deleted", "user.updated"}
+// The Clerk events lake handles at /identity/clerk-webhook (lake#765; the session events revoke
+// every linked credential since lake#948, lake docs/api/clerk.md).
+var lakeClerkWebhookEvents = []string{
+	"session.ended", "session.removed", "session.revoked", "user.created", "user.deleted", "user.updated",
+}
 
 // lakeClerkTemplateClaims is the `lake` JWT template lake verifies (lake docs/api/clerk.md).
 func lakeClerkTemplateClaims() map[string]any {
@@ -722,8 +725,10 @@ func clerkEnsureWebhook(ctx context.Context, api, secretKey, svixOverride, hookU
 	return secret.Key, found.ID, nil
 }
 
-// lakeClerkEnv is the Lake's Clerk variables. Both names are reserved whenever spec.clerk is
-// set (lakeEnv drops them from spec.env); each is given once the operator has its value.
+// lakeClerkEnv is the Lake's Clerk variables. Every name is reserved whenever spec.clerk is set
+// (lakeEnv drops them from spec.env); each is given once the operator has its value. The secret
+// key, which lake uses to check every Clerk exchange live (lake#948), comes from the Lake's own
+// spec.clerk.secretKeySecretRef, given once the operator has read it.
 func lakeClerkEnv(lake *oramav1alpha1.Lake, state lakeClerkState) []corev1.EnvVar {
 	if lake.Spec.Clerk == nil {
 		return nil
@@ -731,6 +736,12 @@ func lakeClerkEnv(lake *oramav1alpha1.Lake, state lakeClerkState) []corev1.EnvVa
 	var env []corev1.EnvVar
 	if state.PublishableKey != "" {
 		env = append(env, corev1.EnvVar{Name: "LAKE_CLERK_PUBLISHABLE_KEY", Value: state.PublishableKey})
+		env = append(env, corev1.EnvVar{Name: "LAKE_CLERK_SECRET_KEY", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: lake.Spec.Clerk.SecretKeySecretRef,
+				Key:                  "secretKey",
+			},
+		}})
 	}
 	if state.WebhookSecret {
 		env = append(env, corev1.EnvVar{Name: "LAKE_CLERK_WEBHOOK_SECRET", ValueFrom: &corev1.EnvVarSource{
@@ -743,4 +754,4 @@ func lakeClerkEnv(lake *oramav1alpha1.Lake, state lakeClerkState) []corev1.EnvVa
 	return env
 }
 
-var lakeClerkEnvNames = []string{"LAKE_CLERK_PUBLISHABLE_KEY", "LAKE_CLERK_WEBHOOK_SECRET"}
+var lakeClerkEnvNames = []string{"LAKE_CLERK_PUBLISHABLE_KEY", "LAKE_CLERK_SECRET_KEY", "LAKE_CLERK_WEBHOOK_SECRET"}

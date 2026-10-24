@@ -37,7 +37,7 @@ https://clerk.com/docs/reference/spec/bapi/latest.json), with the instance's sec
 | Frontend API host and DNS targets | `GET /v1/domains` (the primary, non-satellite domain) | Read |
 | The `lake` JWT template: `{"aud":"lake","email":"{{user.primary_email_address}}","name":"{{user.full_name}}"}`, lifetime 300 s | `GET` then `POST /v1/jwt_templates`, or `PATCH /v1/jwt_templates/{id}` | Created when missing; updated when the claims or lifetime differ |
 | Allowed origins: `https://<host>`, and `https://<apexHost>` when set | `PATCH /v1/instance` (`allowed_origins`) | **Added, never removed.** Several Lakes may share the instance |
-| Webhook endpoint `https://<host>/identity/clerk-webhook` for `user.created`, `user.updated`, `user.deleted` and `session.revoked` | `POST /v1/webhooks/svix_url` (or `POST /v1/webhooks/svix` the first time), then Svix's Endpoint API with the App Portal token the link carries | An existing endpoint at the same URL is adopted, and its events are corrected if they differ. Its signing secret (`whsec_…`) is stored |
+| Webhook endpoint `https://<host>/identity/clerk-webhook` for `user.created`, `user.updated`, `user.deleted`, `session.revoked`, `session.removed` and `session.ended` (the session events since lake v0.5.0, lake#948) | `POST /v1/webhooks/svix_url` (or `POST /v1/webhooks/svix` the first time), then Svix's Endpoint API with the App Portal token the link carries | An existing endpoint at the same URL is adopted, and its events are corrected if they differ. Its signing secret (`whsec_…`) is stored |
 
 Endpoint management is Svix's API, not Clerk's, because Clerk delivers webhooks through
 [Svix](https://clerk.com/docs/guides/development/webhooks/overview). Clerk's Backend API only
@@ -63,10 +63,13 @@ these keys:
 - `issuer`
 - `webhookSecret`
 
-The Lake receives two variables. Both are **reserved** while `spec.clerk` is set, so `spec.env`
+The Lake receives three variables. All are **reserved** while `spec.clerk` is set, so `spec.env`
 cannot set them:
 
 - `LAKE_CLERK_PUBLISHABLE_KEY`, as a value.
+- `LAKE_CLERK_SECRET_KEY`, as a `secretKeyRef` to `secretKey` of the Lake's own
+  `spec.clerk.secretKeySecretRef`, given with the publishable key. Since lake v0.5.0 lake checks every
+  Clerk exchange live with it, and Clerk sign-in fails closed without it (lake#948).
 - `LAKE_CLERK_WEBHOOK_SECRET`, as a `secretKeyRef` to `webhookSecret`. lake's handler for it is
   [lake#765](https://github.com/oramasearch/lake/issues/765).
 
