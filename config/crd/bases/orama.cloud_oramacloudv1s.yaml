@@ -249,14 +249,22 @@ spec:
                           Storage configures local data volumes (default 10Gi and cluster default class).
                           The operator grows PVC requests, or the CNPG Cluster size for controlDB.
                         properties:
+                          approveDataDeletion:
+                            description: |-
+                              ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                              declared class or size in place (another class, or a smaller size): it deletes the volume,
+                              erasing its data, and the component starts again on a new one. False, the default, leaves
+                              the volume as it is and reports the difference in status.conditions[StorageApplied].
+                              Copying the data to the new volume is not supported yet.
+                            type: boolean
                           size:
                             anyOf:
                             - type: integer
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi) even without API defaulting. Shrinking
-                              existing storage is unsupported.
+                              component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                              a size smaller than an existing volume's replaces it only with approveDataDeletion.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -264,8 +272,9 @@ spec:
                               rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                           storageClassName:
                             description: |-
-                              StorageClassName selects a class at creation. Omission uses the cluster default
-                              for new volumes and retains the existing class. Existing classes cannot change.
+                              StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                              and retains the existing class. An existing volume on another class is replaced only with
+                              approveDataDeletion.
                             minLength: 1
                             type: string
                         type: object
@@ -463,14 +472,22 @@ spec:
                           Storage configures local data volumes (default 10Gi and cluster default class).
                           The operator grows PVC requests, or the CNPG Cluster size for controlDB.
                         properties:
+                          approveDataDeletion:
+                            description: |-
+                              ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                              declared class or size in place (another class, or a smaller size): it deletes the volume,
+                              erasing its data, and the component starts again on a new one. False, the default, leaves
+                              the volume as it is and reports the difference in status.conditions[StorageApplied].
+                              Copying the data to the new volume is not supported yet.
+                            type: boolean
                           size:
                             anyOf:
                             - type: integer
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi) even without API defaulting. Shrinking
-                              existing storage is unsupported.
+                              component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                              a size smaller than an existing volume's replaces it only with approveDataDeletion.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -478,8 +495,9 @@ spec:
                               rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                           storageClassName:
                             description: |-
-                              StorageClassName selects a class at creation. Omission uses the cluster default
-                              for new volumes and retains the existing class. Existing classes cannot change.
+                              StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                              and retains the existing class. An existing volume on another class is replaced only with
+                              approveDataDeletion.
                             minLength: 1
                             type: string
                         type: object
@@ -598,14 +616,22 @@ spec:
                           Storage configures local data volumes (default 10Gi and cluster default class).
                           The operator grows PVC requests, or the CNPG Cluster size for controlDB.
                         properties:
+                          approveDataDeletion:
+                            description: |-
+                              ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                              declared class or size in place (another class, or a smaller size): it deletes the volume,
+                              erasing its data, and the component starts again on a new one. False, the default, leaves
+                              the volume as it is and reports the difference in status.conditions[StorageApplied].
+                              Copying the data to the new volume is not supported yet.
+                            type: boolean
                           size:
                             anyOf:
                             - type: integer
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi) even without API defaulting. Shrinking
-                              existing storage is unsupported.
+                              component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                              a size smaller than an existing volume's replaces it only with approveDataDeletion.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -613,8 +639,9 @@ spec:
                               rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                           storageClassName:
                             description: |-
-                              StorageClassName selects a class at creation. Omission uses the cluster default
-                              for new volumes and retains the existing class. Existing classes cannot change.
+                              StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                              and retains the existing class. An existing volume on another class is replaced only with
+                              approveDataDeletion.
                             minLength: 1
                             type: string
                         type: object
@@ -731,14 +758,22 @@ spec:
                           Storage configures local data volumes (default 10Gi and cluster default class).
                           The operator grows PVC requests, or the CNPG Cluster size for controlDB.
                         properties:
+                          approveDataDeletion:
+                            description: |-
+                              ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                              declared class or size in place (another class, or a smaller size): it deletes the volume,
+                              erasing its data, and the component starts again on a new one. False, the default, leaves
+                              the volume as it is and reports the difference in status.conditions[StorageApplied].
+                              Copying the data to the new volume is not supported yet.
+                            type: boolean
                           size:
                             anyOf:
                             - type: integer
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi) even without API defaulting. Shrinking
-                              existing storage is unsupported.
+                              component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                              a size smaller than an existing volume's replaces it only with approveDataDeletion.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -746,8 +781,9 @@ spec:
                               rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                           storageClassName:
                             description: |-
-                              StorageClassName selects a class at creation. Omission uses the cluster default
-                              for new volumes and retains the existing class. Existing classes cannot change.
+                              StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                              and retains the existing class. An existing volume on another class is replaced only with
+                              approveDataDeletion.
                             minLength: 1
                             type: string
                         type: object
@@ -1408,14 +1444,22 @@ spec:
                               The StatefulSet's claim template keeps the values it was created with; the operator grows
                               every reader's existing claim instead.
                             properties:
+                              approveDataDeletion:
+                                description: |-
+                                  ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                                  declared class or size in place (another class, or a smaller size): it deletes the volume,
+                                  erasing its data, and the component starts again on a new one. False, the default, leaves
+                                  the volume as it is and reports the difference in status.conditions[StorageApplied].
+                                  Copying the data to the new volume is not supported yet.
+                                type: boolean
                               size:
                                 anyOf:
                                 - type: integer
                                 - type: string
                                 description: |-
                                   Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                                  component's default (10Gi) even without API defaulting. Shrinking
-                                  existing storage is unsupported.
+                                  component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                                  a size smaller than an existing volume's replaces it only with approveDataDeletion.
                                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                 x-kubernetes-int-or-string: true
                                 x-kubernetes-validations:
@@ -1423,8 +1467,9 @@ spec:
                                   rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                               storageClassName:
                                 description: |-
-                                  StorageClassName selects a class at creation. Omission uses the cluster default
-                                  for new volumes and retains the existing class. Existing classes cannot change.
+                                  StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                                  and retains the existing class. An existing volume on another class is replaced only with
+                                  approveDataDeletion.
                                 minLength: 1
                                 type: string
                             type: object
@@ -1546,14 +1591,22 @@ spec:
                             description: Storage configures the writer's data volume
                               (default 10Gi and cluster default class).
                             properties:
+                              approveDataDeletion:
+                                description: |-
+                                  ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                                  declared class or size in place (another class, or a smaller size): it deletes the volume,
+                                  erasing its data, and the component starts again on a new one. False, the default, leaves
+                                  the volume as it is and reports the difference in status.conditions[StorageApplied].
+                                  Copying the data to the new volume is not supported yet.
+                                type: boolean
                               size:
                                 anyOf:
                                 - type: integer
                                 - type: string
                                 description: |-
                                   Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                                  component's default (10Gi) even without API defaulting. Shrinking
-                                  existing storage is unsupported.
+                                  component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                                  a size smaller than an existing volume's replaces it only with approveDataDeletion.
                                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                 x-kubernetes-int-or-string: true
                                 x-kubernetes-validations:
@@ -1561,8 +1614,9 @@ spec:
                                   rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                               storageClassName:
                                 description: |-
-                                  StorageClassName selects a class at creation. Omission uses the cluster default
-                                  for new volumes and retains the existing class. Existing classes cannot change.
+                                  StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                                  and retains the existing class. An existing volume on another class is replaced only with
+                                  approveDataDeletion.
                                 minLength: 1
                                 type: string
                             type: object
@@ -1727,14 +1781,22 @@ spec:
                           HarvestMongoStorage configures the data volume of HARVEST's Mongo (default 10Gi and the
                           cluster default class), like every other data store's storage.
                         properties:
+                          approveDataDeletion:
+                            description: |-
+                              ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                              declared class or size in place (another class, or a smaller size): it deletes the volume,
+                              erasing its data, and the component starts again on a new one. False, the default, leaves
+                              the volume as it is and reports the difference in status.conditions[StorageApplied].
+                              Copying the data to the new volume is not supported yet.
+                            type: boolean
                           size:
                             anyOf:
                             - type: integer
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi) even without API defaulting. Shrinking
-                              existing storage is unsupported.
+                              component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                              a size smaller than an existing volume's replaces it only with approveDataDeletion.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -1742,8 +1804,9 @@ spec:
                               rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                           storageClassName:
                             description: |-
-                              StorageClassName selects a class at creation. Omission uses the cluster default
-                              for new volumes and retains the existing class. Existing classes cannot change.
+                              StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                              and retains the existing class. An existing volume on another class is replaced only with
+                              approveDataDeletion.
                             minLength: 1
                             type: string
                         type: object
@@ -2130,14 +2193,22 @@ spec:
                           Storage configures local data volumes (default 10Gi and cluster default class).
                           The operator grows PVC requests, or the CNPG Cluster size for controlDB.
                         properties:
+                          approveDataDeletion:
+                            description: |-
+                              ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                              declared class or size in place (another class, or a smaller size): it deletes the volume,
+                              erasing its data, and the component starts again on a new one. False, the default, leaves
+                              the volume as it is and reports the difference in status.conditions[StorageApplied].
+                              Copying the data to the new volume is not supported yet.
+                            type: boolean
                           size:
                             anyOf:
                             - type: integer
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi) even without API defaulting. Shrinking
-                              existing storage is unsupported.
+                              component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                              a size smaller than an existing volume's replaces it only with approveDataDeletion.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -2145,8 +2216,9 @@ spec:
                               rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                           storageClassName:
                             description: |-
-                              StorageClassName selects a class at creation. Omission uses the cluster default
-                              for new volumes and retains the existing class. Existing classes cannot change.
+                              StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                              and retains the existing class. An existing volume on another class is replaced only with
+                              approveDataDeletion.
                             minLength: 1
                             type: string
                         type: object
@@ -2621,42 +2693,6 @@ spec:
                 - name
                 - role
                 type: object
-              storageRebuild:
-                description: |-
-                  StorageRebuild discards every local data volume of this stack once, then builds the stack
-                  again on the volumes its storage settings describe now. It is how a stack moves to a storage
-                  class it was not created with, which no claim and no StatefulSet template can change in place
-                  (operator#915). It deletes the stack's data: write it only for a stack whose data may be lost.
-                properties:
-                  deletesAllData:
-                    description: |-
-                      DeletesAllData must be true. It changes nothing in what the rebuild does; it makes the request
-                      say, in the file a reviewer approves, that applying it erases every data volume of this stack:
-                      the writer's and readers' indexes, the control DB (teams, projects, users, keys), analytics,
-                      the broker, the cache, search and HARVEST's Mongo.
-                    type: boolean
-                    x-kubernetes-validations:
-                    - message: 'deletesAllData must be true: a storage rebuild erases
-                        every data volume of the stack'
-                      rule: self == true
-                  id:
-                    description: |-
-                      ID names this rebuild. A rebuild with an ID that already completed does nothing; a new ID
-                      runs a new rebuild.
-                    pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
-                    type: string
-                  instanceUID:
-                    description: |-
-                      InstanceUID must equal this OramaCloudV1's metadata.uid. It binds the request to the
-                      instance it was written for, so an instance created again later never runs a rebuild left
-                      in its spec.
-                    minLength: 1
-                    type: string
-                required:
-                - deletesAllData
-                - id
-                - instanceUID
-                type: object
             required:
             - region
             type: object
@@ -2775,54 +2811,6 @@ spec:
                   Phase: Progressing (coming up) | Ready (all components ready) | Degraded (was ready, a
                   component regressed) | Pending.
                 type: string
-              storageRebuild:
-                description: StorageRebuild is the storage rebuild in progress, or
-                  the last one that completed.
-                properties:
-                  claims:
-                    description: |-
-                      Claims are the data claims the rebuild deletes. Each is recorded before it is deleted, and
-                      deleted only while it still has the recorded UID.
-                    items:
-                      description: RebuildClaim is one data claim a storage rebuild
-                        deletes.
-                      properties:
-                        name:
-                          type: string
-                        uid:
-                          type: string
-                      required:
-                      - name
-                      - uid
-                      type: object
-                    type: array
-                    x-kubernetes-list-map-keys:
-                    - name
-                    x-kubernetes-list-type: map
-                  completedIDs:
-                    description: |-
-                      CompletedIDs are every rebuild that has completed on this instance. A request whose id is
-                      here does nothing, so restoring an older set file never runs an old rebuild again.
-                    items:
-                      type: string
-                    type: array
-                    x-kubernetes-list-type: set
-                  id:
-                    description: ID is the rebuild in progress, or the last one that
-                      completed.
-                    type: string
-                  phase:
-                    description: |-
-                      Phase is Deleting while the old workloads, control DB and claims go, and Completed once
-                      they are gone and the normal reconcile builds the stack again.
-                    enum:
-                    - Deleting
-                    - Completed
-                    type: string
-                required:
-                - id
-                - phase
-                type: object
             type: object
         type: object
     served: true

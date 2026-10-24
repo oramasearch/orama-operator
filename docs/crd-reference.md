@@ -29,7 +29,6 @@ pointing at the primary); the full sample list is in
 | `components.ingestion.ablyKeySecretRef` | `{name, key}` | unset | Index-builder's `ABLY_API_KEY` for deployment progress, from a Secret in the CR's namespace. An explicit required `secretKeyRef` wins over component `envFrom`; no new dummy is seeded. The Secret is read, never written; missing Secret, key or empty value fails ingestion before changing the builder. Its watch and credentials hash roll the builder on rotation. Unset keeps historical sandbox defaults. HARVEST's separate seed is unchanged while its worker launcher is missing (#12); this field does not activate crawling. [Decision and limits](provisioning-runbook.md#ably-deployment-progress-747). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
-| `storageRebuild` | `{id, instanceUID, deletesAllData}` | unset | Discards every local data volume of the stack once and builds it again on the volumes its storage settings describe now: the only way to change a volume's class. Deletes the stack's data ([below](#storage-rebuild-specstoragerebuild)). |
 
 ## `spec.llm`
 
@@ -622,8 +621,9 @@ storage request itself, including retained claims and claims created later from 
 The template's old size does not cause a storage mismatch. For controlDB it grows the CNPG
 Cluster's configured size; CNPG owns expansion of its PVCs. Other CNPG storage keys remain intact.
 
-Existing volumes cannot shrink or change class in place; [`storageRebuild`](#storage-rebuild-specstoragerebuild) moves a stack
-whose data may be lost to a new class. Removing `storage` after growth requests the
+An existing volume grows in place. A different class or a smaller size cannot be applied in place:
+the operator replaces the volume when its `storage.approveDataDeletion` is `true`
+([below](#replacing-a-volume-storageapprovedatadeletion)), and otherwise reports the difference. Removing `storage` after growth requests the
 `10Gi` default and can therefore report an unsupported shrink. Restore the grown request to clear
 that rejection. A larger reported capacity alone is not a shrink: provisioners can round capacity
 above the request. A claim with a class mismatch receives no size update, even if growth was also
@@ -641,53 +641,41 @@ retries. A rejected setting may coexist with `Ready=True`. The operator polls ev
 while locally managed storage exists, even with Ready workloads, and writes status only on change.
 See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
 
-### Storage rebuild (`spec.storageRebuild`)
+### Replacing a volume (`storage.approveDataDeletion`)
 
-A claim's class and a StatefulSet's claim template never change, and a StatefulSet's claims outlive it, so a
-stack created on one class stays on it ([#915](https://github.com/oramasearch/orama-operator/issues/915)).
-`storageRebuild` discards the stack's local data volumes once, and the normal reconcile then creates them
-again from the current storage settings. **It deletes the stack's data.**
+A claim's class, a StatefulSet's claim template and a CNPG Cluster's storage class cannot change, and a
+StatefulSet's claims outlive it, so a volume on another class, or larger than its declared size, cannot reach
+its declared storage in place ([#915](https://github.com/oramasearch/orama-operator/issues/915)). With
+`approveDataDeletion: true` in that volume's `storage`, the operator replaces it, and **its data is lost**.
+With `false`, the default, it leaves the volume alone and `StorageApplied` reports the difference, with the
+hint that replacing the volume needs `approveDataDeletion`.
 
-| Field | Type | Behavior |
-|---|---|---|
-| `id` | DNS label | Names the rebuild. It runs once: every completed `id` is kept in `status.storageRebuild.completedIDs`, so an `id` that completed does nothing, even after a later rebuild, and a new `id` runs again. |
-| `instanceUID` | string | Must equal the instance's `metadata.uid`, so a request left in a spec never runs on an instance created again later. Read it with `kubectl get ocv1 <name> -o jsonpath='{.metadata.uid}'`. |
-| `deletesAllData` | bool, must be `true` | A confirmation, not a setting: it makes the request say, in the file a reviewer approves, that applying it erases every data volume of the stack (the engine's indexes, the control DB's teams, projects, users and keys, analytics, broker, cache, search, HARVEST's Mongo). `false` or missing is rejected by the API server. |
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `storage.approveDataDeletion` | bool | `false` | Allows the operator to replace this volume, erasing its data, when it cannot reach the declared class or size in place. Only what is declared counts: an omitted `size` never replaces a volume grown past `10Gi`, and an omitted `storageClassName` never replaces one on a non-default class. Copying the data to the new volume is not supported yet. |
 
-It is refused, with `status.conditions[StorageRebuild]` `False / Refused` and nothing deleted, when
-`instanceUID` does not match or any `OramaCloudV1Migration` exists in the namespace (a migration copies
-customer data). Otherwise the operator, before reconciling any component:
+Before reconciling any component, every pass compares each approved volume with what is on the cluster:
 
-1. records the claims it will delete in `status.storageRebuild.claims` (name and UID): every
-   `data-<cr>-<component>-<ordinal>` of the writer, readers, analytics, broker, cache, search and HARVEST's
-   Mongo, retained ordinals included, and every claim of the control DB's CNPG Cluster (labelled
-   `cnpg.io/cluster: <cr>-controldb` and controlled by that Cluster). A claim with either name or label that
-   another controller owns stops the rebuild with an error. Every pass takes this inventory again and records
-   a claim found since, including one a winding-down StatefulSet made again, before deleting anything;
-2. deletes, in the foreground, the Deployments the stack owns (so no client writes while its store is
-   replaced, and each starts again with the new stores' credentials), the data StatefulSets, the control DB's
-   CNPG `Cluster`, its `PostgresSchema`s and the Jobs the stack owns (the `c1` row's, analytics retention's),
-   then each recorded claim with its recorded UID as a precondition. Until all are gone the phase is
-   `Progressing`, `Ready` is `False / StorageRebuilding`, the condition lists what is left in sorted order,
-   and no component is reconciled;
-3. marks the rebuild `Completed`, adds its `id` to `completedIDs`, and reconciles as usual, which creates the
-   Deployments, the StatefulSets on new claims from the current templates, a new control DB with its schemas,
-   reference rows and `c1` row.
+- **A StatefulSet's volume** (writer, readers, analytics, broker, cache, search, HARVEST's Mongo): each data
+  claim on another class, or larger than declared, is deleted with its UID as a precondition, and the
+  StatefulSet is deleted in the foreground. A claim already on the declared class and size is kept. The
+  StatefulSet also goes when its claim template names another class, so no new claim is made on the old
+  one. A new analytics volume also gets its retention Job again.
+- **The control DB**: when the CNPG Cluster's storage names another class or a larger size, the Cluster is
+  deleted with its claims, together with the control DB's `PostgresSchema`s and the `c1` row's Job. The
+  ordinary reconcile then creates a new database, its schemas, reference rows and `c1` row. CNPG generates a
+  new owner password (`<cr>-controldb-app`); analytics-processor and index-builder roll when it changes.
 
-Configuration, the operator's generated credentials, Services, Ingresses, certificates, DNS records, KV
-namespaces and R2 buckets stay. CNPG generates the new control DB's owner password (`<cr>-controldb-app`);
-its readers, analytics-processor and index-builder, roll when it changes. The stack serves nothing from the
-start of the rebuild until its workloads are Ready again. CronJobs stay as they are (suspended on production).
-A restarted operator resumes from the record. Removing `storageRebuild` from the spec does not stop a
-rebuild that has started.
+While anything is being deleted, the phase is `Progressing`, `Ready` and `StorageApplied` are
+`False / ReplacingStorage` with what is left listed in sorted order, and no component is reconciled, so nothing
+is created again on a claim being deleted. Once it is gone, the ordinary reconcile creates the StatefulSets and
+the control DB on new volumes from the current spec. A claim or StatefulSet another controller owns is never
+replaced: the pass stops with an error naming it.
 
-| `status.storageRebuild` | Meaning |
-|---|---|
-| `id`, `phase: Deleting`, `claims` | The rebuild in progress and what it deletes. |
-| `phase: Completed`, `completedIDs` | The rebuild with this `id` finished; no `id` in `completedIDs` runs again. |
-
-The leaf cluster must run an operator whose CRD has the field before a set carries it: an older CRD prunes the
-unknown field, and the request does nothing.
+The setting is part of the volume's desired state, not a one-time request: it applies to any later change of
+the declared storage too. Leave it `false` on a volume whose data must be kept, and set it only for the change
+that needs it. The leaf cluster must run an operator whose CRD has the field before a set carries it, because
+an older CRD drops the unknown field.
 
 ### `status.conditions[ClusterRowReady]`
 

@@ -141,22 +141,20 @@ and its CSI driver must support the disk/filesystem operation. See
 and [CNPG expansion](https://cloudnative-pg.io/docs/1.27/storage/#volume-expansion).
 A grown size stays in the set file that set it: a smaller value afterwards is a refused shrink.
 
-### Storage rebuild (`internal/controller/oramacloudv1_storage_rebuild.go`)
+### Volume replacement (`internal/controller/oramacloudv1_volume_replacement.go`)
 
-A class change can't happen in place: claims and claim templates keep their class, and claims outlive
-their StatefulSet, so a stack re-created in its namespace takes the old claims back
-([#915](https://github.com/oramasearch/orama-operator/issues/915)). `spec.storageRebuild` runs first in
-the reconcile, before any component. Each pass records the stack's data claims by name and UID in status
-before deleting anything, then deletes the stack's Deployments, the data StatefulSets, the control DB's
-CNPG Cluster, its PostgresSchemas, the stack's own Jobs and the recorded claims, and holds every component
-until they are gone. Then it marks the rebuild `Completed`, and the ordinary component steps create
-everything again on the current storage settings: the Deployments, new claims from new templates, a fresh
-`initdb` with a new owner password, the schemas, the reference rows and the `c1` row. Nothing is inferred
-from a class mismatch: the request is explicit, bound to the instance's UID, runs once per `id` (every
-completed `id` is kept), and is refused while a migration exists in the namespace. index-builder's
-credentials hash includes `<cr>-controldb-app`, so it rolls when the control DB's owner password changes, as
-analytics-processor already did. Field reference and status:
-[crd-reference.md](crd-reference.md#storage-rebuild-specstoragerebuild).
+A class change or a shrink can't happen in place: claims, claim templates and CNPG's storage class keep their
+class, and claims outlive their StatefulSet, so a component re-created in its namespace takes the old claims
+back ([#915](https://github.com/oramasearch/orama-operator/issues/915)). `reconcileVolumeReplacement` runs first
+in the reconcile, before any component. For each volume whose `storage.approveDataDeletion` is `true`
+(`managedVolumes`, the same list the storage pass uses), it deletes the claims that differ from the declared
+storage and their StatefulSet, or the control DB's CNPG Cluster with its `PostgresSchema`s and the `c1` row's
+Job, and holds every component until they are gone. The ordinary steps then create them again on the current
+storage settings. It derives everything from the cluster on every pass and keeps no record, so a volume
+already on its declared storage is left alone and a later change is reconciled the same way.
+index-builder's credentials hash includes `<cr>-controldb-app`, so it rolls when a new control DB brings a new
+owner password, as analytics-processor already did. Field reference:
+[crd-reference.md](crd-reference.md#replacing-a-volume-storageapprovedatadeletion).
 
 ## Cloudflare DNS ownership
 

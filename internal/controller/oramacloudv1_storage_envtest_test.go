@@ -54,37 +54,40 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Run("storage rebuild and HARVEST Mongo storage admission", func(t *testing.T) {
-		rebuild := func(id, uid string, deletesAllData bool) map[string]interface{} {
-			return map[string]interface{}{"id": id, "instanceUID": uid, "deletesAllData": deletesAllData}
-		}
+	t.Run("approveDataDeletion and HARVEST Mongo storage admission", func(t *testing.T) {
 		for i, tc := range []struct {
-			field string
+			path  []string
 			value map[string]interface{}
 			valid bool
 		}{
-			{"storageRebuild", rebuild("premium-2026-10-24", "a-uid", true), true},
-			{"storageRebuild", rebuild("premium", "a-uid", false), false},
-			{"storageRebuild", rebuild("Premium_Volumes", "a-uid", true), false},
-			{"storageRebuild", rebuild("premium", "", true), false},
-			{"storageRebuild", map[string]interface{}{"id": "premium", "instanceUID": "a-uid"}, false},
-			{"harvestMongoStorage", map[string]interface{}{"size": "20Gi", "storageClassName": "managed-csi-premium"}, true},
-			{"harvestMongoStorage", map[string]interface{}{"size": "0"}, false},
+			{[]string{"engine", "writer", "storage"}, map[string]interface{}{"size": "512Gi", "storageClassName": "managed-csi-premium", "approveDataDeletion": true}, true},
+			{[]string{"controlDB", "storage"}, map[string]interface{}{"storageClassName": "managed-csi-premium", "approveDataDeletion": false}, true},
+			{[]string{"engine", "writer", "storage"}, map[string]interface{}{"approveDataDeletion": "yes"}, false},
+			{[]string{"ingestion", "harvestMongoStorage"}, map[string]interface{}{"size": "20Gi", "storageClassName": "managed-csi-premium", "approveDataDeletion": true}, true},
+			{[]string{"ingestion", "harvestMongoStorage"}, map[string]interface{}{"size": "0"}, false},
 		} {
-			obj := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "orama.cloud/v1alpha1", "kind": "OramaCloudV1", "metadata": map[string]interface{}{"name": fmt.Sprintf("rebuild-%d", i), "namespace": ns.Name}, "spec": map[string]interface{}{"region": map[string]interface{}{"name": "test", "role": "primary"}}}}
-			path := []string{"spec", tc.field}
-			if tc.field == "harvestMongoStorage" {
-				path = []string{"spec", "components", "ingestion", "harvestMongoStorage"}
-			}
-			if err := unstructured.SetNestedMap(obj.Object, tc.value, path...); err != nil {
+			obj := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "orama.cloud/v1alpha1", "kind": "OramaCloudV1", "metadata": map[string]interface{}{"name": fmt.Sprintf("approve-%d", i), "namespace": ns.Name}, "spec": map[string]interface{}{"region": map[string]interface{}{"name": "test", "role": "primary"}}}}
+			if err := unstructured.SetNestedMap(obj.Object, tc.value, append([]string{"spec", "components"}, tc.path...)...); err != nil {
 				t.Fatal(err)
 			}
 			err := kube.Create(ctx, obj)
 			if tc.valid && err != nil {
-				t.Fatalf("%s %v rejected: %v", tc.field, tc.value, err)
+				t.Fatalf("%v %v rejected: %v", tc.path, tc.value, err)
 			}
 			if !tc.valid && !apierrors.IsInvalid(err) {
-				t.Fatalf("%s %v: err = %v, want Invalid", tc.field, tc.value, err)
+				t.Fatalf("%v %v: err = %v, want Invalid", tc.path, tc.value, err)
+			}
+			if tc.valid {
+				// The field survives the round trip: the API server does not prune it.
+				live := &unstructured.Unstructured{}
+				live.SetGroupVersionKind(obj.GroupVersionKind())
+				if err := kube.Get(ctx, client.ObjectKeyFromObject(obj), live); err != nil {
+					t.Fatal(err)
+				}
+				got, _, _ := unstructured.NestedFieldNoCopy(live.Object, append([]string{"spec", "components"}, tc.path...)...)
+				if fmt.Sprint(got) != fmt.Sprint(tc.value) {
+					t.Fatalf("%v stored as %v, want %v", tc.path, got, tc.value)
+				}
 			}
 		}
 	})

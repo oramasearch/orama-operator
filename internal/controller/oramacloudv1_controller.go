@@ -74,14 +74,15 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := validateEngineImages(&oc); err != nil {
 		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "engine", err)
 	}
-	// A requested storage rebuild deletes the old data volumes before any component is reconciled
-	// again, so nothing is created on a claim it is about to delete (#915).
-	proceed, err := r.reconcileStorageRebuild(ctx, &oc)
+	// A volume that cannot reach its declared storage in place, and whose storage approves data
+	// deletion, is replaced before any component is reconciled again, so nothing is created on a
+	// claim being deleted (#915).
+	proceed, err := r.reconcileVolumeReplacement(ctx, &oc)
 	if err != nil {
-		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "storage-rebuild", err)
+		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "volume-replacement", err)
 	}
 	if !proceed {
-		return ctrl.Result{RequeueAfter: storageRebuildRequeue}, nil
+		return ctrl.Result{RequeueAfter: volumeReplacementRequeue}, nil
 	}
 	// A missing or placeholder master key is configuration, not a failure: the rest of the stack
 	// reconciles, the engine is held at zero (reconcileEngine), and Ready names the cause until a

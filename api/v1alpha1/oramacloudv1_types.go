@@ -96,65 +96,6 @@ type OramaCloudV1Spec struct {
 	// fresh install answers queries out of the box.
 	// +optional
 	DemoSeed bool `json:"demoSeed,omitempty"`
-
-	// StorageRebuild discards every local data volume of this stack once, then builds the stack
-	// again on the volumes its storage settings describe now. It is how a stack moves to a storage
-	// class it was not created with, which no claim and no StatefulSet template can change in place
-	// (operator#915). It deletes the stack's data: write it only for a stack whose data may be lost.
-	// +optional
-	StorageRebuild *StorageRebuildSpec `json:"storageRebuild,omitempty"`
-}
-
-// StorageRebuildSpec is one request to discard and rebuild a stack's local data volumes. It runs
-// once per ID; status.storageRebuild records it. The rebuild deletes the data StatefulSets (writer,
-// readers, analytics, broker, cache, search, HARVEST's Mongo), their data claims, the control DB's
-// CNPG Cluster and its claims, the control DB's PostgresSchemas and the Jobs this stack owns, then
-// lets the normal reconcile create them again from the spec. Configuration, credentials, Services,
-// Ingresses, DNS records, KV namespaces and R2 buckets stay. It is refused while any
-// OramaCloudV1Migration exists in the namespace, because a migration copies customer data.
-type StorageRebuildSpec struct {
-	// ID names this rebuild. A rebuild with an ID that already completed does nothing; a new ID
-	// runs a new rebuild.
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`
-	ID string `json:"id"`
-	// InstanceUID must equal this OramaCloudV1's metadata.uid. It binds the request to the
-	// instance it was written for, so an instance created again later never runs a rebuild left
-	// in its spec.
-	// +kubebuilder:validation:MinLength=1
-	InstanceUID string `json:"instanceUID"`
-	// DeletesAllData must be true. It changes nothing in what the rebuild does; it makes the request
-	// say, in the file a reviewer approves, that applying it erases every data volume of this stack:
-	// the writer's and readers' indexes, the control DB (teams, projects, users, keys), analytics,
-	// the broker, the cache, search and HARVEST's Mongo.
-	// +kubebuilder:validation:XValidation:rule="self == true",message="deletesAllData must be true: a storage rebuild erases every data volume of the stack"
-	DeletesAllData bool `json:"deletesAllData"`
-}
-
-// StorageRebuildStatus is the rebuild in progress, or the last one that completed.
-type StorageRebuildStatus struct {
-	// ID is the rebuild in progress, or the last one that completed.
-	ID string `json:"id"`
-	// Phase is Deleting while the old workloads, control DB and claims go, and Completed once
-	// they are gone and the normal reconcile builds the stack again.
-	// +kubebuilder:validation:Enum=Deleting;Completed
-	Phase string `json:"phase"`
-	// Claims are the data claims the rebuild deletes. Each is recorded before it is deleted, and
-	// deleted only while it still has the recorded UID.
-	// +optional
-	// +listType=map
-	// +listMapKey=name
-	Claims []RebuildClaim `json:"claims,omitempty"`
-	// CompletedIDs are every rebuild that has completed on this instance. A request whose id is
-	// here does nothing, so restoring an older set file never runs an old rebuild again.
-	// +optional
-	// +listType=set
-	CompletedIDs []string `json:"completedIDs,omitempty"`
-}
-
-// RebuildClaim is one data claim a storage rebuild deletes.
-type RebuildClaim struct {
-	Name string `json:"name"`
-	UID  string `json:"uid"`
 }
 
 // MasterAPIKeySecretRef is a key of a Secret in the OramaCloudV1's namespace.
@@ -383,20 +324,29 @@ type EngineSpec struct {
 	Envoy bool `json:"envoy,omitempty"`
 }
 
-// VolumeSpec configures a new volume and operator-managed increases to existing storage.
-// StatefulSet claim templates are immutable; existing claims grow independently.
+// VolumeSpec is the desired state of a component's data volume. The operator grows an existing
+// volume in place. A different class or a smaller size cannot be applied in place: the operator
+// replaces the volume, erasing its data, only when approveDataDeletion is true.
 type VolumeSpec struct {
 	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-	// component's default (10Gi) even without API defaulting. Shrinking
-	// existing storage is unsupported.
+	// component's default (10Gi) even without API defaulting. An existing volume grows in place;
+	// a size smaller than an existing volume's replaces it only with approveDataDeletion.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
 	Size *resource.Quantity `json:"size,omitempty"`
-	// StorageClassName selects a class at creation. Omission uses the cluster default
-	// for new volumes and retains the existing class. Existing classes cannot change.
+	// StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+	// and retains the existing class. An existing volume on another class is replaced only with
+	// approveDataDeletion.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	StorageClassName *string `json:"storageClassName,omitempty"`
+	// ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+	// declared class or size in place (another class, or a smaller size): it deletes the volume,
+	// erasing its data, and the component starts again on a new one. False, the default, leaves
+	// the volume as it is and reports the difference in status.conditions[StorageApplied].
+	// Copying the data to the new volume is not supported yet.
+	// +optional
+	ApproveDataDeletion bool `json:"approveDataDeletion,omitempty"`
 }
 
 type WriterSpec struct {
@@ -816,9 +766,6 @@ type OramaCloudV1Status struct {
 	// +listMapKey=name
 	Components         []ComponentStatus `json:"components,omitempty"`
 	ObservedGeneration int64             `json:"observedGeneration,omitempty"`
-	// StorageRebuild is the storage rebuild in progress, or the last one that completed.
-	// +optional
-	StorageRebuild *StorageRebuildStatus `json:"storageRebuild,omitempty"`
 }
 
 // +kubebuilder:object:root=true

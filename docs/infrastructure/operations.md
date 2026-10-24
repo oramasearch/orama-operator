@@ -172,21 +172,22 @@ replaces:
 instance keeps running and is no longer managed. Only `deletionPolicy: Delete` deletes it. A
 member's migrations go with it, and are deleted first.
 
-**Move a v1 member to another storage class**, when its data may be lost (a member created before its
-storage settings were, [#915](https://github.com/oramasearch/orama-operator/issues/915)): set the
-member's storage, then add `storageRebuild` to the same member's `spec`, never the template, and apply.
+**Move a v1 member's volumes to another class, or shrink them**, when their data may be lost (a member
+created before its storage settings were, [#915](https://github.com/oramasearch/orama-operator/issues/915)):
+declare the storage you want and approve the deletion on each volume, in the member's `spec`, then apply.
 The leaf's operator must already have the field.
 
 ```yaml
       spec:
-        storageRebuild:
-          id: premium-volumes                 # a new id for each rebuild
-          instanceUID: <the member's uid>     # kubectl --context <leaf> -n <ns> get ocv1 <name> -o jsonpath='{.metadata.uid}'
-          deletesAllData: true                # required: applying this erases every data volume of the member
+        components:
+          engine:
+            writer:
+              storage: {size: 512Gi, storageClassName: managed-csi-premium, approveDataDeletion: true}
 ```
 
-Watch `status.storageRebuild` and `status.conditions[StorageRebuild]` on the member until `Completed`, then
-check the new claims' class. Leave the field in the file afterwards: the same `id` does nothing again.
+Watch `status.conditions[StorageApplied]` on the member: `ReplacingStorage` while the old volumes go, then
+`Applied` once the new ones match. Then set `approveDataDeletion` back to `false` (or remove it) in a later
+commit, so a future change to that volume's storage cannot erase its data.
 
 **Copy a Prod 1 team into a v1 member**: add an entry to the set's `spec.migrations`, and change its
 `step` one commit at a time; see
