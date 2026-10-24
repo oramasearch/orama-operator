@@ -87,6 +87,7 @@ func replaceStack(t *testing.T, mut func(*oramav1alpha1.OramaCloudV1)) (*OramaCl
 		controlled(&oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: "v1-controldb-schema"}}),
 		controlled(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: controlDBClusterRowJobName(oc)}}),
 		controlled(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: analyticsRetentionName(oc)}}),
+		controlled(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "v1-analytics-processor"}}),
 		claim("data-v1-writer-0", "writer-0", "default"),
 		claim("data-v1-reader-0", "reader-0", premium), claim("data-v1-reader-1", "reader-1", "default"),
 		claim("data-v1-analytics-0", "analytics-0", "default"),
@@ -185,6 +186,7 @@ func TestApprovedVolumesAreReplacedAndTheReconcileWaitsForThem(t *testing.T) {
 		{&corev1.PersistentVolumeClaim{}, "data-v1-analytics-0"}, {&corev1.PersistentVolumeClaim{}, "v1-controldb-1"},
 		{&oramav1alpha1.PostgresSchema{}, "v1-controldb-schema"},
 		{&batchv1.Job{}, controlDBClusterRowJobName(oc)}, {&batchv1.Job{}, analyticsRetentionName(oc)},
+		{&appsv1.Deployment{}, "v1-analytics-processor"},
 	} {
 		if replaceExists(t, r, gone.obj, gone.name) {
 			t.Fatalf("%s survived its replacement", gone.name)
@@ -360,6 +362,49 @@ func TestWaitingForAReplacementWritesStatusOnlyOnChange(t *testing.T) {
 	c := meta.FindStatusCondition(replaceLive(t, r, oc).Status.Conditions, "Ready")
 	if c == nil || !strings.Contains(c.Message, "claim data-v1-analytics-0, claim data-v1-writer-0") {
 		t.Fatalf("waiting message %q does not list what remains in order", fmt.Sprint(c))
+	}
+}
+
+func TestAControlDBAlreadyOnTheDeclaredClassIsKept(t *testing.T) {
+	// The Cluster was created without a class; its claim is on "default", which is now declared.
+	r, oc, writes := replaceStack(t, func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.ControlDB.Storage = approved("10Gi", "default")
+	})
+	ctx := context.Background()
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(cnpgClusterGVK)
+	cluster = storageGet(t, r, cluster, oc.Namespace, "v1-controldb")
+	unstructured.RemoveNestedField(cluster.Object, "spec", "storage", "storageClass")
+	if err := r.Update(ctx, cluster); err != nil {
+		t.Fatal(err)
+	}
+	if held := replaceUntilDone(t, r, oc); held != 0 || len(writes.deleted) != 0 {
+		t.Fatalf("a control DB already on its declared storage was replaced: held %d, deleted %v", held, writes.deleted)
+	}
+}
+
+func TestAnInterruptedControlDBReplacementStillCleansUp(t *testing.T) {
+	// The Cluster's deletion started, but the pass that started it stopped before the schemas and the
+	// c1 row's Job went: the next pass removes them.
+	r, oc, _ := replaceStack(t, func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.ControlDB.Storage = approved("10Gi", premium)
+	})
+	ctx := context.Background()
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(cnpgClusterGVK)
+	cluster = storageGet(t, r, cluster, oc.Namespace, "v1-controldb")
+	cluster.SetFinalizers([]string{"cnpg.io/hold"})
+	if err := r.Update(ctx, cluster); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Client.Delete(ctx, cluster); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.reconcileVolumeReplacement(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if replaceExists(t, r, &oramav1alpha1.PostgresSchema{}, "v1-controldb-schema") || replaceExists(t, r, &batchv1.Job{}, controlDBClusterRowJobName(oc)) {
+		t.Fatal("the old database's schema record or c1 row Job survived an interrupted replacement")
 	}
 }
 

@@ -148,8 +148,9 @@ class, and claims outlive their StatefulSet, so a component re-created in its na
 back ([#915](https://github.com/oramasearch/orama-operator/issues/915)). `reconcileVolumeReplacement` runs first
 in the reconcile, before any component. For each volume whose `storage.approveDataDeletion` is `true`
 (`managedVolumes`, the same list the storage pass uses), it deletes the claims that differ from the declared
-storage and their StatefulSet, or the control DB's CNPG Cluster with its `PostgresSchema`s and the `c1` row's
-Job, and holds every component until they are gone. The ordinary steps then create them again on the current
+storage and their StatefulSet, or the control DB's CNPG Cluster (judged by its claims' class) after its
+`PostgresSchema`s and the `c1` row's Job, and holds every component until they are gone. A new analytics volume
+also restarts analytics-processor, which creates ClickHouse's tables only when it starts. The ordinary steps then create them again on the current
 storage settings. It derives everything from the cluster on every pass and keeps no record, so a volume
 already on its declared storage is left alone and a later change is reconciled the same way.
 index-builder's credentials hash includes `<cr>-controldb-app`, so it rolls when a new control DB brings a new

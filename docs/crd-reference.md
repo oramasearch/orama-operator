@@ -660,9 +660,12 @@ Before reconciling any component, every pass compares each approved volume with 
   claim on another class, or larger than declared, is deleted with its UID as a precondition, and the
   StatefulSet is deleted in the foreground. A claim already on the declared class and size is kept. The
   StatefulSet also goes when its claim template names another class, so no new claim is made on the old
-  one. A new analytics volume also gets its retention Job again.
-- **The control DB**: when the CNPG Cluster's storage names another class or a larger size, the Cluster is
-  deleted with its claims, together with the control DB's `PostgresSchema`s and the `c1` row's Job. The
+  one. A new analytics volume also gets its retention Job and analytics-processor again, because the
+  processor creates ClickHouse's tables only when it starts.
+- **The control DB**: when the Cluster's claims are on another class (or, before it has claims, its spec
+  names one), or its size is larger than declared, the Cluster is deleted with its claims. The control DB's
+  `PostgresSchema`s and the `c1` row's Job go first, and again on every pass until the old Cluster is gone, so
+  an interrupted pass never leaves them behind. The
   ordinary reconcile then creates a new database, its schemas, reference rows and `c1` row. CNPG generates a
   new owner password (`<cr>-controldb-app`); analytics-processor and index-builder roll when it changes.
 
