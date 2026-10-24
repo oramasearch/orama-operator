@@ -71,7 +71,7 @@ The code is `internal/controller/lake_payments.go`. The payment kinds it uses ar
 |---|---|
 | `accountID` | The Stripe account or sandbox, `acct_…` |
 | `operatorKey` | The environment's **operator key**: a restricted key that writes products, prices and webhook endpoints and reads the account. The `PaymentProvider` uses it |
-| `appKey` | The environment's **Lake key**: a restricted key for customers, invoices, invoice items and Checkout sessions, which also reads products and prices. The Lake gets it as `LAKE_STRIPE_SECRET_KEY` |
+| `appKey` | The environment's **Lake key**: a restricted key that writes customers, invoices, invoice items, Checkout sessions and **Payment Intents**, and reads products and prices. Payment Intents write is required for prepaid auto top-up. The Lake gets it as `LAKE_STRIPE_SECRET_KEY` |
 
 Both keys' prefixes must agree with `spec.payments.mode`: `sk_live_` or `rk_live_` for `live`,
 `sk_test_` or `rk_test_` for `test`. The mode is written in the committed set file, so a live
@@ -135,7 +135,8 @@ Deleting the catalog leaves the products in Stripe.
 
 ## The check of Lake's key
 
-Once the catalog is `Ready`, the operator reads `GET /v1/products/lake_usage` with `appKey`. The
+Once the catalog is `Ready`, the operator checks `appKey` in two steps. First it reads
+`GET /v1/products/lake_usage`. The
 catalog made that product with `operatorKey`, so:
 
 - 200 with `livemode` matching the mode: the two keys belong to the same account or sandbox.
@@ -145,9 +146,36 @@ catalog made that product with `operatorKey`, so:
 - any other answer, or none: `StripeAPIError`, with the HTTP status. A 401 means Stripe does not
   accept the key; a 403 means it lacks Products read.
 
-The check runs again every hour, a minute after `StripeAPIError`, and at once when the key, the
-account or the mode changes. Between checks a steady Lake sends Stripe nothing. The operator keeps
-the last result in memory, so a restarted operator checks every Lake once.
+After the product check passes, it probes `POST /v1/payment_intents` with `currency=usd` and
+`payment_method_types[]=card`, deliberately **omitting the required `amount`**. This cannot create
+a PaymentIntent or charge a card. Only HTTP 400 with `error.type=invalid_request_error`,
+`error.code=parameter_missing` and `error.param=amount` passes: Stripe authorized the write and
+then rejected the missing amount. The explicit card type scopes the permission check; omitting
+it can produce a 403 even with Payment Intents write. A read of PaymentIntents cannot prove write
+access. A 403 or `permission_error` reports `AppKeyPermissionsMissing` and tells the operator to
+grant Payment Intents write in the Stripe Dashboard. Every other answer, including unexpected
+success, reports `StripeAPIError`. Keys and Stripe's 401/403 message are never exposed.
+
+The checks run again every hour, a minute after `StripeAPIError` or `AppKeyPermissionsMissing`,
+and at once when the key, account or mode changes. A permission edit keeps the same key value, so
+the one-minute retry detects a repair without rotation. Between checks a steady Lake sends
+Stripe nothing. The operator keeps the last result in memory, so a restarted operator checks
+every Lake once.
+
+### Repairing prepaid auto top-up permissions
+
+[lake#1124](https://github.com/oramasearch/lake/issues/1124) exposed keys that could create Checkout
+sessions but could not create the off-session PaymentIntent used by auto top-up. Edit **Payment
+Intents → Write** on each environment's existing Lake restricted key in Stripe: source Secrets
+`lake/stripe-dev`, `lake/stripe-testing`, `lake/stripe-staging` and `lake/stripe-live` on the managing
+cluster, field `appKey`. The live source serves both EU and US. Keep the operator key's permissions
+separate. Changing permissions on an existing key needs neither a Secret change nor a Lake restart.
+
+After the permission check passes, affected account owners must re-enable auto top-up in Billing
+or through `set_auto_top_up`; a failed charge intentionally left it off. The saved card is reused.
+Verify a test-mode off-session charge and its `payment_intent.succeeded` credit before declaring
+end-to-end auto top-up verified. The permission probe alone proves write access, not that a card
+will be charged successfully or its webhook credited.
 
 ## When the Lake gets its variables
 
@@ -216,6 +244,7 @@ removed. A payments failure never changes the Lake's `Ready` condition or phase.
 | `False` | `ProviderNotReady` | The provider has not checked `operatorKey`, or its `Credentials` are not `True`; the message carries its reason |
 | `False` | `Progressing` | Waiting for the endpoint, the catalog or the signing Secret |
 | `False` | `AppKeyMismatch` | `appKey` cannot see `lake_usage`: it belongs to another account or sandbox |
+| `False` | `AppKeyPermissionsMissing` | `appKey` cannot create card PaymentIntents; grant Payment Intents write for auto top-up |
 | `False` | `StripeAPIError` | Stripe gave no usable answer to the check of `appKey` |
 | `False` | the child's reason | The endpoint or the catalog is not `Ready`: `URLTaken`, `SigningSecretTaken`, `ProductTaken`, `PriceTaken`, `InvalidSpec`, … ([`payments.md`](../infrastructure/payments.md)) |
 | `False` | `Removing` | `spec.payments` was removed and the endpoint is still being deleted |

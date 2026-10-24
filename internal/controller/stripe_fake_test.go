@@ -167,6 +167,17 @@ func (s *fakeStripe) route(w http.ResponseWriter, r *http.Request, route string,
 	switch {
 	case route == "GET /v1/account":
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": s.accountID, "object": "account"})
+	case route == "POST /v1/payment_intents":
+		// The permission probe must never supply an amount or create a payment.
+		if len(form) != 2 || form.Get("currency") != "usd" || form.Get("payment_method_types[]") != "card" {
+			answerStripeError(w, fakeStripeError{http.StatusBadRequest, "invalid_request_error", "", "unexpected PaymentIntent probe fields"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"type": "invalid_request_error", "code": "parameter_missing", "param": "amount", "message": "Missing required param: amount.",
+		}})
 	case strings.HasPrefix(r.URL.Path, "/v1/products") || strings.HasPrefix(r.URL.Path, "/v1/prices"):
 		s.routeCatalog(w, r, form)
 	case route == "GET /v1/webhook_endpoints":
