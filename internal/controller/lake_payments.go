@@ -79,6 +79,8 @@ const (
 // src/api/stripe.cpp): the invoice events, the Checkout events of lake#833's order sheet, and the
 // subscription and invoice lifecycle that sets a cloud order's paid-through date (lake#972). Lake acknowledges a type it does not handle, so subscribing early is harmless.
 // Change this list together with Lake's handler.
+// Since lake v0.6.0 (lake#1114) also the account balance's events: a top-up's Checkout session, the
+// card saved for auto top-up (setup_intent.succeeded) and each auto top-up charge (payment_intent.*).
 var lakeStripeWebhookEvents = []string{
 	"checkout.session.async_payment_failed",
 	"checkout.session.async_payment_succeeded",
@@ -95,6 +97,9 @@ var lakeStripeWebhookEvents = []string{
 	"invoice.payment_failed",
 	"invoice.updated",
 	"invoice.voided",
+	"payment_intent.payment_failed",
+	"payment_intent.succeeded",
+	"setup_intent.succeeded",
 }
 
 // lakePaymentProducts are Lake's products. Their IDs are a contract with Lake (lake#855): its

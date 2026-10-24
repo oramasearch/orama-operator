@@ -8,10 +8,8 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` tag v0.5.0, commit 9c7c2fc787ae110cb62e32089750f3d37117dcf1](https://github.com/oramasearch/lake/blob/9c7c2fc787ae110cb62e32089750f3d37117dcf1/db/schema.sql),
-through `0098_authentication_attempts`. Its SHA-256 is
-`c8a7f174a979f4c1a414e3d3040b1f2f4c86613b033b7f472d093229b6728ec2`. Before it, lake v0.4.0 (9115632e),
-through `0093_root_recovery_participants`.
+`oramasearch/lake` `dev` at `58356286` (lake v0.6.0's schema), through `0099_account_balances`. Its SHA-256 is
+`56dd30b4d9c9fb90b40b0c1b699b11e328238c993310c379d460c00abacd8637`. Before it, lake v0.5.0 (`9c7c2fc7`), through `0098_authentication_attempts`.
 
 **Pin only a commit on lake `dev` or a release tag, never a pull request's branch.** Lake records a
 migration by name only, with no checksum, so a migration applied from a branch and changed before it
@@ -21,6 +19,10 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migration `0099_account_balances` (lake#1114, lake v0.6.0) adds `account_balances`,
+`account_balance_credits` and `account_balance_charges`, with guard `account_balances_guard`. Additive. Apply
+it before the lake v0.6.0 image rolls; the schema gate holds that image until it has applied.
 
 Migrations `0094` to `0098`, in lake v0.5.0, apply before the lake v0.5.0 image rolls; the schema
 gate holds that image until they have applied. Lake v0.4.0 keeps running on them. Not all are purely
