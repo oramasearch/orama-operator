@@ -107,6 +107,8 @@ The endpoint subscribes to the events lake's Stripe handler takes (lake `src/api
   `invoice.updated`, `invoice.marked_uncollectible` and `invoice.payment_action_required`, which set a
   cloud order's paid-through date, provider status and retry invoice since lake v0.5.0
   ([lake#972](https://github.com/oramasearch/lake/issues/972));
+- `payment_intent.succeeded`, `payment_intent.payment_failed` and `setup_intent.succeeded`, for the
+  prepaid account balance's auto top-up (lake v0.6.0, [lake#1114](https://github.com/oramasearch/lake/issues/1114));
 - `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
   `checkout.session.async_payment_failed` and `checkout.session.expired`, for the order sheet of
   [lake#833](https://github.com/oramasearch/lake/issues/833).

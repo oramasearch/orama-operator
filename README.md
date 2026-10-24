@@ -51,8 +51,10 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.9.4** (2026-10-24), a patch giving a Cloud v1 docs host its DNS record
-([`docs/releases/v0.9.4.md`](docs/releases/v0.9.4.md)). Before it, **v0.9.3** (2026-10-24), a patch letting
+The current release is **v0.9.5** (2026-10-24), a patch carrying lake v0.6.0's schema and the prepaid
+balance's Stripe events ([`docs/releases/v0.9.5.md`](docs/releases/v0.9.5.md)). Before it, **v0.9.4**
+(2026-10-24), a patch giving a Cloud v1 docs host its DNS record
+([`docs/releases/v0.9.4.md`](docs/releases/v0.9.4.md)). Before that, **v0.9.3** (2026-10-24), a patch letting
 Cloud v1 storage approve replacing a volume it cannot change in place
 ([`docs/releases/v0.9.3.md`](docs/releases/v0.9.3.md)). Before that,
 **v0.9.2** (2026-10-24), a patch giving the lake Deployment its own `ZETTA_EGRESS_ALLOW`

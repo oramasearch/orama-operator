@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.9.5](v0.9.5.md) — 2026-10-24. A patch for lake v0.6.0: its schema through `0099` and the
+  prepaid balance's Stripe events. **Roll it before the lake v0.6.0 image.**
 - [v0.9.4](v0.9.4.md) — 2026-10-24. A patch: a Cloud v1 docs host gets its DNS record (#928).
 - [v0.9.3](v0.9.3.md) — 2026-10-24. A patch: Cloud v1 storage can approve replacing a volume it cannot
   change in place (`approveDataDeletion`), for `v1-eu`'s premium production storage (#922).
