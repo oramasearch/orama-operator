@@ -73,7 +73,8 @@ is deliberately not set: it would also pass on a sender's own `X-Forwarded-Host`
 from any connection, so an app building links from them could be pointed elsewhere. It then sets `X-Real-IP`
 and `X-Forwarded-For` from that address. A sender that reaches the ingress without passing
 Cloudflare therefore cannot choose its own address. Lake's order sheet counts `X-Real-IP`
-(lake#838). The values are in `helmfile.yaml` and every `config/clusters/*/platform.yaml`;
+(lake#838), and lake believes it only on its proxy port, which the Lake Ingress uses and only
+ingress-nginx and the gateway may reach (lake#1132, [Lake](../lake/README.md)). The values are in `helmfile.yaml` and every `config/clusters/*/platform.yaml`;
 `TestIngressTrustsCloudflaresClientAddressOnlyFromCloudflare` checks both. When Cloudflare publishes
 new ranges, update the list in all of them in one pull request.
 

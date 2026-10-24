@@ -404,7 +404,8 @@ func assertLakeAppCreated(t *testing.T, ctx context.Context, kubeClient client.C
 	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: lakeAppWorkloadName}, &ingress); err != nil {
 		t.Fatal(err)
 	}
-	wantAuthURL := "http://lake-prod.lake.svc.cluster.local:80/v1/apps/auth"
+	// lake#1132: the auth subrequest comes from ingress-nginx, so it uses Lake's proxy port.
+	wantAuthURL := "http://lake-prod.lake.svc.cluster.local:8080/v1/apps/auth"
 	if ingress.Spec.Rules[0].Host != "sales-dashboard.apps.example.test" || ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] != wantAuthURL {
 		t.Fatalf("app ingress = host %q annotations %#v", ingress.Spec.Rules[0].Host, ingress.Annotations)
 	}

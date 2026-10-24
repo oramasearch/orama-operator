@@ -91,7 +91,9 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	if args := d.Spec.Template.Spec.Containers[0].Args; len(args) != 2 || args[0] != "--node" {
 		t.Errorf("args = %v", args)
 	}
-	if cp := d.Spec.Template.Spec.Containers[0].Ports; len(cp) != 1 || cp[0].ContainerPort != 4900 {
+	// lake#1132: the main port, and the proxy listener's the one above it.
+	if cp := d.Spec.Template.Spec.Containers[0].Ports; len(cp) != 2 || cp[0].Name != "http" || cp[0].ContainerPort != 4900 ||
+		cp[1].Name != lakeProxyPortName || cp[1].ContainerPort != 4901 {
 		t.Errorf("container ports = %+v", cp)
 	}
 	if len(d.OwnerReferences) != 1 || d.OwnerReferences[0].Kind != "Lake" {
@@ -116,7 +118,9 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &svc); err != nil {
 		t.Fatalf("service not created: %v", err)
 	}
-	if svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != 4900 {
+	if len(svc.Spec.Ports) != 2 || svc.Spec.Ports[0].Name != "http" || svc.Spec.Ports[0].Port != 80 ||
+		svc.Spec.Ports[0].TargetPort.IntValue() != 4900 || svc.Spec.Ports[1].Name != lakeProxyPortName ||
+		svc.Spec.Ports[1].Port != lakeProxyServicePort || svc.Spec.Ports[1].TargetPort.IntValue() != 4901 {
 		t.Errorf("service ports = %+v", svc.Spec.Ports)
 	}
 	pvc := &corev1.PersistentVolumeClaim{}
@@ -611,7 +615,8 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "hello.lake.live" {
 		t.Errorf("ingress rules = %+v", ing.Spec.Rules)
 	}
-	if b := ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service; b == nil || b.Name != "lake-hello" || b.Port.Number != lakeServicePort {
+	// lake#1132: the Ingress sends to the proxy port, where lake believes X-Real-IP.
+	if b := ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service; b == nil || b.Name != "lake-hello" || b.Port.Number != lakeProxyServicePort {
 		t.Errorf("ingress backend = %+v", b)
 	}
 	if len(ing.OwnerReferences) != 1 || ing.OwnerReferences[0].Name != "hello" {
@@ -1418,5 +1423,41 @@ func TestLakeRolloutByStoreAccessMode(t *testing.T) {
 				t.Fatalf("affinity term = %+v", term)
 			}
 		})
+	}
+}
+
+// lake#1132: the proxy listener's port is the one above the container port (below at 65535), and
+// the operator, not spec.env, gives LAKE_PROXY_PORT and LAKE_TRUSTED_PROXY_CIDRS.
+func TestLakeProxyListenerPortAndEnvAreTheOperators(t *testing.T) {
+	port := func(value int32) *oramav1alpha1.Lake {
+		return &oramav1alpha1.Lake{Spec: oramav1alpha1.LakeSpec{Port: &value}}
+	}
+	for _, c := range []struct {
+		lake *oramav1alpha1.Lake
+		want int32
+	}{
+		{&oramav1alpha1.Lake{}, 4901},
+		{port(4900), 4901},
+		{port(8080), 8081},
+		{port(65535), 65534},
+	} {
+		if got := lakeProxyContainerPort(c.lake); got != c.want {
+			t.Errorf("proxy port for %v = %d, want %d", c.lake.Spec.Port, got, c.want)
+		}
+	}
+	lake := port(8080)
+	lake.Spec.Env = []corev1.EnvVar{
+		{Name: "LAKE_PROXY_PORT", Value: "9999"},
+		{Name: "LAKE_TRUSTED_PROXY_CIDRS", Value: "10.0.0.0/8"},
+	}
+	seen := map[string][]string{}
+	for _, variable := range lakeEnv(lake, lakeSealingMaterial{}) {
+		seen[variable.Name] = append(seen[variable.Name], variable.Value)
+	}
+	if got := seen["LAKE_PROXY_PORT"]; !reflect.DeepEqual(got, []string{"8081"}) {
+		t.Errorf("LAKE_PROXY_PORT = %v, want only the operator's 8081", got)
+	}
+	if got := seen["LAKE_TRUSTED_PROXY_CIDRS"]; !reflect.DeepEqual(got, []string{"none"}) {
+		t.Errorf("LAKE_TRUSTED_PROXY_CIDRS = %v, want only the operator's none", got)
 	}
 }

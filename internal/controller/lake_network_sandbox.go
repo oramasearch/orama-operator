@@ -359,15 +359,18 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 		allowances = append(allowances, preserved...)
 		internetErr = errors.Join(internetErr, preserveErr)
 	}
+	// The proxy port (lake#1132) is admitted here and nowhere else: lake believes the client address
+	// a request on it names, so only the two proxies may reach it. They keep the HTTP port too, which
+	// the Ingress backend used before the proxy listener.
 	allowances = append(allowances, sandboxAllowance(
-		"ingress-nginx and zetta-tunnel's ingress gateway need Lake's HTTP port for the Lake Ingress backend; ingress-nginx also for LakeApp auth subrequests.",
+		"ingress-nginx and zetta-tunnel's ingress gateway, and only they, reach Lake's proxy port, where lake believes X-Real-IP: the Lake Ingress backend and LakeApp auth subrequests (lake#1132). They keep Lake's HTTP port as well.",
 		networkPolicy(
 			"allow-ingress-nginx",
 			lakeSelector,
 			[]networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			[]networkingv1.NetworkPolicyIngressRule{{
 				From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}), zettaTunnelIngressPeer()},
-				Ports: tcpPorts(int32(lakeContainerPort(lake))),
+				Ports: tcpPorts(int32(lakeContainerPort(lake)), lakeProxyContainerPort(lake)),
 			}},
 			nil,
 		),
