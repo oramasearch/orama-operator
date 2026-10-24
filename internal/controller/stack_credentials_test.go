@@ -3,9 +3,11 @@ package controller
 import (
 	"encoding/base64"
 	"reflect"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -120,5 +122,42 @@ func TestDecrypterCredentialPairMustAgree(t *testing.T) {
 	h.mustFail("keys DECRYPTER_API_SECRET_BASE64 and API_SECRET disagree")
 	if !reflect.DeepEqual(h.secret(provided.Name).Data, provided.Data) {
 		t.Fatal("the invalid supplied Secret was changed")
+	}
+}
+
+func TestRetiredComponentCredentialsArePrunedOnUpgrade(t *testing.T) {
+	oc := stackOC(nil)
+	legacy := []*corev1.Secret{
+		secretOf("v1-search-secret", map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key"}),
+		secretOf("v1-analytics-secret", map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}),
+		secretOf("v1-index-builder-secret", map[string]string{
+			"TYPESENSE_API_KEY": "dev-typesense-api-key", "API_SECRET": "dev-index-builder-api-secret",
+			"DEPLOYMENT_API_API_KEY": "dev-deployment-api-key", "DECRYPTER_API_SECRET_BASE64": "ZGV2LWRlY3J5cHRlci1zZWNyZXQ=",
+			"ABLY_API_KEY": "keep-ably-key",
+		}),
+		secretOf("v1-harvest-secret", map[string]string{"HARVEST_SIGN": "dev-harvest-signature", "ABLY_API_KEY": "keep-ably-key"}),
+		secretOf("v1-dashboard-secret", map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password", "CRON_SECRET": "dev-cron-secret", "STRIPE_WEBHOOK_SECRET": "keep-stripe-hook"}),
+		secretOf("v1-workers-secret", map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password", "QSTASH_TOKEN": "keep-qstash"}),
+	}
+	objects := []client.Object{oc, engineSecret()}
+	for _, sec := range legacy {
+		objects = append(objects, sec)
+	}
+	objects = append(objects, secretOf("v1-analytics-processor-secret", map[string]string{"CLICKHOUSE_PASSWORD": "real-supplied-password"}))
+	h := newEngineHarness(t, objects...)
+	h.mustRun()
+	for _, sec := range legacy {
+		got := h.secret(sec.Name)
+		for _, key := range retiredComponentCredentialKeys(strings.TrimSuffix(strings.TrimPrefix(sec.Name, "v1-"), "-secret")) {
+			if _, found := got.Data[key]; found {
+				t.Errorf("%s still holds retired %s", sec.Name, key)
+			}
+		}
+	}
+	if string(h.secret("v1-index-builder-secret").Data["ABLY_API_KEY"]) != "keep-ably-key" ||
+		string(h.secret("v1-dashboard-secret").Data["STRIPE_WEBHOOK_SECRET"]) != "keep-stripe-hook" ||
+		string(h.secret("v1-workers-secret").Data["QSTASH_TOKEN"]) != "keep-qstash" ||
+		string(h.secret("v1-analytics-processor-secret").Data["CLICKHOUSE_PASSWORD"]) != "real-supplied-password" {
+		t.Fatal("pruning changed unrelated component settings")
 	}
 }

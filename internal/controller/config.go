@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"strings"
@@ -101,6 +102,9 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 		return err
 	}
 	if err := r.ensureCredentialSecrets(ctx, oc); err != nil {
+		return err
+	}
+	if err := r.pruneRetiredComponentCredentials(ctx, oc); err != nil {
 		return err
 	}
 	// The engine's broker users' passwords (#99), before the engine step hashes them, so a fresh
@@ -286,6 +290,69 @@ func componentSecretData(component string) map[string]string {
 	default:
 		return nil // no secret (e.g. selenium, harvest-mongo)
 	}
+}
+
+// Keys formerly seeded into component Secrets now live in generated credential Secrets. Prune only
+// the old placeholder values on upgrade; preserve any user-supplied value in these Secrets.
+func retiredComponentCredentialKeys(component string) []string {
+	switch component {
+	case "search":
+		return []string{"TYPESENSE_API_KEY"}
+	case "analytics", "analytics-processor", "disco", "workers":
+		return []string{"CLICKHOUSE_PASSWORD"}
+	case "dashboard":
+		return []string{"CLICKHOUSE_PASSWORD", "CRON_SECRET", "REDIS_CACHE_TOKEN"}
+	case "index-builder":
+		return []string{"TYPESENSE_API_KEY", "API_SECRET", "DEPLOYMENT_API_API_KEY", "DECRYPTER_API_SECRET_BASE64", "HARVEST_SIGN", "ORAMA_EMBEDDINGS_BEARER"}
+	case "harvest":
+		return []string{"HARVEST_SIGN"}
+	case "harvest-master":
+		return []string{"HARVEST_SIGNATURE", "NOTIFICATION_SIGNATURE"}
+	}
+	return nil
+}
+
+func retiredCredentialPlaceholder(key string, value []byte) bool {
+	if strings.HasPrefix(string(value), "dev-") {
+		return true
+	}
+	if key == "DECRYPTER_API_SECRET_BASE64" {
+		decoded, err := base64.StdEncoding.DecodeString(string(value))
+		return err == nil && strings.HasPrefix(string(decoded), "dev-")
+	}
+	return false
+}
+
+// pruneRetiredComponentCredentials removes obsolete copies even when a component is disabled or
+// has no running workload (the harvest worker is one example). It never creates a component Secret.
+func (r *OramaCloudV1Reconciler) pruneRetiredComponentCredentials(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	for _, component := range secretComponents {
+		keys := retiredComponentCredentialKeys(component)
+		if len(keys) == 0 {
+			continue
+		}
+		sec := &corev1.Secret{}
+		name := componentSecretName(oc, component)
+		if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, sec); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("read component Secret %s/%s: %w", oc.Namespace, name, err)
+		}
+		changed := false
+		for _, key := range keys {
+			if value, found := sec.Data[key]; found && retiredCredentialPlaceholder(key, value) {
+				delete(sec.Data, key)
+				changed = true
+			}
+		}
+		if changed {
+			if err := r.Update(ctx, sec); err != nil {
+				return fmt.Errorf("prune retired keys from component Secret %s/%s: %w", oc.Namespace, name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // ensureComponentSecret creates a component's scoped secret (create-if-absent, dummy

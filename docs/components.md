@@ -297,7 +297,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-deployment-api-auth` | `DEPLOYMENT_API_API_KEY` | the bootstrap step, where ingestion runs | index-builder sends it to its configured deployment API; the receiver contract still needs qualification |
 | `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`), index-builder, workers, dashboard, the e2e runner; never a reader ([#795](https://github.com/oramasearch/orama-operator/issues/795)) |
 
-- **Generated once.** Where the store runs in this cluster (enabled, not `mode: external`, not
+- **Generated once.** For broker and cache, where the store runs in this cluster (enabled, not `mode: external`, not
   `placement: central` on a read region) the operator creates the Secret with a random 48-character
   hex password, owner-referenced to the CR and labelled component `credentials`, which no teardown
   removes: disabling the broker or cache keeps its password for the retained volume. An existing
@@ -306,6 +306,9 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   created the same way on every stack, whatever analytics-processor and ClickHouse are set to, so
   re-enabling either finds the same key. It is internal to the readers and the processor, so it is
   generated, never copied from the managing cluster, and it can only read and erase search events.
+- **Upgrade cleanup.** Bootstrap removes old `dev-*` placeholder values for retired internal keys
+  from existing component Secrets, including ones for disabled components. It preserves any
+  user-supplied values and other component settings; a second pass makes no changes.
 - **Checked.** A broker, cache or analytics key Secret missing a key, or holding an empty value or a
   character outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails
   the reconcile with `Ready=False` naming the Secret and key, and is left as it is. The bootstrap
