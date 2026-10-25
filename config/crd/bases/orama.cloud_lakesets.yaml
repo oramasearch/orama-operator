@@ -61,8 +61,9 @@ spec:
           metadata:
             type: object
           spec:
-            description: LakeSetSpec is a ManagedSetSpec plus the end-to-end runs
-              against its members.
+            description: |-
+              LakeSetSpec is a ManagedSetSpec plus the end-to-end runs and the restore rehearsals against its
+              members.
             properties:
               clusters:
                 description: |-
@@ -176,6 +177,45 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              restoreRehearsals:
+                description: |-
+                  RestoreRehearsals rehearse a restore of members' data into throwaway resources: each becomes
+                  a LakeRestoreRehearsal named Name on its member's cluster, with spec.lakeRef set to the
+                  member's Lake. A rehearsal never touches the live data (docs/lake/restore-rehearsals.md). A
+                  rehearsal's spec cannot change once applied: to run one again, add an entry under a new name.
+                  Removing the entry deletes the rehearsal there, and anything of it still running.
+                items:
+                  description: SetRestoreRehearsal is one restore rehearsal against
+                    one member.
+                  properties:
+                    member:
+                      description: Member names the set member (SetMember.Name) whose
+                        Lake is rehearsed.
+                      maxLength: 40
+                      minLength: 1
+                      type: string
+                    name:
+                      description: |-
+                        Name is the LakeRestoreRehearsal's name on the member's cluster. LakeRestoreRehearsal is
+                        cluster-scoped, so it is unique on that cluster.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    spec:
+                      description: |-
+                        Spec is the LakeRestoreRehearsal's spec without lakeRef, which the set fills in: service
+                        (postgres or store), operation, from, targetImage.
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - member
+                  - name
+                  - spec
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               secrets:
                 description: |-
                   Secrets are copied from this cluster into every member's namespace before its instance is
@@ -215,6 +255,9 @@ spec:
             - message: every e2eTests[].member must name exactly one clusters[].name
               rule: '!has(self.e2eTests) || self.e2eTests.all(t, self.clusters.exists_one(c,
                 c.name == t.member))'
+            - message: every restoreRehearsals[].member must name exactly one clusters[].name
+              rule: '!has(self.restoreRehearsals) || self.restoreRehearsals.all(t,
+                self.clusters.exists_one(c, c.name == t.member))'
           status:
             description: |-
               LakeSetStatus is a ManagedSetStatus plus the end-to-end runs. The set's phase does not depend
@@ -385,6 +428,46 @@ spec:
               readyMembers:
                 format: int32
                 type: integer
+              restoreRehearsals:
+                description: |-
+                  RestoreRehearsals reports each declared rehearsal in the order the set lists them, then
+                  those still being removed. They do not change the set's phase.
+                items:
+                  description: SetRestoreRehearsalStatus is one restore rehearsal
+                    as its member's cluster reports it.
+                  properties:
+                    cluster:
+                      description: Cluster is where it was applied.
+                      type: string
+                    completedAt:
+                      description: CompletedAt is when the rehearsal finished on its
+                        cluster.
+                      format: date-time
+                      type: string
+                    evidence:
+                      description: Evidence is what the rehearsal's verifier reported.
+                      type: string
+                    member:
+                      type: string
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    phase:
+                      description: |-
+                        Phase is the LakeRestoreRehearsal's own phase (Pending, Running, Succeeded, Failed),
+                        Pending while the set waits to apply it, Blocked when the set refuses to apply it, or
+                        Removing while it is being deleted. Message says why.
+                      type: string
+                    selected:
+                      description: Selected is the CNPG Backup or store VolumeSnapshot
+                        the rehearsal restored.
+                      type: string
+                  required:
+                  - member
+                  - name
+                  type: object
+                type: array
             type: object
         type: object
     served: true

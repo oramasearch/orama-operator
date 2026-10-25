@@ -264,6 +264,19 @@ both are a set change, applied with Steve's consent and committed with it. The r
 set's `E2E` column and `status.e2eTests`. The entry is in the file, commented out, until
 `oramasearch/lake-e2e` has an image and the managing cluster runs an operator that knows the field.
 
+## Restore rehearsals from a set file
+
+A `LakeRestoreRehearsal` also runs on its Lake's cluster, so it is declared the same way: an entry
+under `spec.restoreRehearsals` of a `LakeSet` file, which the managing operator applies as a
+`LakeRestoreRehearsal` on the member's cluster with `spec.lakeRef` filled in
+([#127](https://github.com/oramasearch/orama-operator/issues/127)). It restores into a throwaway
+scratch namespace and never touches the live data. A rehearsal's spec cannot change, so a new run is
+a new entry under a new name; applying the file is Steve's consent, like any set change. The result
+is in the set's `status.restoreRehearsals`. [`sets/lake-prod.yaml`](sets/lake-prod.yaml) carries the
+store and Postgres rehearsals of `shared` and `shared-us`, commented out until the managing cluster
+runs an operator that knows the field. The runbook, with what backups exist per region, is
+[`docs/lake/restore-rehearsals.md`](../../docs/lake/restore-rehearsals.md).
+
 To check that the files match the cluster:
 
 ```sh

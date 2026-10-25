@@ -10,21 +10,26 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // LakeRestoreRehearsalSpec defines a lifecycle rehearsal for one Lake data service.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="rehearsal spec is immutable"
 // +kubebuilder:validation:XValidation:rule="self.operation != 'upgrade' || (has(self.targetImage) && size(self.targetImage) > 0)",message="targetImage is required for upgrade"
+// +kubebuilder:validation:XValidation:rule="self.service != 'store' || self.operation == 'restore'",message="the store service supports only the restore operation"
 type LakeRestoreRehearsalSpec struct {
 	// LakeRef names the cluster-scoped Lake whose data service is rehearsed.
 	// +kubebuilder:validation:MinLength=1
 	LakeRef string `json:"lakeRef"`
 
-	// Service is the data service to rehearse.
-	// +kubebuilder:validation:Enum=postgres
+	// Service is what is rehearsed: postgres, the CNPG control database restored from its CNPG
+	// object-store Backups, or store, Lake's store volume restored from the operator's CSI
+	// VolumeSnapshots of it (docs/lake/volume-snapshots.md). The store supports only restore.
+	// +kubebuilder:validation:Enum=postgres;store
 	Service string `json:"service"`
 
 	// Operation selects the lifecycle procedure.
 	// +kubebuilder:validation:Enum=restore;upgrade;failover
 	Operation string `json:"operation"`
 
-	// From selects the completed CNPG Backup. Empty or latest selects the newest completed backup;
-	// any other value is the name of a Backup object owned by the Lake control DB.
+	// From selects what is restored. Empty or latest selects the newest completed CNPG Backup
+	// (postgres) or the newest ready VolumeSnapshot the operator took of the store (store). Any
+	// other value is the name of a Backup owned by the Lake control DB, or of an operator-taken
+	// store VolumeSnapshot, in the Lake's namespace.
 	// +kubebuilder:default=latest
 	// +optional
 	From string `json:"from,omitempty"`
@@ -50,6 +55,14 @@ type LakeRestoreRehearsalStatus struct {
 	// SelectedBackup is the CNPG Backup object selected for a restore or upgrade.
 	// +optional
 	SelectedBackup string `json:"selectedBackup,omitempty"`
+	// SelectedSnapshot is the store VolumeSnapshot selected for a store restore, in the Lake's
+	// namespace.
+	// +optional
+	SelectedSnapshot string `json:"selectedSnapshot,omitempty"`
+	// Evidence is what the verifier reported on success or failure: for a store restore, the
+	// restored volume's file count, size and top-level entries.
+	// +optional
+	Evidence string `json:"evidence,omitempty"`
 	// PreviousPrimary is the primary observed before a failover rehearsal.
 	// +optional
 	PreviousPrimary string `json:"previousPrimary,omitempty"`

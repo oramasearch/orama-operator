@@ -1784,17 +1784,25 @@ with the live database, fail when either side lacks a migration the vendored lak
 scratch object after success or failure. Upgrade changes the scratch Cluster image before
 verification. Failover requests a CNPG switchover on the live replicated control DB and verifies
 the dedicated read-only rehearsal role connects through the write Service and that the database
-holds every migration the vendored lake schema records.
+holds every migration the vendored lake schema records. A store restore (`service: store`) binds
+the cloud snapshot of a selected operator-taken `VolumeSnapshot` of the Lake's store claim to a new
+`Retain` `VolumeSnapshotContent`, restores it into a claim in the scratch namespace, reads every
+file read-only, records the verifier's report and deletes everything it made; the live claim,
+snapshots and contents are never changed ([`lake/restore-rehearsals.md`](lake/restore-rehearsals.md)).
+Verifier pods carry `orama.cloud/rehearsal-lake=<lake>`, as does the scratch namespace, which is
+what the Lake's `allow-rehearsal-ingress-to-controldb` sandbox policy admits to the control database.
 
 | Field | Purpose |
 |---|---|
 | `spec.lakeRef` | Name of the cluster-scoped `Lake`. |
-| `spec.service` | `postgres` in this version. |
+| `spec.service` | `postgres` (the CNPG control database) or `store` (the Lake's store volume, from its CSI snapshots). CEL: the store supports only `restore`. |
 | `spec.operation` | `restore \| upgrade \| failover`. |
-| `spec.from` | `latest` by default, or the name of a completed CNPG `Backup`. Restore and upgrade pin its Barman `status.backupId`. |
+| `spec.from` | `latest` by default: the newest completed CNPG `Backup` (postgres) or the newest `readyToUse` operator-taken store `VolumeSnapshot` (store). Otherwise the name of one, in the Lake's namespace; a store snapshot the operator did not take of this Lake's store claim is refused. Restore and upgrade pin a Backup's Barman `status.backupId`. |
 | `spec.targetImage` | Required for `upgrade`: the CloudNativePG-compatible PostgreSQL operand image pinned by SHA-256 digest and tested on the scratch clone. Restore/upgrade also require a pinned source image before credentials are copied. |
 | `status.phase` / `.message` | `Pending \| Running \| Succeeded \| Failed` and the current or terminal explanation. |
 | `status.scratchNamespace` / `.selectedBackup` | Deterministic scratch location and the pinned CNPG Backup object for restore and upgrade. |
+| `status.selectedSnapshot` | The pinned store `VolumeSnapshot` of a store restore. |
+| `status.evidence` | What the verifier reported in its termination message; for a store restore `files=<n> kib=<n> top=<entries>`, or the reason it failed. Kept after the scratch resources are deleted. |
 | `status.previousPrimary` / `.targetPrimary` | The primary transition selected by a failover rehearsal. |
 | `status.startedAt` / `.completedAt` / `.observedGeneration` | Durable audit timestamps and the represented immutable spec generation. |
 
@@ -1971,6 +1979,8 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | `status.memberStatuses[]` | Per member: `cluster`, `name`, `namespace`, `phase` (`Pending`, `Progressing`, `Ready`, `Degraded`, or `Deleting` for a removed member waiting for its migrations), `version` (a Lake's image, a v1's image tag) and `message`. |
 | `status.migrations[]` | `OramaCloudV1Set` only. Per migration, the declared ones in order and then those still being removed: `name`, `member`, `cluster` and `namespace` (where it was applied), `step`, `phase` and `message` as the member's cluster reports them (`Pending` while the set waits to apply it, `Blocked` when the set refuses to), and `secrets` (the Secrets copied for it). The set's phase does not depend on them. |
 | `status.migrationSummary` | `OramaCloudV1Set` only: how many declared migrations succeeded, `1/2 Succeeded`; empty with none. The `Migrations` column of `kubectl get ocv1set`. |
+| `spec.restoreRehearsals[]` | `LakeSet` only, at most 16, keyed by `name` (DNS label, at most 63): a restore rehearsal of a member's data into throwaway resources ([#127](https://github.com/oramasearch/orama-operator/issues/127); [`lake/restore-rehearsals.md`](lake/restore-rehearsals.md)). Each becomes a cluster-scoped [`LakeRestoreRehearsal`](#lakerestorerehearsal-separate-crd-cluster-scoped) named `name` on the member's cluster, labelled `orama.cloud/managed-by-set=LakeSet.<set>`. `member` names exactly one `clusters[].name` (CEL: *every restoreRehearsals[].member must name exactly one clusters[].name*). `spec` is the rehearsal's spec without `lakeRef`, which the set fills in as the member's Lake, refusing a different one. A rehearsal's spec is immutable: an entry changed after it was applied is reported with what the cluster has and the message *a rehearsal's spec cannot change*, and is not applied; add an entry under a new name instead. Removing the entry deletes the rehearsal there (its controller deletes any scratch resources); deleting the set deletes its rehearsals first. |
+| `status.restoreRehearsals[]` | `LakeSet` only. Per rehearsal, the declared ones in order and then those still being removed: `name`, `member`, `cluster`, and as the member's cluster reports it `phase` (`Pending`, `Running`, `Succeeded`, `Failed`; `Pending` while the set waits; `Blocked` when the set refuses it; `Removing`), `message`, `selected` (the Backup or VolumeSnapshot restored), `evidence`, `completedAt`. The set's phase does not depend on them. |
 | `status.e2eTests[]` | `LakeSet` only. Per e2e test, the declared ones in order and then those still being removed: `name`, `member`, `cluster` (where it was applied), and the latest run as the member's cluster reports it: `phase` (`Pending`, `Running`, `Succeeded`, `Failed`; `Pending` while the set waits to apply it or until the cluster starts the run for the latest `spec`, so an earlier run's result is never reported as this one's; `Blocked` when the set refuses it; `Removing`), `message`, `jobName`, `runID`, `lakeRevision`, `pass`, `fail`, `skip`. The failed and skipped steps' reasons stay on the `LakeE2ETest` on the member's cluster. The set's phase does not depend on them. |
 | `status.e2eSummary` | `LakeSet` only: each declared test's phase and, once finished, `pass/fail/skip`, e.g. `testing-gate Failed 311/22/3`; empty with none. The `E2E` column of `kubectl get lset`. |
 | `status.message` | Which members are not `Ready`, and what each one's cluster says about it; for an `OramaCloudV1Set`, also what the set could not do with a migration, and for a `LakeSet` with an e2e test. |

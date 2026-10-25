@@ -55,6 +55,10 @@ const (
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=backups,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotcontents,verbs=get;list;watch;create;delete
 
 // Reconcile advances one rehearsal through a durable, idempotent state machine.
 func (r *LakeRestoreRehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -80,6 +84,9 @@ func (r *LakeRestoreRehearsalReconciler) Reconcile(ctx context.Context, req ctrl
 		return r.startRehearsal(ctx, &rehearsal)
 	}
 
+	if rehearsal.Spec.Service == "store" {
+		return r.reconcileStoreRehearsal(ctx, &rehearsal, &lake)
+	}
 	switch rehearsal.Spec.Operation {
 	case "restore", "upgrade":
 		return r.reconcileScratchRehearsal(ctx, &rehearsal, &lake)
@@ -91,6 +98,12 @@ func (r *LakeRestoreRehearsalReconciler) Reconcile(ctx context.Context, req ctrl
 }
 
 func validateRehearsal(rehearsal *oramav1alpha1.LakeRestoreRehearsal, lake *oramav1alpha1.Lake) string {
+	if rehearsal.Spec.Service == "store" {
+		if rehearsal.Spec.Operation != "restore" {
+			return fmt.Sprintf("the store service supports only restore, not %q", rehearsal.Spec.Operation)
+		}
+		return ""
+	}
 	if rehearsal.Spec.Service != "postgres" {
 		return fmt.Sprintf("unsupported service %q", rehearsal.Spec.Service)
 	}
@@ -344,7 +357,9 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchNamespace(
 		return err
 	}
 	namespace.Name = rehearsal.Status.ScratchNamespace
-	namespace.Labels = rehearsalLabels(rehearsal)
+	// The Lake label lets the Lake's network sandbox admit this namespace's verifier to the
+	// control database (allow-rehearsal-ingress-to-controldb).
+	namespace.Labels = withLabels(rehearsalLabels(rehearsal), map[string]string{lakeRehearsalLakeLabel: rehearsal.Spec.LakeRef})
 	if err := controllerutil.SetControllerReference(rehearsal, namespace, r.Scheme); err != nil {
 		return err
 	}
@@ -698,7 +713,9 @@ func (r *LakeRestoreRehearsalReconciler) finishRehearsal(
 	message string,
 ) (ctrl.Result, error) {
 	now := metav1.Now()
-	if rehearsal.Spec.LakeRef != "" {
+	// The Lake's data-service evidence covers its Postgres; a store restore is recorded on the
+	// rehearsal alone.
+	if rehearsal.Spec.LakeRef != "" && rehearsal.Spec.Service != "store" {
 		if err := r.recordLakeRehearsal(ctx, rehearsal, succeeded, message, now); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -790,19 +807,32 @@ func (r *LakeRestoreRehearsalReconciler) cleanupRehearsal(
 	rehearsal *oramav1alpha1.LakeRestoreRehearsal,
 ) error {
 	if rehearsal.Status.ScratchNamespace != "" {
+		background := metav1.DeletePropagationBackground
 		objects := []client.Object{
 			&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "verify", Namespace: rehearsal.Status.ScratchNamespace}},
 			newScratchCluster(rehearsal),
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "source-db", Namespace: rehearsal.Status.ScratchNamespace}},
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "object-store", Namespace: rehearsal.Status.ScratchNamespace}},
 		}
+		if rehearsal.Spec.Service == "store" {
+			objects = []client.Object{
+				&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "verify", Namespace: rehearsal.Status.ScratchNamespace}},
+				&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: storeRehearsalClaim, Namespace: rehearsal.Status.ScratchNamespace}},
+				newStoreRehearsalSnapshot(rehearsal),
+			}
+		}
 		for _, object := range objects {
-			if err := r.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
+			if err := r.Delete(ctx, object, &client.DeleteOptions{PropagationPolicy: &background}); err != nil && !isGoneOrUnknownKind(err) {
 				return err
 			}
 		}
 		namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: rehearsal.Status.ScratchNamespace}}
 		if err := r.Delete(ctx, namespace); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	if rehearsal.Spec.Service == "store" {
+		if err := r.deleteStoreRehearsalContent(ctx, rehearsal); err != nil {
 			return err
 		}
 	}
@@ -863,6 +893,8 @@ func verificationJobSpec(lake *oramav1alpha1.Lake, sourceHost string, restoredHo
 		BackoffLimit:          &backoff,
 		ActiveDeadlineSeconds: &deadline,
 		Template: corev1.PodTemplateSpec{
+			// The Lake's network sandbox admits exactly these labels to its control database.
+			ObjectMeta: metav1.ObjectMeta{Labels: lakeRehearsalPodLabels(lake.Name)},
 			Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever,
 				Containers: []corev1.Container{{

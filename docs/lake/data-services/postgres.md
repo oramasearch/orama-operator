@@ -18,6 +18,15 @@ and writes the failure message and completion timestamp to the Postgres row.
   keeps CNPG's default for compatibility; changing the field requests CNPG's normal image rollout.
 - `targetImage` for an upgrade is a published CNPG-compatible image pinned by SHA-256 digest.
 
+- The Lake's network sandbox admits the verifier to the control database through
+  `allow-rehearsal-ingress-to-controldb` (operator versions after v0.9.5). Under an older operator
+  the verifier of a sandboxed Lake cannot connect and the rehearsal fails at *read-only rehearsal
+  login is unavailable*.
+
+For lake-prod, the rehearsal is declared in its set file and applied on the member's cluster by the
+managing operator; the runbook, with what is missing today, is
+[restore rehearsals](../restore-rehearsals.md).
+
 Never run a rehearsal against `Lake/prod` on AKS unless that operation is deliberately approved.
 Use the disposable k0s or `kind` cluster described in the work order when its R2 Secret is
 available.
