@@ -1,0 +1,158 @@
+# lake.live's status page and its external checks (liquid-bridge#14; techops-docs docs/lake/status-page.md).
+#
+# Applied to the managing cluster (orama-production-cluster-01), never to a production leaf: the
+# checks run outside lake.live's own clusters, through Cloudflare, the way a customer reaches it, and
+# the page is served by Cloudflare from an R2 bucket, outside lake's failure domain.
+#
+# Before applying, Steve creates these Secrets in orama-system (none is in this file):
+#   lake-live-probe-eu, lake-live-probe-us  token (a Lake API key of a probe account, member of one
+#                                           test workspace in that region), workspace_id, agent (a
+#                                           library agent's name), agent_credential (its bus credential)
+#   lake-live-status-email                  host smtp.resend.com, port 465, username resend, password
+#                                           (Orama's Resend key, the one in lake/lake-prod-resend),
+#                                           from "lake.live status <status@lake.live>", to (comma-separated)
+#   lake-live-status-webhook (optional)     url (an incoming webhook of the paging channel)
+# A check whose Secret is missing does not run and is shown as not checked, never as failing.
+# Runbook: docs/infrastructure/status-pages.md.
+apiVersion: orama.cloud/v1alpha1
+kind: CloudflareR2Bucket
+metadata:
+  name: lake-live-status
+  namespace: orama-system
+spec:
+  secretRef: cloudflare-api-token
+  name: lake-live-status
+  # The bucket holds only the public page; deleting the resource keeps it.
+  deletionPolicy: Retain
+  credentials:
+    secretName: lake-live-status-s3
+  # Everything in this bucket is public on status.lake.live.
+  customDomain:
+    domain: status.lake.live
+    # The lake.live zone (key zoneID of lake/cloudflare-api-token-lake-live). Not a secret.
+    zoneID: 2055a6b179ffa32da85acd4415a17103
+    minTLS: "1.2"
+---
+apiVersion: orama.cloud/v1alpha1
+kind: StatusPage
+metadata:
+  name: lake-live
+  namespace: orama-system
+spec:
+  title: lake.live status
+  intervalSeconds: 60
+  timeoutSeconds: 10
+  failureThreshold: 3
+  publish:
+    bucketSecretRef: lake-live-status-s3
+    publicURL: https://status.lake.live
+  alerts:
+    email:
+      secretRef: lake-live-status-email
+  components:
+  # Europe: lake-prod member "shared", orama-production-cluster-02 (swedencentral).
+  - name: eu-api
+    title: API
+    group: Europe
+    checks:
+    - name: readyz
+      url: https://eu.lake.live/readyz
+      expect:
+        json: [{path: ok, equals: "true"}]
+        minCertificateDays: 14
+    - name: server-info
+      url: https://eu.lake.live/v1/server_info
+      expect:
+        json:
+        - {path: ok, equals: "true"}
+        - {path: value.region.name, equals: swedencentral}
+    # One real call through to a workspace Zetta (lake#1097: /readyz passed while every workspace
+    # call answered 503).
+    - name: workspace-zetta
+      url: https://eu.lake.live/v1/workspace_engine_info?workspace_id=$(workspace_id)
+      secretRef: lake-live-probe-eu
+      bearerTokenKey: token
+      expect:
+        json: [{path: ok, equals: "true"}]
+  - name: eu-agent-bus
+    title: Agents
+    group: Europe
+    checks:
+    - name: receive-agent-tasks
+      # A read of the agent's inbox: it claims nothing.
+      url: https://eu.lake.live/v1/receive_agent_tasks?agent=$(agent)&wait_ms=0
+      secretRef: lake-live-probe-eu
+      bearerTokenKey: agent_credential
+      expect:
+        json: [{path: ok, equals: "true"}]
+  - name: eu-web
+    title: Web app
+    group: Europe
+    checks:
+    - name: console
+      url: https://eu.lake.live/
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake Console</title>"]
+    - name: sign-in
+      url: https://eu.lake.live/sign-in
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake Console</title>"]
+  # United States: lake-prod member "shared-us", orama-production-cluster-03 (eastus).
+  - name: us-api
+    title: API
+    group: United States
+    checks:
+    - name: readyz
+      url: https://us.lake.live/readyz
+      expect:
+        json: [{path: ok, equals: "true"}]
+        minCertificateDays: 14
+    - name: server-info
+      url: https://us.lake.live/v1/server_info
+      expect:
+        json:
+        - {path: ok, equals: "true"}
+        - {path: value.region.name, equals: eastus}
+    - name: workspace-zetta
+      url: https://us.lake.live/v1/workspace_engine_info?workspace_id=$(workspace_id)
+      secretRef: lake-live-probe-us
+      bearerTokenKey: token
+      expect:
+        json: [{path: ok, equals: "true"}]
+  - name: us-agent-bus
+    title: Agents
+    group: United States
+    checks:
+    - name: receive-agent-tasks
+      url: https://us.lake.live/v1/receive_agent_tasks?agent=$(agent)&wait_ms=0
+      secretRef: lake-live-probe-us
+      bearerTokenKey: agent_credential
+      expect:
+        json: [{path: ok, equals: "true"}]
+  - name: us-web
+    title: Web app
+    group: United States
+    checks:
+    - name: console
+      url: https://us.lake.live/
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake Console</title>"]
+    - name: sign-in
+      url: https://us.lake.live/sign-in
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake Console</title>"]
+  # The apex: the order sheet and region picker, served by the EU pod.
+  - name: order-sheet
+    title: Order sheet (lake.live)
+    group: Global
+    checks:
+    - name: apex
+      url: https://lake.live/
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake — Get Lake"]
+        minCertificateDays: 14

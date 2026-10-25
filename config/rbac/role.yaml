@@ -408,6 +408,7 @@ rules:
   - peerlinks/status
   - postgresschemas/status
   - rabbitmqtopologies/status
+  - statuspages/status
   - stripecatalogs/status
   - stripewebhookendpoints/status
   - tunnelproviders/status
@@ -422,6 +423,7 @@ rules:
   - orama.cloud
   resources:
   - lakeordersources
+  - statuspages
   - tunnelproviders
   verbs:
   - get
@@ -553,6 +555,8 @@ rules:
   resources:
   - volumesnapshotcontents
   verbs:
+  - create
+  - delete
   - get
   - list
   - patch

@@ -18,6 +18,15 @@ and writes the failure message and completion timestamp to the Postgres row.
   keeps CNPG's default for compatibility; changing the field requests CNPG's normal image rollout.
 - `targetImage` for an upgrade is a published CNPG-compatible image pinned by SHA-256 digest.
 
+- The Lake's network sandbox admits the verifier to the control database through
+  `allow-rehearsal-ingress-to-controldb` (operator versions after v0.9.5). Under an older operator
+  the verifier of a sandboxed Lake cannot connect and the rehearsal fails at *read-only rehearsal
+  login is unavailable*.
+
+For lake-prod, the rehearsal is declared in its set file and applied on the member's cluster by the
+managing operator; the runbook, with what is missing today, is
+[restore rehearsals](../restore-rehearsals.md).
+
 Never run a rehearsal against `Lake/prod` on AKS unless that operation is deliberately approved.
 Use the disposable k0s or `kind` cluster described in the work order when its R2 Secret is
 available.
@@ -61,7 +70,9 @@ After CNPG is healthy, a digest-pinned `postgres:18-alpine` Job queries all sche
 `0027_analytics_services` and `stores_guard` from `0028_stores`. The same query lists, as
 `missing_migrations=`, every migration recorded in the vendored lake schema
 (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`) that the database's `schema_migrations`
-lacks. The Job fails if that list is non-empty on either side, before comparing. Comparison alone
+lacks. For a Lake whose image has `lake manifest`, the guard tables and the migrations are the
+image's own (`status.imageManifest.guardTables` and `.migrations`,
+[#936](https://github.com/oramasearch/orama-operator/issues/936)). The Job fails if that list is non-empty on either side, before comparing. Comparison alone
 cannot see a gap present in both databases, and neither the guard counts nor the newest version show
 an earlier-numbered migration that never applied: on 2026-10-05, `0067_workspace_store` merged after
 `0068` and `0069` had applied, and the newest version stayed `0069`

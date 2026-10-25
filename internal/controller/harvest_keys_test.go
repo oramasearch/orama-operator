@@ -79,7 +79,8 @@ func TestHarvestKeysAreGeneratedAndShared(t *testing.T) {
 	}
 }
 
-// A key supplied before the first reconcile is kept; without ingestion no key is generated.
+// A key supplied before the first reconcile is kept; the dashboard needs the control key even
+// without ingestion, while the notification key belongs only to harvest-master.
 func TestHarvestKeysKeepASuppliedValueAndFollowIngestion(t *testing.T) {
 	const supplied = "supplied-harvest-control-key-0123456789"
 	h := newEngineHarness(t, stackOC(nil), engineSecret(), secretOf("v1-harvest-sign", map[string]string{harvestSignKey: supplied}))
@@ -92,10 +93,15 @@ func TestHarvestKeysKeepASuppliedValueAndFollowIngestion(t *testing.T) {
 		o.Spec.Components.Ingestion = oramav1alpha1.IngestionSpec{}
 	}), engineSecret())
 	h.mustRun()
-	for _, name := range []string{"v1-harvest-sign", "v1-harvest-notification"} {
-		if h.get(name, &corev1.Secret{}) {
-			t.Errorf("%s exists without ingestion", name)
-		}
+	if !h.get("v1-harvest-sign", &corev1.Secret{}) {
+		t.Error("dashboard has no control key without ingestion")
+	}
+	dashboard := containerIn(t, h.templates()["dashboard"].Spec, "dashboard")
+	if ref := secretRef(dashboard.Env, "SCRAPER_SIGNATURE"); ref == nil || ref.Name != "v1-harvest-sign" || ref.Key != harvestSignKey {
+		t.Errorf("dashboard SCRAPER_SIGNATURE = %+v", ref)
+	}
+	if h.get("v1-harvest-notification", &corev1.Secret{}) {
+		t.Error("harvest notification key exists without ingestion")
 	}
 	if h.get("v1-harvest-master", &appsv1.Deployment{}) {
 		t.Error("harvest-master runs without ingestion")

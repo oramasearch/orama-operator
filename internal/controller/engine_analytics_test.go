@@ -212,7 +212,7 @@ func TestAnalyticsProcessorHoldsNoMasterKey(t *testing.T) {
 			}
 			init := containerIn(t, tmpl.Spec, "render-config")
 			want := []corev1.EnvVar{secretKeyEnv("ANALYTICS_API_KEY", "v1-analytics-api-key", "ANALYTICS_API_KEY"),
-				secretKeyEnv("CLICKHOUSE_PASSWORD", "v1-analytics-processor-secret", "CLICKHOUSE_PASSWORD"),
+				secretKeyEnv("CLICKHOUSE_PASSWORD", "v1-clickhouse-auth", "CLICKHOUSE_PASSWORD"),
 				secretKeyEnv("PG_URI", "v1-controldb-app", "uri")}
 			if !reflect.DeepEqual(init.Env, want) {
 				t.Errorf("render-config env = %+v, want %+v", init.Env, want)
@@ -221,7 +221,7 @@ func TestAnalyticsProcessorHoldsNoMasterKey(t *testing.T) {
 			if !reflect.DeepEqual(main.Env, []corev1.EnvVar{{Name: "CONFIG_PATH", Value: "/etc/analytics-processor/config.yaml"}}) {
 				t.Errorf("main container env = %+v", main.Env)
 			}
-			if got, want := tmpl.Annotations[credentialsHashKey], secretDataHash(h.secret("v1-analytics-api-key"), h.secret("v1-analytics-processor-secret")); got != want {
+			if got, want := tmpl.Annotations[credentialsHashKey], secretDataHash(h.secret("v1-analytics-api-key"), h.secret("v1-clickhouse-auth")); got != want {
 				t.Errorf("credentials hash = %q, want the analytics key and component Secrets' %q", got, want)
 			}
 		})

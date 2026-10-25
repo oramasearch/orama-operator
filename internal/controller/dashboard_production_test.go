@@ -87,11 +87,9 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 		withStripeRef(d)
 	}
 	cases := map[string]tc{
-		// The pre-cutover live v1-us member: a public dashboard with no dashboard env at all, so the
-		// operator's seeded placeholders and no CRON_SECRET.
+		// The pre-cutover live v1-us member has no dashboard env; Stripe settings are absent.
 		"no dashboard env (the v1-us member)": {
 			want: []string{
-				"CRON_SECRET (the cron routes' bearer) is not set by a dashboard.envFrom Secret or a dashboard.env secretKeyRef",
 				"STRIPE_WEBHOOK_SECRET (the Stripe webhook signature) is not set",
 				"STRIPE_SECRET_KEY (the Stripe API key) is not set by spec.components.dashboard.stripeSecretKeySecretRef",
 			}},
@@ -102,38 +100,16 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 		"the seeded Stripe placeholder behind the reference": {dash: envFrom,
 			objects: []client.Object{secretOf("dashboard-env", productionAuth), stripeKeySecret("dev-stripe-secret-key")},
 			want:    []string{"STRIPE_SECRET_KEY (the Stripe API key) in Secret orama-system/dashboard-stripe key STRIPE_SECRET_KEY is not a live-mode restricted key"}},
-		"another component's placeholder": {dash: envFrom,
-			objects: []client.Object{secretOf("dashboard-env", withAuth(map[string]string{"CRON_SECRET": "dev-harvest-signature"}))},
-			want:    []string{"CRON_SECRET (the cron routes' bearer) is an operator placeholder"}},
-		// The crons are off, and CRON_SECRET is still required: the routes are served either way.
-		"no CRON_SECRET with the crons disabled": {dash: envFrom,
-			objects: []client.Object{secretOf("dashboard-env", withAuth(map[string]string{"CRON_SECRET": ""}))},
-			want:    []string{"CRON_SECRET (the cron routes' bearer) is not set"}},
-		"empty CRON_SECRET": {dash: envFrom,
-			objects: []client.Object{secretOf("dashboard-env", map[string]string{"CRON_SECRET": "",
-				"STRIPE_WEBHOOK_SECRET": productionAuth["STRIPE_WEBHOOK_SECRET"]})},
-			want: []string{"CRON_SECRET (the cron routes' bearer) is empty"}},
 		"a literal in dashboard.env": {dash: func(d *oramav1alpha1.DashboardSpec) {
 			envFrom(d)
 			d.Env = []corev1.EnvVar{{Name: "STRIPE_WEBHOOK_SECRET", Value: "whsec_literal"}}
 		}, objects: []client.Object{secretOf("dashboard-env", productionAuth)},
 			want: []string{"STRIPE_WEBHOOK_SECRET (the Stripe webhook signature): dashboard.env sets it, but not from a Secret key"}},
-		"a ConfigMap source": {dash: func(d *oramav1alpha1.DashboardSpec) {
-			d.EnvFrom = []corev1.EnvFromSource{secretSource("dashboard-env"), configMapSource("plain")}
-		}, objects: []client.Object{secretOf("dashboard-env", productionAuth), configMapOf("plain", map[string]string{"CRON_SECRET": "x"})},
-			want: []string{"CRON_SECRET (the cron routes' bearer): dashboard.envFrom[1] gives it from ConfigMap plain, not a Secret"}},
 		// A value written into the operator's own component Secret by hand does not count: it is
 		// where the placeholders live, and ensureComponentSecret keeps whatever is there.
 		"values only in the operator's component Secret": {
 			objects: []client.Object{secretOf("v1-dashboard-secret", withAuth(map[string]string{"STRIPE_SECRET_KEY": restrictedLiveKey}))},
-			want:    []string{"CRON_SECRET (the cron routes' bearer) is not set", "STRIPE_SECRET_KEY (the Stripe API key) is not set"}},
-		"optional selector to a missing key": {dash: func(d *oramav1alpha1.DashboardSpec) {
-			envFrom(d)
-			sel := secretKeyEnv("CRON_SECRET", "cron", "token")
-			sel.ValueFrom.SecretKeyRef.Optional = optional()
-			d.Env = []corev1.EnvVar{sel}
-		}, objects: []client.Object{secretOf("dashboard-env", productionAuth), secretOf("cron", nil)},
-			want: []string{"CRON_SECRET (the cron routes' bearer) is not set"}},
+			want:    []string{"STRIPE_SECRET_KEY (the Stripe API key) is not set"}},
 	}
 	for name, c := range cases {
 		for _, existing := range []bool{false, true} {
@@ -260,9 +236,15 @@ func TestProductionDashboardRendersWithItsProductionAuthentication(t *testing.T)
 			}
 			env := h.effectiveEnv(dep.Spec.Template.Spec.Containers[0])
 			for k, want := range productionAuth {
+				if k == "CRON_SECRET" {
+					continue
+				}
 				if env[k] != want {
 					t.Errorf("effective %s is not the production value", k)
 				}
+			}
+			if env["CRON_SECRET"] != string(h.secret("v1-cron-secret").Data["CRON_SECRET"]) {
+				t.Error("effective CRON_SECRET is not the generated value")
 			}
 			if env["STRIPE_SECRET_KEY"] != restrictedLiveKey {
 				t.Error("effective STRIPE_SECRET_KEY is not the restricted key")

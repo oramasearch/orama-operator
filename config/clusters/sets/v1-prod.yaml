@@ -97,7 +97,8 @@
 #   v1-eu-analytics-api-key (#386)                             readers' reader_side.analytics and the analytics
 #                                                              processor only (credentials.go)
 #   v1-eu-redis-http       token                              Redis HTTP shim and dashboard (credentials.go)
-#   v1-eu-harvest-sign     HARVEST_SIGN                       index-builder and harvest-master (credentials.go)
+#   v1-eu-harvest-sign     HARVEST_SIGN                       index-builder, harvest-master, dashboard
+#                                                              SCRAPER_SIGNATURE (credentials.go)
 #   v1-eu-harvest-notification NOTIFICATION_SIGNATURE          harvest-master (credentials.go)
 #
 # Derived:
@@ -129,18 +130,13 @@
 #   Images: the template pins the newest build of every component by digest, the images v1-nonprod
 #     runs (orama-bridge decisions 2026-10-23, 3, which replaces the release-tag requirement of
 #     2026-10-17), and v1-eu adds the production dashboard built from public.env.v1-prod.
-#   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
-#     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
-#     (search and index-builder),
-#     DECRYPTER_API_SECRET_BASE64 (index-builder's x-api-key to
-#     openai-decrypter, index-manager apps/index-builder/src/embeddings/openai.ts; openai-decrypter gets
-#     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder).
-#     Read-only EU inspection (2026-10-23) confirms those component Secret fields still match the
-#     operator's dev seeds; current workloads consume them through envFrom or explicit references.
-#     Decrypter receiver authentication and the dashboard deployment-API key contract still need
-#     qualification; DEPLOYMENT_API_API_KEY is not wired to the dedicated dashboard PRIVATE_API_KEY.
-#     HARVEST's worker still seeds a dummy HARVEST_SIGN; verify the eventual
-#     crawler-job wiring separately. The index-builder/master pair and Redis HTTP token are generated.
+#   #570 makes ClickHouse, Typesense, cron, decrypter and index-builder's internal keys generated
+#     by the operator. This set must wait for that code to roll and pass live proof before apply;
+#     the 2026-10-23 read-only EU inspection found the old component Secret dev seeds still in use.
+#     The dashboard deployment-API key contract still needs qualification:
+#     DEPLOYMENT_API_API_KEY is not wired to the dashboard's PRIVATE_API_KEY.
+#     HARVEST's one-shot worker has no launcher yet; verify its eventual credential wiring
+#     separately. The index-builder/master/dashboard control key and Redis HTTP token are generated.
 #   The dashboard's Stripe key (#802, LSR-140, #885): the v1-eu-only reference below is prepared,
 #     and orama-system/v1-prod-dashboard-stripe now holds the validated restricted live key with
 #     exactly docs/components.md's permissions ("The dashboard's Stripe key"). Lake bills in the same
@@ -157,11 +153,12 @@
 #     APIFY_TOKEN and harvest-master's GITHUB_PAT/GHCR_TOKEN still wait on decisions in #747.
 #   Outside-service decisions still required: Apify (#747), QStash (workers' QSTASH_TOKEN).
 #     Uploads use the stack's owned R2 bucket; copied Prod 1 AWS credentials do not verify readiness.
-#   Dashboard source preparation: RESEND_API_KEY, SLACK_TOKEN, Slack channels,
-#     S3_BUCKET_PREFIX and DATA_SOURCE_REQUEST_URL remain three-byte placeholders (read 2026-10-23).
-#     Scoped Vercel production candidates are staged privately where available, not installed.
+#   Dashboard source: RESEND_API_KEY, SLACK_TOKEN and both Slack channels reuse Prod 1 Vercel
+#     Production values, installed 2026-10-24 (orama-bridge#252, #253). EU invitation email and a
+#     marked signup notification were delivered; Juan permits shared-channel posts before cutover.
+#     S3_BUCKET_PREFIX and DATA_SOURCE_REQUEST_URL were three-byte placeholders on 2026-10-23.
 #     PRIVATE_API_KEY is prepared in this source (64 hex characters); the target import consumer
-#     reads the same dashboard source. Shared email/Slack inputs require isolation review.
+#     reads the same dashboard source.
 #     Clerk keys come from orama-system/clerk-cloud-v1-prod, copied only into v1-eu.
 #     Its standalone Frontend API is clerk.orama.ing; dashboard sign-in stays on app.orama.ing/login.
 #     controlDB.stripePrices carries Prod 1's live-mode price IDs (#378).
@@ -220,15 +217,19 @@ spec:
         manageLoadBalancers: false     # no geo load balancer across the members yet
       images:
         overrides:
-          # The production dashboard: dashboard dev 56f355da built with orama-cloud-v1-bridge
-          # build/images/dashboard/public.env.v1-prod (app.orama.ing, standalone Cloud v1 Clerk);
-          # recorded in orama-cloud-v1-bridge#19.
-          dashboard: oramasearch/dashboard:v1-prod-56f355da-cv1@sha256:79a3df5f1a1f899c7e39c68ed2c2dfafde97913a3ddb3fab14f8b979ce61bc6b
+          # The production dashboard: dashboard dev 79abacb3 (the new-device sign-in code, dashboard#190;
+          # custom system prompts read from the writer, dashboard#192; GitHub sign-in hidden until #245,
+          # dashboard#193) built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-prod
+          # (app.orama.ing, standalone Cloud v1 Clerk); recorded in orama-cloud-v1-bridge#23.
+          # Sentry uses the existing Orama project with environment v1-prod and release
+          # dashboard@79abacb32d8461c06531ba7a906ab559890a907b (dashboard#194).
+          dashboard: oramasearch/dashboard:v1-prod-79abacb3-sentry@sha256:de985a120bf7f28bb6690a9e02b34dabf12ce561eef5792b07fc0913ed7715a2
       # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
       # default is Standard SSD. v1-eu was created as a sandbox on 10Gi Standard SSD volumes, which
-      # cannot change class in place, so each volume approves its replacement (approveDataDeletion,
-      # orama-operator#920): the operator erases the sandbox's volumes and creates premium ones.
-      # Set approveDataDeletion to false before any customer data is copied into v1-eu.
+      # cannot change class in place, so each volume approved its replacement once (approveDataDeletion,
+      # orama-operator#920): on 2026-10-24 the operator erased the sandbox's volumes and created premium
+      # ones. Every volume is now approveDataDeletion: false, before any customer data is copied into
+      # v1-eu: a storage change the volume can't take in place is refused, never done by erasing it.
       components:
         engine:
           enabled: true
@@ -243,7 +244,7 @@ spec:
             storage:
               size: 512Gi
               storageClassName: managed-csi-premium
-              approveDataDeletion: true
+              approveDataDeletion: false
             # jwksURL unset: the writer reads the dashboard's keys in-cluster. Prod 2 has one cluster
             # row, the operator's `c1`, whose writer_url the dashboard mints the audience from
             # (decisions 2026-10-16 #9).
@@ -258,7 +259,7 @@ spec:
             storage:
               size: 512Gi
               storageClassName: managed-csi-premium
-              approveDataDeletion: true
+              approveDataDeletion: false
         dashboard:
           enabled: true
           host: app.orama.ing
@@ -292,7 +293,7 @@ spec:
           storage:
             size: 10Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
           # Prod 1's live-mode Stripe prices, read from its subscription_plans and stripe_addon_prices
           # on 2026-10-24 (read-only); every ID is one of the operator's reference rows. Plans not listed
           # (base, base+, enterprise, open source) have no Stripe price on Prod 1 either.
@@ -334,7 +335,7 @@ spec:
           storage:
             size: 200Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         analyticsProcessor:
           enabled: true
           # The cutover sets suspend: false in this file.
@@ -351,7 +352,7 @@ spec:
           storage:
             size: 10Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         broker:
           enabled: true
           mode: in-cluster
@@ -360,7 +361,7 @@ spec:
           storage:
             size: 20Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         search:
           enabled: true
           mode: in-cluster
@@ -370,14 +371,14 @@ spec:
           storage:
             size: 10Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         ingestion:
           enabled: true
           harvest: true
           harvestMongoStorage:
             size: 10Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         workers:
           enabled: true
           replicas: 2

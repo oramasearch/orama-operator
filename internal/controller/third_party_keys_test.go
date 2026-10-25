@@ -75,14 +75,14 @@ func TestThirdPartyKeysComeFromTheirOwnSecrets(t *testing.T) {
 			map[string]string{"OPENAI_API_KEY": "sk-openai-real", "GROQ_API_KEY": "groq-real",
 				"ANTHROPIC_API_KEY": "anthropic-real", "SENTRY_DSN": "https://key@sentry.example/1"},
 			[]string{"OPENAI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY", "SENTRY_DSN"},
-			[]string{"CLICKHOUSE_PASSWORD", "QSTASH_TOKEN", "DISCO_SECRET"}},
+			[]string{"QSTASH_TOKEN", "DISCO_SECRET"}},
 		{"index-builder", "v1-index-builder",
 			map[string][2]string{
 				"CLOUDFLARE_API_TOKEN": {"cloudflare-api-token", "token"}, "CLOUDFLARE_ACCOUNT_ID": {"cloudflare-api-token", "accountID"},
 			},
 			map[string]string{"CLOUDFLARE_API_TOKEN": "cf-token-real", "CLOUDFLARE_ACCOUNT_ID": "cf-account-real"},
 			[]string{"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"},
-			[]string{"TYPESENSE_API_KEY", "API_SECRET", "ABLY_API_KEY", "APIFY_TOKEN"}},
+			[]string{"ABLY_API_KEY", "APIFY_TOKEN"}},
 	} {
 		t.Run(tc.component, func(t *testing.T) {
 			dep := &appsv1.Deployment{}

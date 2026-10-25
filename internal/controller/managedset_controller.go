@@ -217,6 +217,9 @@ type memberState struct {
 	MissingCRD bool
 	// Object is the instance as read back after the apply.
 	Object *unstructured.Unstructured
+	// Changed is true when an immutable object (a LakeRestoreRehearsal) exists with another spec.
+	// Nothing was applied; Object is what the cluster has.
+	Changed bool
 }
 
 // leafMemberApplier applies, reads and deletes one instance, one OramaCloudV1Set migration, or one
@@ -238,6 +241,13 @@ type leafMemberApplier interface {
 	// DeleteE2ETest deletes one this set applied; its Job goes with it. One that is gone, or not
 	// this set's, is left alone.
 	DeleteE2ETest(ctx context.Context, kubeconfig []byte, req memberRequest) error
+	// ApplyRehearsal applies a LakeSet's LakeRestoreRehearsal (cluster-scoped, no Secrets) as
+	// ApplyMember applies an instance. One this set applied with another spec is not changed (its
+	// spec is immutable): the state says Changed and carries it.
+	ApplyRehearsal(ctx context.Context, kubeconfig []byte, req memberRequest) (memberState, error)
+	// DeleteRehearsal deletes one this set applied. One that is gone, or not this set's, is left
+	// alone.
+	DeleteRehearsal(ctx context.Context, kubeconfig []byte, req memberRequest) error
 }
 
 type clientMemberApplier struct{}
@@ -356,6 +366,8 @@ type managedSetReconciler struct {
 	// e2eTests runs lake's end-to-end suite against a LakeSet's members; nil for an
 	// OramaCloudV1Set.
 	e2eTests *setE2ETests
+	// rehearsals runs restore rehearsals against a LakeSet's members; nil for an OramaCloudV1Set.
+	rehearsals *setRehearsals
 	// productionSources is what every production set copies, read once per pass (managedset_secret_scope.go).
 	productionSources map[string]string
 }
@@ -545,6 +557,9 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 	if r.e2eTests != nil {
 		r.e2eTests.removeUndeclared(ctx, r)
 	}
+	if r.rehearsals != nil {
+		r.rehearsals.removeUndeclared(ctx, r)
+	}
 	// Members that were in the set and no longer are.
 	held, err := r.release(ctx, set, members, observed, migrationsAt)
 	if err != nil {
@@ -621,6 +636,20 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		}
 		if firstErr == nil {
 			firstErr = r.e2eTests.err
+		}
+	}
+	if r.rehearsals != nil {
+		// After the members, since a rehearsal needs its Lake. Like e2e runs, they do not change
+		// the set's phase; what the set could not do with one is added to its message, and returned.
+		r.rehearsals.apply(ctx, r, members, statuses)
+		if problems := r.rehearsals.problems; len(problems) > 0 {
+			message = strings.TrimPrefix(message+"; "+strings.Join(problems, "; "), "; ")
+		}
+		if r.rehearsals.busy {
+			requeue = leafOperatorPollInterval
+		}
+		if firstErr == nil {
+			firstErr = r.rehearsals.err
 		}
 	}
 	setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), phase, reason, message)
@@ -773,6 +802,20 @@ func (r *managedSetReconciler) finalize(ctx context.Context, set managedSet, obs
 			return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.e2eTests.err)
 		}
 	}
+	// Rehearsals too: one left behind would wait for a Lake that is gone.
+	if r.rehearsals != nil {
+		if waiting := r.rehearsals.removeAll(ctx, r); waiting != "" || r.rehearsals.err != nil {
+			reason, message := "RemovingRestoreRehearsals", "waiting for its restore rehearsals to be removed: "+waiting
+			if r.rehearsals.err != nil {
+				reason, message = "DeleteFailed", r.rehearsals.err.Error()
+			}
+			setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseDeleting, reason, message)
+			if statusErr := r.writeStatus(ctx, set, observed); statusErr != nil {
+				return settle(ctrl.Result{}, statusErr)
+			}
+			return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.rehearsals.err)
+		}
+	}
 	if set.SetSpec().DeletionPolicy == oramav1alpha1.SetDeletionDelete {
 		for _, member := range observed.MemberStatuses {
 			if err := r.deleteMember(ctx, set, member); err != nil {
@@ -800,6 +843,9 @@ func (r *managedSetReconciler) writeStatus(ctx context.Context, set managedSet, 
 	}
 	if r.e2eTests != nil {
 		r.e2eTests.restore(base)
+	}
+	if r.rehearsals != nil {
+		r.rehearsals.restore(base)
 	}
 	if reflect.DeepEqual(base, set) {
 		return nil
@@ -843,7 +889,8 @@ func (r *LakeSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	return (&managedSetReconciler{Client: r.Client, kind: lakeSetKind, applier: applierOr(r.Applier),
-		e2eTests: &setE2ETests{set: &set, observed: set.Status.DeepCopy()}}).reconcile(ctx, &set)
+		e2eTests:   &setE2ETests{set: &set, observed: set.Status.DeepCopy()},
+		rehearsals: &setRehearsals{set: &set, observed: set.Status.DeepCopy()}}).reconcile(ctx, &set)
 }
 
 func (r *OramaCloudV1SetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

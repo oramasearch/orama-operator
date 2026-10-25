@@ -628,8 +628,10 @@ const clickhouseImage = "clickhouse/clickhouse-server:24.8@sha256:1ffa82edee000a
 
 func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Analytics, dataStoreDef{
-		component: "analytics",
-		image:     clickhouseImage,
+		component:         "analytics",
+		env:               []corev1.EnvVar{clickhousePasswordEnv(oc)},
+		credentialSecrets: []string{clickhouseAuthSecretName(oc)},
+		image:             clickhouseImage,
 		ports: []corev1.ContainerPort{
 			{Name: "http", ContainerPort: 8123},
 			{Name: "native", ContainerPort: 9000},
@@ -647,13 +649,14 @@ func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *ora
 }
 
 func (r *OramaCloudV1Reconciler) reconcileSearch(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
-	// TYPESENSE_DATA_DIR / _ENABLE_CORS come from the shared ConfigMap and
-	// TYPESENSE_API_KEY from the shared Secret (via envFrom).
+	// TYPESENSE_DATA_DIR / _ENABLE_CORS come from the shared ConfigMap.
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Search, dataStoreDef{
-		component: "search",
-		image:     "typesense/typesense:0.25.2@sha256:1ddbb28a52b0b8be31237ec718df1c9bc895c5626b26c10fa3f340f684e81488",
-		ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: 8108}},
-		dataPath:  "/data",
+		component:         "search",
+		env:               []corev1.EnvVar{secretKeyEnv("TYPESENSE_API_KEY", typesenseAuthSecretName(oc), "TYPESENSE_API_KEY")},
+		credentialSecrets: []string{typesenseAuthSecretName(oc)},
+		image:             "typesense/typesense:0.25.2@sha256:1ddbb28a52b0b8be31237ec718df1c9bc895c5626b26c10fa3f340f684e81488",
+		ports:             []corev1.ContainerPort{{Name: "http", ContainerPort: 8108}},
+		dataPath:          "/data",
 		// Right-size (#18): generous default; override via spec.components.search.resources.
 		resources: resourcesOr(oc.Spec.Components.Search.Resources, resourceReqs("256Mi", "50m", "1Gi")),
 	})

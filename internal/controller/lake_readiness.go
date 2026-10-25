@@ -55,10 +55,13 @@ func lakeDeploymentReadiness(deployment *appsv1.Deployment, desired int32) lakeC
 }
 
 // Mirror the schema's reported status while checking that it applies to the current desired schema.
+// desiredVersion is the version the Lake's image needs (lakeDesiredSchemaVersion); "" while the
+// image's manifest is being read, when the PostgresSchema's own version counts.
 func (r *LakeReconciler) lakeSchemaStatus(
 	ctx context.Context,
 	lake *oramav1alpha1.Lake,
 	namespace string,
+	desiredVersion string,
 ) (string, string, lakeComponentReadiness) {
 	if !lakePostgresEnabled(lake) {
 		return "", "", lakeComponentReadiness{phase: "Ready"}
@@ -82,7 +85,7 @@ func (r *LakeReconciler) lakeSchemaStatus(
 		if ps.Status.Message != "" {
 			state.message += ": " + ps.Status.Message
 		}
-	case phase == "Applied" && (ps.Status.AppliedVersion != lakeSchemaVersion() ||
+	case phase == "Applied" && ((desiredVersion != "" && ps.Status.AppliedVersion != desiredVersion) ||
 		ps.Status.AppliedVersion != ps.Spec.Version ||
 		!apimeta.IsStatusConditionTrue(ps.Status.Conditions, "Applied")):
 		state.reason = "SchemaNotCurrent"

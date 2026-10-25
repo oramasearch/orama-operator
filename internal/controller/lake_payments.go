@@ -16,9 +16,9 @@ package controller
 //     events Lake handles, whose signing secret lands in Secret lake-<name>-payments-webhook;
 //   - Lake's PaymentCatalog lake-<name>-catalog: its three products, without prices.
 //
-// It checks that Lake's own key sees the catalog's account and mode, and once all of that is in
-// place gives the Lake LAKE_STRIPE_SECRET_KEY and LAKE_STRIPE_WEBHOOK_SECRET. A payments failure
-// never fails the Lake: without the variables Lake takes payments through its manual provider.
+// It checks that Lake's own key sees the catalog's account and mode and can create card
+// PaymentIntents, then gives the Lake LAKE_STRIPE_SECRET_KEY and LAKE_STRIPE_WEBHOOK_SECRET.
+// A payments failure never fails the Lake: without the variables Lake takes payments through its manual provider.
 // Condition PaymentsReady says where it stands.
 //
 // A Lake without spec.payments is not touched: no request to Stripe, no new object, no new env var.
@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -70,12 +71,14 @@ const (
 	lakeStripeAPIVersion = "2024-06-20"
 
 	// lakePaymentCatalogVersion is the version of lakePaymentProducts: bump it with every change.
+	// The manifest carries no catalog version, so a manifest's products are written at this one.
 	lakePaymentCatalogVersion = 1
 	// lakeUsageProduct is the product Lake's key is checked against.
 	lakeUsageProduct = "lake_usage"
 )
 
-// lakeStripeWebhookEvents are the Stripe event types Lake's webhook handler takes (lake
+// lakeStripeWebhookEvents are, for a lake image that predates `lake manifest` (v0.6.1 and earlier),
+// the Stripe event types Lake's webhook handler takes (lake
 // src/api/stripe.cpp): the invoice events, the Checkout events of lake#833's order sheet, and the
 // subscription and invoice lifecycle that sets a cloud order's paid-through date (lake#972). Lake acknowledges a type it does not handle, so subscribing early is harmless.
 // Change this list together with Lake's handler.
@@ -102,7 +105,8 @@ var lakeStripeWebhookEvents = []string{
 	"setup_intent.succeeded",
 }
 
-// lakePaymentProducts are Lake's products. Their IDs are a contract with Lake (lake#855): its
+// lakePaymentProducts are, for a lake image that predates `lake manifest`, Lake's products; newer
+// images publish theirs in the manifest (orama-operator#936). Their IDs are a contract with Lake (lake#855): its
 // invoice and Checkout lines name them with an inline price from Lake's own price list or order
 // sheet, so none has a price here.
 func lakePaymentProducts() []oramav1alpha1.PaymentProduct {
@@ -150,7 +154,12 @@ type lakePaymentsSecret struct {
 
 // reconcileLakePayments keeps the Lake's payment objects and returns what the Lake reads from
 // them. Without spec.payments it removes what the field made.
-func (r *LakeReconciler) reconcileLakePayments(ctx context.Context, lake *oramav1alpha1.Lake, ns string, labels map[string]string) (lakePaymentsState, error) {
+//
+// The webhook events and products come from the image's manifest (manifest, orama-operator#936),
+// or from lakeStripeWebhookEvents and lakePaymentProducts for an image that predates it.
+func (r *LakeReconciler) reconcileLakePayments(
+	ctx context.Context, lake *oramav1alpha1.Lake, ns string, labels map[string]string, manifest *oramav1alpha1.LakeImageManifest,
+) (lakePaymentsState, error) {
 	if lake.Spec.Payments == nil {
 		done, err := r.removeLakePayments(ctx, lake, ns)
 		if err != nil || done {
@@ -182,7 +191,7 @@ func (r *LakeReconciler) reconcileLakePayments(ctx context.Context, lake *oramav
 		fail(reason, problem)
 		return state, nil
 	}
-	provider, endpoint, catalog, err := r.applyLakePayments(ctx, lake, ns, labels, secret)
+	provider, endpoint, catalog, err := r.applyLakePayments(ctx, lake, ns, labels, secret, manifest)
 	if err != nil {
 		return state, err
 	}
@@ -288,6 +297,7 @@ func (r *LakeReconciler) readLakePaymentsSecret(ctx context.Context, lake *orama
 // and returns them as stored, status included.
 func (r *LakeReconciler) applyLakePayments(
 	ctx context.Context, lake *oramav1alpha1.Lake, ns string, labels map[string]string, secret lakePaymentsSecret,
+	manifest *oramav1alpha1.LakeImageManifest,
 ) (*oramav1alpha1.PaymentProvider, *oramav1alpha1.PaymentWebhookEndpoint, *oramav1alpha1.PaymentCatalog, error) {
 	name := lakePaymentsName(lake)
 	providerRef := corev1.LocalObjectReference{Name: name}
@@ -311,7 +321,7 @@ func (r *LakeReconciler) applyLakePayments(
 		endpoint.Spec = oramav1alpha1.PaymentWebhookEndpointSpec{
 			ProviderRef:       providerRef,
 			URL:               "https://" + lake.Spec.Host + lakeStripeWebhookPath,
-			Events:            slices.Clone(lakeStripeWebhookEvents),
+			Events:            lakeWebhookEvents(manifest),
 			APIVersion:        lakeStripeAPIVersion,
 			App:               "lake",
 			SigningSecretName: lakePaymentsWebhookSecretName(lake),
@@ -324,7 +334,7 @@ func (r *LakeReconciler) applyLakePayments(
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, catalog, func() error {
 		catalog.Labels = labels
 		catalog.Spec = oramav1alpha1.PaymentCatalogSpec{
-			ProviderRef: providerRef, App: "lake", Version: lakePaymentCatalogVersion, Products: lakePaymentProducts(),
+			ProviderRef: providerRef, App: "lake", Version: lakePaymentCatalogVersion, Products: lakeCatalogProducts(manifest),
 		}
 		return controllerutil.SetControllerReference(lake, catalog, r.Scheme)
 	}); err != nil {
@@ -427,8 +437,9 @@ func (c *lakeAppKeyChecks) check(uid types.UID, digest string, run func() *metav
 	}
 	c.failures[uid] = failure
 	c.mu.Unlock()
-	// Only a check Stripe did not answer is repeated soon, as for the provider.
-	c.clock.record(uid, digest, failure == nil || failure.Reason != "StripeAPIError")
+	// Recheck missing permissions soon too: a Dashboard edit does not change the key's digest.
+	c.clock.record(uid, digest, failure == nil ||
+		(failure.Reason != "StripeAPIError" && failure.Reason != "AppKeyPermissionsMissing"))
 	return failure, c.clock.wait(uid, digest, paymentRecheck)
 }
 
@@ -439,9 +450,9 @@ func (c *lakeAppKeyChecks) forget(uid types.UID) {
 	delete(c.failures, uid)
 }
 
-// checkLakeAppKey checks that Lake's key reads lake_usage in the catalog's account and mode, and
-// returns what is wrong (nil when nothing is) and when to check again. Between checks it returns
-// the last result without asking Stripe.
+// checkLakeAppKey checks the catalog's account and mode and permission to charge saved cards.
+// It returns what is wrong (nil when nothing is) and when to check again. Between checks it
+// returns the last result without asking Stripe.
 func (r *LakeReconciler) checkLakeAppKey(ctx context.Context, lake *oramav1alpha1.Lake, secret lakePaymentsSecret) (*metav1.Condition, time.Duration) {
 	sum := sha256.Sum256([]byte(strings.Join([]string{secret.appKey, secret.accountID, lake.Spec.Payments.Mode}, "\x00")))
 	return r.lakeAppKeyChecks.check(lake.UID, fmt.Sprintf("%x", sum[:]), func() *metav1.Condition {
@@ -474,8 +485,34 @@ func (r *LakeReconciler) lakeAppKeyFailure(ctx context.Context, lake *oramav1alp
 		failure = paymentCondition(false, "ModeMismatch", fmt.Sprintf("spec.payments.mode is %s but %s sees a %s-mode product %s",
 			lake.Spec.Payments.Mode, lakePaymentsAppKeyKey, stripeModeName(product.Livemode), lakeUsageProduct))
 	default:
+		return r.lakeAppKeyChargeFailure(ctx, appKey)
+	}
+	return &failure
+}
+
+// lakeAppKeyChargeFailure probes Payment Intents write without creating a payment: amount is
+// required and deliberately absent. An explicit card type scopes Stripe's permission check to
+// the saved cards Lake charges. Only the expected missing-amount validation error passes.
+func (r *LakeReconciler) lakeAppKeyChargeFailure(ctx context.Context, appKey string) *metav1.Condition {
+	_, err := stripeDo[struct{}](ctx, stripeAPI{Base: r.StripeAPIBase, Key: appKey}, stripeCall{
+		Method: http.MethodPost, Path: "/v1/payment_intents", Version: lakeStripeAPIVersion,
+		Form: url.Values{"currency": {"usd"}, stripeField("payment_method_types", ""): {"card"}},
+	})
+	var apiErr *stripeAPIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
+		apiErr.Type == "invalid_request_error" && apiErr.Code == "parameter_missing" && apiErr.Param == "amount" {
 		return nil
 	}
+	if stripeForbidden(err) {
+		failure := paymentCondition(false, "AppKeyPermissionsMissing",
+			"appKey cannot create card PaymentIntents for auto top-up; grant Payment Intents write in the Stripe Dashboard")
+		return &failure
+	}
+	message := "checking appKey: unexpected success from the PaymentIntent permission probe without an amount"
+	if err != nil {
+		message = "checking appKey: " + stripeCheckFailure("create card PaymentIntents for auto top-up", err)
+	}
+	failure := paymentCondition(false, "StripeAPIError", message)
 	return &failure
 }
 

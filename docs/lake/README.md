@@ -22,9 +22,12 @@ key and publishes its recipient in status; namespaced `LakeSealedSecret` resourc
 cluster-bound ciphertext into owned, labelled Kubernetes Secrets without putting plaintext in the
 authored resource ([sealed-secrets.md](sealed-secrets.md)). `kubectl get lake` reports managed and
 unmanaged data-service counts, and operation-level status never implies untested protection;
-`LakeRestoreRehearsal` automates Postgres restore, scratch upgrade and replicated failover proof
+`LakeRestoreRehearsal` automates Postgres restore, scratch upgrade and replicated failover proof,
+and a store restore from the store's CSI snapshots
 ([data-services/README.md](data-services/README.md),
-[data-services/postgres.md](data-services/postgres.md)).
+[data-services/postgres.md](data-services/postgres.md)). A `LakeSet` declares rehearsals of its
+members in `spec.restoreRehearsals`; the lake-prod runbook, with what backups exist per region, is
+[restore-rehearsals.md](restore-rehearsals.md).
 
 Desired deployment events in the operator's Zetta control plane become Lake-owned
 `LakeEnvironment` CRs: one restricted, quota-bound `untrusted` runtime namespace per named or
@@ -92,6 +95,13 @@ lake through Clerk's Backend API, writes a production instance's DNS records, an
 `LAKE_CLERK_PUBLISHABLE_KEY`, `LAKE_CLERK_SECRET_KEY` and `LAKE_CLERK_WEBHOOK_SECRET`. Two Clerk applications serve the four
 environments. See [`clerk.md`](clerk.md) (operator#541), which also lists the one-time dashboard
 steps and the Secrets to create.
+
+## A customer's own domain
+
+With `spec.customDomain` the Lake also answers on a host the customer owns (white label). The
+operator publishes the CNAME and ownership TXT the customer creates, verifies both by DNS, routes
+the host with its own HTTP-01 certificate, and then makes it the Lake's public host, keeping
+`spec.host` as an alias. See [`custom-domains.md`](custom-domains.md) (operator#947).
 
 ## Payments
 
@@ -251,12 +261,17 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    (`spec.postgres`: enabled by default, instances, storageSize 50Gi, storageClassName), the same
    unstructured path `OramaCloudV1` uses (`controldb.go`). Disabling tears it down **with its
    data**.
-10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
+10. **Schema** — for an image with `lake manifest` (lake#1147 onward, orama-operator#936): Job
+   `lake-<name>-manifest` reads the image's manifest once into `status.imageManifest`, and
+   `PostgresSchema` `lake-<name>-controldb-schema` runs `lake migrate --wait-seconds 600` from the
+   image by digest, version `image:<digest>`, before the Deployment rolls; see
+   [schema.md](schema.md#a-lake-release-is-only-its-image-orama-operator936). For an older image:
+   ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
    `oramasearch/lake` `db/schema.sql`), guard table = `methodology_deployments_guard` from
    `0083_methodology_deployments`, version = hash of the SQL plus guard. The Job skips the file only when
-   the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it
-   is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
+   the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it (with or
+   without a space before `(version)`, #948) is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
    so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically
    replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
    updates wait for Applied at the desired version and generation; existing pods retain their

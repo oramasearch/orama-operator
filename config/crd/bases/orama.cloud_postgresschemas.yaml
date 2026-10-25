@@ -97,8 +97,9 @@ spec:
                 type: string
               image:
                 default: postgres:16-alpine@sha256:deb28ee471183cb0c303113dac9b2433c51eeeeb678def7af9a9ec5820367815
-                description: Image is the psql-carrying image used to run the migration
-                  Job.
+                description: |-
+                  Image is the psql-carrying image used to run the migration Job, or with Migrate the image
+                  whose entrypoint runs the migration.
                 type: string
               imagePullSecrets:
                 description: |-
@@ -121,10 +122,54 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
+              migrate:
+                description: |-
+                  Migrate runs the migration from Image with the given arguments instead of applying a schema
+                  file with psql: the image carries its own schema and applies it (lake's `lake migrate`,
+                  orama-operator#936). The connection URI is passed in DatabaseEnv; GuardTable,
+                  ApplyEveryVersion and SchemaConfigMapRef are not used. Exit status 0 is Applied; the exit codes
+                  in FailOnExitCodes fail the Job at once (a statement failed, or bad arguments), any other exit
+                  is retried.
+                properties:
+                  args:
+                    description: |-
+                      Args are the container arguments, passed to the image's entrypoint (lake: migrate
+                      --wait-seconds 600).
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  databaseEnv:
+                    description: |-
+                      DatabaseEnv is the environment variable the command reads the connection URI from
+                      (lake: LAKE_CONTROL_DB_URI). It is set from ConnectionSecretRef.
+                    pattern: ^[A-Z_][A-Z0-9_]*$
+                    type: string
+                  failOnExitCodes:
+                    description: |-
+                      FailOnExitCodes are exit codes that fail the Job without a retry (lake: 1, a statement
+                      failed and nothing changed; 2, bad arguments). Other non-zero exits are retried.
+                    items:
+                      format: int32
+                      type: integer
+                    type: array
+                  runAsGroup:
+                    format: int64
+                    type: integer
+                  runAsUser:
+                    description: |-
+                      RunAsUser and RunAsGroup are the numeric user and group the image runs as (lake: 10001), so
+                      the pod can run as non-root.
+                    format: int64
+                    type: integer
+                required:
+                - args
+                - databaseEnv
+                type: object
               schemaConfigMapRef:
                 description: |-
                   SchemaConfigMapRef names the ConfigMap + key holding the schema SQL to apply (all-or-nothing,
-                  in a single transaction).
+                  in a single transaction). Required unless Migrate is set.
                 properties:
                   key:
                     description: Key within the ConfigMap holding the value.
@@ -144,9 +189,13 @@ spec:
                 type: string
             required:
             - connectionSecretRef
-            - schemaConfigMapRef
             - version
             type: object
+            x-kubernetes-validations:
+            - message: set schemaConfigMapRef, or migrate to run the migration from
+                image
+              rule: has(self.migrate) || (has(self.schemaConfigMapRef) && size(self.schemaConfigMapRef.name)
+                > 0)
           status:
             description: |-
               PostgresSchemaStatus is the observed schema state. Written to the status subresource ONLY on a
