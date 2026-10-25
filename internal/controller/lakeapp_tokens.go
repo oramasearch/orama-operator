@@ -102,7 +102,11 @@ func (r *LakeAppReconciler) reconcileSyncedLakeAppSecrets(ctx context.Context, l
 	}
 	data := map[string][]byte{}
 	if app.Spec.Bindings.Zetta != nil {
-		data["zetta"] = tokens.Data["zetta"]
+		binding, err := lakeAppZettaBinding(lake, app, tokens.Data["zetta"])
+		if err != nil {
+			return result, "", "", err
+		}
+		data["zetta"] = binding
 	}
 	if len(app.Spec.Bindings.Services) > 0 {
 		connections := &corev1.Secret{}
