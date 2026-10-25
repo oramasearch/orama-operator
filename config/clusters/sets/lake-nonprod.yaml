@@ -7,13 +7,22 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: dev
     spec:
-      # Merged work runs on dev before a release is cut (Steve, 2026-10-25). lake dev-aa9fefd5
-      # (lake#1186, #1187, #1189) and agent-autosuggest c5145f4 (agent-autosuggest#24). Remove both
-      # pins once the next release is cut and dev follows the template again.
-      image: oramasearch/lake:dev-aa9fefd5
+      # Merged work runs on dev before a release is cut (Steve, 2026-10-25): lake dev-edb8cf5d (#1186,
+      # #1187, #1189, #1198, #1199, #1201) and every agent's dev build after the 2026-10-25 merges. Remove
+      # these pins when the template names lake v0.7.1 and the agents' v0.2.0.
+      image: oramasearch/lake:dev-edb8cf5d
       agents:
+        runtimeImage: oramasearch/agent-runtime:fdb6714
         library:
-        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:c5145f4}
+        - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:7a044af}
+        - {key: agent-application, image: oramasearch/agent-application:32caa4c}
+        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:9b45383}
+        - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:47fe077}
+        - {key: agent-creator, image: oramasearch/agent-creator:53bc89a-fdb6714}
+        - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:d174d10}
+        - {key: agent-experiments, image: oramasearch/agent-experiments:84fd433}
+        - {key: agent-project, image: oramasearch/agent-project:db8835f}
+        - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:ebd36c8}
       args:
       - "--listen"
       - 0.0.0.0:4900
