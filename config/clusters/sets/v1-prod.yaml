@@ -668,8 +668,9 @@ spec:
       runID: eu-1
       step: plan
       apply: false
+      attempt: 1                            # plan again on the fixed image
       evidenceSecretRef: {name: team-2da0913d-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:c8af973d7512a16c502fad13cb6b5087d03d52e1b41475765d7ffa42cf93ae78  # dev-d66d4322
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-43ba6c6c
@@ -752,8 +753,9 @@ spec:
       runID: eu-1
       step: plan
       apply: false
+      attempt: 1                            # plan again on the fixed image
       evidenceSecretRef: {name: team-5ea13b3b-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:c8af973d7512a16c502fad13cb6b5087d03d52e1b41475765d7ffa42cf93ae78  # dev-d66d4322
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-6a26bfbd
@@ -815,8 +817,9 @@ spec:
       runID: eu-1
       step: plan
       apply: false
+      attempt: 1                            # plan again on the fixed image
       evidenceSecretRef: {name: team-736c7f66-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:c8af973d7512a16c502fad13cb6b5087d03d52e1b41475765d7ffa42cf93ae78  # dev-d66d4322
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-7408c7cf
@@ -855,10 +858,388 @@ spec:
       teamID: 874b5280-d260-4b1a-b023-63b533b20ff0
       projectIDs: [315951c3-96dd-4bd1-b446-3f0f1c882fee, 32c1a095-696c-4382-b640-40f0e7b28fd6, 696d06ec-07e5-41af-a817-c19c5835bf46, 8398208c-8d8f-4873-bccf-a0d8a4ffb215, 90638876-8d72-4fa5-a84c-160c35bcd209, d4f7c47b-05ae-4bf7-aca4-afb1c9f1371e, df8ebd13-9586-40dd-8e59-2e61c40067d6]
       runID: eu-1
-      step: plan
+      step: seed                            # plan reads no receipt; the seed dry run applies its accepted_reader_surplus
       apply: false
       evidenceSecretRef: {name: team-874b5280-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:c8af973d7512a16c502fad13cb6b5087d03d52e1b41475765d7ffa42cf93ae78  # dev-d66d4322
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-886cc057
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-886cc057-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: 886cc057-ee29-4eca-88a7-6a1469c3ce45
+      projectIDs: [f20c5d4f-909c-47b1-9a82-703d846ab023]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-886cc057-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-8a75232e
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-8a75232e-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: 8a75232e-26e6-42ed-9c99-59392c17cc26
+      projectIDs: [f3d9449b-526d-4f63-a44c-b1e3f0916086]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-8a75232e-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-93e85601
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-93e85601-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: 93e85601-ee51-4de9-891f-b59ed6c8231c
+      projectIDs: [ba672f98-18a7-4f84-b1ac-1b48e5e7ca22, ea0a1fe8-ccc8-48fb-ad44-517ac877e36d]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-93e85601-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-9dcd6d42
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-9dcd6d42-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: 9dcd6d42-2bec-43b1-9696-370a3d67f29e
+      projectIDs: [00b0b243-8d3a-4e56-8a1d-72fcb7d96011, 057519ee-6d78-4ff3-989e-fd86f10b410a, 8e6a7b8b-bb4b-4757-bab2-013e2e3e2061, c2cb1428-518d-44eb-90a5-23d18e7c166b, f1f10a87-6405-4580-9ddc-2004faccd8d9]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-9dcd6d42-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-9dd66773
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-9dd66773-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: 9dd66773-457b-4d25-a462-a1a2170a8efb
+      projectIDs: [9dfe7e5f-f07d-4743-88e9-263b4493b06a]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-9dd66773-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-a36cfefa
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-a36cfefa-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: a36cfefa-df68-4cee-a574-5c1c6ca658ee
+      projectIDs: [0993c365-2a2d-44d8-9553-477b3f7e611b, 274c64f5-ffc0-46db-9b95-9a55328cf4c7, 5ed72c1d-1583-44d4-9ebd-3303991294a1, 7a67636e-c61c-426a-9aa9-a65c2ebc459a, bc5a3f2e-97b8-4e70-b257-d6a99efa1532, e7b37367-396f-47cf-9127-c8e041b4e98d]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-a36cfefa-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-abc9560a
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-abc9560a-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: abc9560a-900f-4508-97e4-59df73d89cbf
+      projectIDs: [11e6cb04-316a-425d-b3cc-19aa02f42a3b]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-abc9560a-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-aee7dc1a
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-aee7dc1a-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: aee7dc1a-22fb-4a26-832f-0d881a4aa8c2
+      projectIDs: [567547b3-42c8-4762-8337-6fb0efa00b8e, be8e361e-ee2c-4455-bebf-e3de358e1d8b]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-aee7dc1a-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-bd7382c1
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-bd7382c1-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: bd7382c1-e2a5-4ec1-80d8-ca9eb8577477
+      projectIDs: [790cea05-ddea-4ba8-a7e6-c9ef3a6a7eb0, f66fb258-f7b1-407d-851d-272da40c6552]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-bd7382c1-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-be7ff6e4
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-be7ff6e4-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: be7ff6e4-c88f-4884-88d4-5b8692db5bbd
+      projectIDs: [34ae217c-f3ab-4b05-8627-25c565160693]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-be7ff6e4-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-c406ce64
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-c406ce64-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: c406ce64-92e7-4c43-8da8-f58c2e808f47
+      projectIDs: [929824f8-b458-4cd2-b78d-44c941c3cce8, af2a2800-bfac-4b67-a58e-51ada826e1c0, c9394670-656a-4f78-a551-c2603ee119e7]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-c406ce64-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-cbb30e51
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-cbb30e51-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: cbb30e51-0103-429a-a66d-abd7ee59a891
+      projectIDs: [45f484c0-5261-433f-ac18-177c5f37b84c, 5ee2609f-7b98-47c9-8d25-3eabecd1cec9, 7ec4f717-5fbe-4ff4-a4c6-f9bec7eff9e8, a9d6e4f0-223a-455a-8e49-2c66b0f44ce2, d7293c6c-261e-4c24-844a-f00e941f87bf, d7a41148-9342-417f-91b5-2f2dac68d72d, df1b5707-2c7b-4154-8866-e6a9c86d895a, fbb3bc63-d9dc-45c7-a109-86a43f62dcde]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-cbb30e51-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-ce98294c
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-ce98294c-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: ce98294c-4c58-4030-b63b-cb6554a24d5e
+      projectIDs: [5132d79c-753d-402f-9065-a3c465658ab4, b498aea0-9bc0-48ea-98f6-9ffba36867ac]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-ce98294c-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-d33ca50a
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-d33ca50a-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: d33ca50a-5eee-4671-b010-574c0a9e56bd
+      projectIDs: [5ddc9c71-8c05-4cba-a42d-b81983fefe93]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-d33ca50a-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-d8432dbe
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-d8432dbe-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: d8432dbe-2ea5-4f45-9947-b1b81efa15fc
+      projectIDs: [c0cc59f4-df9f-48f2-931f-da70f8f776f1]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-d8432dbe-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-db628e91
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-db628e91-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: db628e91-473b-4016-8b0f-0cbb75fabbe7
+      projectIDs: [06962bbf-4e9b-4a74-b97b-627129721ce5, 7a1f7529-03d6-4f14-8908-c91ebfa8d91e, c127f103-9c3b-493b-8413-d12797263407]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-db628e91-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-dcf88ea8
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-dcf88ea8-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: dcf88ea8-6842-4fae-9516-141a03039aab
+      projectIDs: [7c6bd693-698f-4b23-8c4f-59df768a45d7]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-dcf88ea8-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
+      pullSecretName: oramasearch-dockerhub
+      source: *prod1-source
+  - name: team-e5f9eb9d
+    member: v1-eu
+    secrets:
+    - name: v1-prod-prod1-db-ro
+      namespace: orama-system
+    - name: v1-prod-prod1-master-key
+      namespace: orama-system
+    - name: v1-prod-prod1-settings-ssm
+      namespace: orama-system
+    - name: team-e5f9eb9d-eu-evidence
+      namespace: orama-system
+    spec:
+      teamID: e5f9eb9d-cfd2-4a08-8ac7-de10b766d19c
+      projectIDs: [1ff7917b-c496-4f4f-9e8e-08edff2bb0c1]
+      runID: eu-1
+      step: plan
+      apply: false
+      evidenceSecretRef: {name: team-e5f9eb9d-eu-evidence, key: isolation.json}
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:8ca2f6b0c98b64d420054569235ecc8dedaac58627fa5c70f67cc8aed6787009  # dev-ba1caddd
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   secrets:
