@@ -471,14 +471,13 @@ spec:
   deletionPolicy: Retain
   # Prod 1 teams copied into the members (operator#654; config/clusters/README.md, "Copying a Prod 1
   # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
-  # namespace. Applying needs Steve's consent like the rest of this file.
+  # namespace. Applying needs Juan's consent like the rest of this file (D8).
   #
   # The first production copy: the #149 pilot team, already copied into v1-dev twice
   # (orama-bridge#206, #222), now into v1-eu. The four Secrets below are created in orama-system on the
   # managing cluster first, each labelled orama.cloud/purpose=production, from
-  # ~/.config/orama-migration/prod2/secrets.json and a fresh isolation receipt bound to v1-eu.
-  # NOT READY TO APPLY: v1-eu's OpenAI key is disabled (orama-bridge#251), so seed's first insert
-  # would fail, and the receipt's provider_ready check cannot pass until it is replaced.
+  # ~/.config/orama-migration/prod2/secrets.json and the isolation receipt bound to v1-eu (run eu-1),
+  # observed 2026-10-25T18:09:31Z and valid for 48 hours. Created 2026-10-25T18:11:54Z, approved by Juan.
   migrations:
   - name: team-4e01bc49
     member: v1-eu
