@@ -45,6 +45,27 @@ type CloudflareR2BucketSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	ExpireAfterDays *int32 `json:"expireAfterDays,omitempty"`
+	// CustomDomain, when set, serves the bucket's objects publicly on this host through
+	// Cloudflare (an R2 custom domain). Everything in the bucket becomes readable by anyone, so set
+	// it only on a bucket that holds public content, such as a status page. Unset removes a custom
+	// domain the operator attached.
+	// +optional
+	CustomDomain *CloudflareR2CustomDomain `json:"customDomain,omitempty"`
+}
+
+// CloudflareR2CustomDomain is a public host for a bucket, in a zone on the same Cloudflare account.
+type CloudflareR2CustomDomain struct {
+	// Domain is the host, for example status.lake.live. Cloudflare creates its DNS record.
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$`
+	Domain string `json:"domain"`
+	// ZoneID is the Cloudflare zone the domain is in. Not a secret.
+	// +kubebuilder:validation:MinLength=1
+	ZoneID string `json:"zoneID"`
+	// MinTLS is the lowest TLS version the host accepts.
+	// +kubebuilder:validation:Enum="1.2";"1.3"
+	// +kubebuilder:default="1.2"
+	// +optional
+	MinTLS string `json:"minTLS,omitempty"`
 }
 
 // CloudflareR2CORSRule allows browser requests from the listed origins.
@@ -87,6 +108,13 @@ type CloudflareR2BucketStatus struct {
 	// CredentialsSecret is the Secret holding the bucket-scoped S3 credentials, once written.
 	// +optional
 	CredentialsSecret string `json:"credentialsSecret,omitempty"`
+	// CustomDomain is the public host the operator attached, once attached.
+	// +optional
+	CustomDomain string `json:"customDomain,omitempty"`
+	// CustomDomainStatus is Cloudflare's ownership and certificate state for it, for example
+	// "ownership=active ssl=active".
+	// +optional
+	CustomDomainStatus string `json:"customDomainStatus,omitempty"`
 }
 
 //+kubebuilder:object:root=true

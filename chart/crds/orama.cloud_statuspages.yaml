@@ -1,0 +1,399 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: statuspages.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: StatusPage
+    listKind: StatusPageList
+    plural: statuspages
+    shortNames:
+    - spage
+    singular: statuspage
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.operational
+      name: Operational
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          StatusPage probes public endpoints from outside the services they check, alerts on every change
+          of a component's state, and publishes a static status page to a bucket.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              StatusPageSpec is a set of external HTTP checks, grouped into the components a customer sees,
+              the alerts sent when a component changes state, and the public page they feed.
+            properties:
+              alerts:
+                description: Alerts says where a component's change of state is sent.
+                properties:
+                  email:
+                    description: Email sends a message over SMTP with TLS.
+                    properties:
+                      secretRef:
+                        description: |-
+                          SecretRef names a Secret in this namespace with keys host, port (465 for TLS, anything else
+                          uses STARTTLS, which is required), username, password, from, and to (comma-separated).
+                        minLength: 1
+                        type: string
+                    required:
+                    - secretRef
+                    type: object
+                  webhook:
+                    description: |-
+                      Webhook posts JSON to the URL in the Secret's key "url". The body carries "text" and
+                      "content", so Slack, Discord, Google Chat and Mattermost incoming webhooks read it as is.
+                    properties:
+                      secretRef:
+                        description: SecretRef names a Secret in this namespace with
+                          key "url".
+                        minLength: 1
+                        type: string
+                    required:
+                    - secretRef
+                    type: object
+                type: object
+              components:
+                description: |-
+                  Components are what the page shows, in order. A component is Operational when every check
+                  that could run passes, Outage when every one is failing, and Degraded in between.
+                items:
+                  description: StatusPageComponent is one line on the page, backed
+                    by one or more checks.
+                  properties:
+                    checks:
+                      description: Checks back the component.
+                      items:
+                        description: StatusPageCheck is one HTTP request and what
+                          its answer must be.
+                        properties:
+                          bearerTokenKey:
+                            description: 'BearerTokenKey is the key in secretRef sent
+                              as "Authorization: Bearer <value>".'
+                            type: string
+                          body:
+                            description: Body is sent with a POST. It may hold $(KEY)
+                              references.
+                            type: string
+                          expect:
+                            description: Expect is what a passing answer looks like.
+                            properties:
+                              bodyContains:
+                                description: BodyContains are substrings the body
+                                  must contain.
+                                items:
+                                  type: string
+                                type: array
+                              json:
+                                description: JSON are values the JSON body must hold.
+                                items:
+                                  description: StatusPageJSONExpect is one value in
+                                    a JSON body.
+                                  properties:
+                                    equals:
+                                      description: |-
+                                        Equals is the value as text: a string as written, anything else as its JSON (true, 3, null).
+                                        Unset only requires the path to exist with a value other than null.
+                                      type: string
+                                    path:
+                                      description: Path is a dotted path into the
+                                        body; a number indexes an array, for example
+                                        "value.region.name".
+                                      minLength: 1
+                                      type: string
+                                  required:
+                                  - path
+                                  type: object
+                                type: array
+                              minCertificateDays:
+                                description: MinCertificateDays fails the check when
+                                  the server's TLS certificate expires sooner.
+                                format: int32
+                                minimum: 0
+                                type: integer
+                              status:
+                                default: 200
+                                description: Status is the HTTP status code.
+                                format: int32
+                                maximum: 599
+                                minimum: 100
+                                type: integer
+                            type: object
+                          headers:
+                            additionalProperties:
+                              type: string
+                            description: Headers are sent with the request. Values
+                              may hold $(KEY) references.
+                            type: object
+                          method:
+                            default: GET
+                            description: Method is GET or POST.
+                            enum:
+                            - GET
+                            - POST
+                            type: string
+                          name:
+                            description: Name identifies the check within its component.
+                            maxLength: 63
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                          secretRef:
+                            description: |-
+                              SecretRef names a Secret in this namespace whose keys fill $(KEY) references. A check whose
+                              Secret or key is missing does not run and is reported as not checked, never as failing.
+                            type: string
+                          url:
+                            description: URL is requested as written, after $(KEY)
+                              references are replaced from secretRef.
+                            pattern: ^https?://
+                            type: string
+                        required:
+                        - name
+                        - url
+                        type: object
+                        x-kubernetes-validations:
+                        - message: bearerTokenKey needs secretRef
+                          rule: '!has(self.bearerTokenKey) || has(self.secretRef)'
+                      maxItems: 20
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
+                    group:
+                      description: Group puts components under one heading, for example
+                        "Europe".
+                      type: string
+                    name:
+                      description: Name is the component's key in status and in status.json.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    title:
+                      description: Title is what the page shows, for example "API".
+                      minLength: 1
+                      type: string
+                  required:
+                  - checks
+                  - name
+                  - title
+                  type: object
+                maxItems: 50
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              failureThreshold:
+                default: 3
+                description: |-
+                  FailureThreshold is how many consecutive failed runs mark a check failing. One passing run
+                  clears it.
+                format: int32
+                maximum: 10
+                minimum: 1
+                type: integer
+              intervalSeconds:
+                default: 60
+                description: IntervalSeconds is how often every check runs.
+                format: int32
+                minimum: 30
+                type: integer
+              publish:
+                description: |-
+                  Publish writes the public page (index.html and status.json) to an S3-compatible bucket.
+                  Unset runs the checks and alerts without a page.
+                properties:
+                  bucketSecretRef:
+                    description: |-
+                      BucketSecretRef names a Secret in this namespace with S3 credentials for the bucket (keys
+                      accessKeyId, secretAccessKey, endpoint, bucket, region), such as the one a
+                      CloudflareR2Bucket's spec.credentials writes.
+                    minLength: 1
+                    type: string
+                  publicURL:
+                    description: PublicURL is where the page is read, for example
+                      https://status.lake.live. Shown in alerts.
+                    type: string
+                required:
+                - bucketSecretRef
+                type: object
+              timeoutSeconds:
+                default: 10
+                description: TimeoutSeconds bounds each check's request, connection
+                  and body included.
+                format: int32
+                maximum: 25
+                minimum: 1
+                type: integer
+              title:
+                description: Title is the page's heading, for example "lake.live status".
+                minLength: 1
+                type: string
+            required:
+            - components
+            - title
+            type: object
+          status:
+            description: |-
+              StatusPageStatus is the observed state, written only when a component changes state, a day
+              ends, or a condition changes; a steady page writes nothing.
+            properties:
+              components:
+                items:
+                  description: StatusPageComponentStatus is one component's observed
+                    state.
+                  properties:
+                    failingChecks:
+                      description: FailingChecks are the checks at or over the failure
+                        threshold.
+                      items:
+                        type: string
+                      type: array
+                    history:
+                      description: History holds the worst state of each of the last
+                        90 days (UTC), oldest first.
+                      items:
+                        description: StatusPageDay is the worst state a component
+                          was in on one UTC day.
+                        properties:
+                          date:
+                            description: Date is YYYY-MM-DD.
+                            type: string
+                          state:
+                            type: string
+                        required:
+                        - date
+                        - state
+                        type: object
+                      type: array
+                    message:
+                      description: Message explains a failing or unchecked check.
+                        It is never published on the page.
+                      type: string
+                    name:
+                      type: string
+                    since:
+                      description: Since is when the component entered State.
+                      format: date-time
+                      type: string
+                    state:
+                      description: State is Operational, Degraded, Outage or Unknown
+                        (no check could run).
+                      type: string
+                    uncheckedChecks:
+                      description: UncheckedChecks are the checks that could not run
+                        (a missing Secret or key).
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - name
+                  - state
+                  type: object
+                type: array
+              conditions:
+                description: 'Conditions: ChecksConfigured, Published, AlertsDelivered.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              observedGeneration:
+                format: int64
+                type: integer
+              operational:
+                description: Operational counts components in state Operational, as
+                  n/total.
+                type: string
+              phase:
+                description: 'Phase is the worst component state: Operational, Degraded,
+                  Outage or Unknown.'
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
