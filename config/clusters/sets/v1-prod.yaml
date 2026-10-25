@@ -153,11 +153,12 @@
 #     APIFY_TOKEN and harvest-master's GITHUB_PAT/GHCR_TOKEN still wait on decisions in #747.
 #   Outside-service decisions still required: Apify (#747), QStash (workers' QSTASH_TOKEN).
 #     Uploads use the stack's owned R2 bucket; copied Prod 1 AWS credentials do not verify readiness.
-#   Dashboard source preparation: RESEND_API_KEY, SLACK_TOKEN, Slack channels,
-#     S3_BUCKET_PREFIX and DATA_SOURCE_REQUEST_URL remain three-byte placeholders (read 2026-10-23).
-#     Scoped Vercel production candidates are staged privately where available, not installed.
+#   Dashboard source: RESEND_API_KEY, SLACK_TOKEN and both Slack channels reuse Prod 1 Vercel
+#     Production values, installed 2026-10-24 (orama-bridge#252, #253). EU invitation email and a
+#     marked signup notification were delivered; Juan permits shared-channel posts before cutover.
+#     S3_BUCKET_PREFIX and DATA_SOURCE_REQUEST_URL were three-byte placeholders on 2026-10-23.
 #     PRIVATE_API_KEY is prepared in this source (64 hex characters); the target import consumer
-#     reads the same dashboard source. Shared email/Slack inputs require isolation review.
+#     reads the same dashboard source.
 #     Clerk keys come from orama-system/clerk-cloud-v1-prod, copied only into v1-eu.
 #     Its standalone Frontend API is clerk.orama.ing; dashboard sign-in stays on app.orama.ing/login.
 #     controlDB.stripePrices carries Prod 1's live-mode price IDs (#378).
@@ -216,11 +217,13 @@ spec:
         manageLoadBalancers: false     # no geo load balancer across the members yet
       images:
         overrides:
-          # The production dashboard: dashboard dev 1cfa443a (the new-device sign-in code, dashboard#190;
-          # custom system prompts read from the writer, dashboard#192) built with orama-cloud-v1-bridge
-          # build/images/dashboard/public.env.v1-prod (app.orama.ing, standalone Cloud v1 Clerk);
-          # recorded in orama-cloud-v1-bridge#21.
-          dashboard: oramasearch/dashboard:v1-prod-1cfa443a-cv1@sha256:153dcd1df6c84c4c8697b47b5171335e46bb616a792c560253d94c07fc45a1a4
+          # The production dashboard: dashboard dev 79abacb3 (the new-device sign-in code, dashboard#190;
+          # custom system prompts read from the writer, dashboard#192; GitHub sign-in hidden until #245,
+          # dashboard#193) built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-prod
+          # (app.orama.ing, standalone Cloud v1 Clerk); recorded in orama-cloud-v1-bridge#23.
+          # Sentry uses the existing Orama project with environment v1-prod and release
+          # dashboard@79abacb32d8461c06531ba7a906ab559890a907b (dashboard#194).
+          dashboard: oramasearch/dashboard:v1-prod-79abacb3-sentry@sha256:de985a120bf7f28bb6690a9e02b34dabf12ce561eef5792b07fc0913ed7715a2
       # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
       # default is Standard SSD. v1-eu was created as a sandbox on 10Gi Standard SSD volumes, which
       # cannot change class in place, so each volume approved its replacement once (approveDataDeletion,
