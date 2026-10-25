@@ -599,6 +599,7 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		statuses = append(statuses, entry)
 	}
 	status.MemberStatuses = append(statuses, held...)
+	status.Versions = memberVersions(status.MemberStatuses)
 	status.Members, status.ReadyMembers = int32(len(members)), ready
 	status.ObservedGeneration = set.GetGeneration()
 
@@ -947,4 +948,30 @@ func (r *OramaCloudV1SetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		})
 	return ctrl.NewControllerManagedBy(mgr).For(&oramav1alpha1.OramaCloudV1Set{}).
 		Watches(&oramav1alpha1.KubernetesCluster{}, forCluster).Complete(r)
+}
+
+// memberVersions is the set's Versions column: each member and what it runs, shortened to the image
+// tag where the version is an image reference ("oramasearch/lake:v0.7.0" is "v0.7.0"; a digest
+// reference keeps its digest). Members with no version yet are left out.
+func memberVersions(members []oramav1alpha1.SetMemberStatus) string {
+	parts := make([]string, 0, len(members))
+	for _, m := range members {
+		if m.Version == "" {
+			continue
+		}
+		parts = append(parts, m.Name+"="+imageTag(m.Version))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// imageTag is the tag of an image reference, or the digest of one named by digest, or the value
+// unchanged when it is not an image reference.
+func imageTag(ref string) string {
+	if i := strings.LastIndex(ref, "@"); i >= 0 {
+		return ref[i+1:]
+	}
+	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i+1:], "/") {
+		return ref[i+1:]
+	}
+	return ref
 }

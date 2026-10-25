@@ -1029,6 +1029,9 @@ type LakeStoreStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.namespace`
 // +kubebuilder:printcolumn:name="Host",type=string,JSONPath=`.spec.host`
+// +kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.image`
+// +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.imageManifest.version`
+// +kubebuilder:printcolumn:name="Revision",type=string,JSONPath=`.status.imageManifest.revision`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="DB",type=string,JSONPath=`.status.postgresInstances`
 // +kubebuilder:printcolumn:name="Zetta",type=boolean,JSONPath=`.status.zettaReady`
