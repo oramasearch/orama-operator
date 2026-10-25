@@ -1144,7 +1144,7 @@ spec:
       projectIDs: [5132d79c-753d-402f-9065-a3c465658ab4, b498aea0-9bc0-48ea-98f6-9ffba36867ac]
       runID: eu-1
       step: seed                            # the seed dry run (apply: false)
-      apply: false
+      apply: true                           # writes v1-eu: the copy, in the window
       evidenceSecretRef: {name: team-ce98294c-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
       pullSecretName: oramasearch-dockerhub
@@ -1165,7 +1165,7 @@ spec:
       projectIDs: [5ddc9c71-8c05-4cba-a42d-b81983fefe93]
       runID: eu-1
       step: seed                            # the seed dry run (apply: false)
-      apply: false
+      apply: true                           # writes v1-eu: the copy, in the window
       evidenceSecretRef: {name: team-d33ca50a-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
       pullSecretName: oramasearch-dockerhub
@@ -1186,7 +1186,7 @@ spec:
       projectIDs: [c0cc59f4-df9f-48f2-931f-da70f8f776f1]
       runID: eu-1
       step: seed                            # the seed dry run (apply: false)
-      apply: false
+      apply: true                           # writes v1-eu: the copy, in the window
       attempt: 1                            # plan again: a collection without indexes needs no model
       evidenceSecretRef: {name: team-d8432dbe-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
@@ -1208,7 +1208,7 @@ spec:
       projectIDs: [06962bbf-4e9b-4a74-b97b-627129721ce5, 7a1f7529-03d6-4f14-8908-c91ebfa8d91e, c127f103-9c3b-493b-8413-d12797263407]
       runID: eu-1
       step: seed                            # the seed dry run (apply: false)
-      apply: false
+      apply: true                           # writes v1-eu: the copy, in the window
       evidenceSecretRef: {name: team-db628e91-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
       pullSecretName: oramasearch-dockerhub
