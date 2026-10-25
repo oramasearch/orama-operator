@@ -124,6 +124,10 @@ type ManagedSetStatus struct {
 	// MemberStatuses reports each member, in the order the set lists them.
 	// +optional
 	MemberStatuses []SetMemberStatus `json:"memberStatuses,omitempty"`
+	// Versions is each member and what it runs, its image tag where the version is an image
+	// ("dev=dev-aa9fefd5, testing=v0.7.0"), for the list views (kubectl get, Lens).
+	// +optional
+	Versions string `json:"versions,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`
 	// +optional
@@ -142,6 +146,7 @@ type ManagedSetStatus struct {
 //+kubebuilder:printcolumn:name="Members",type=integer,JSONPath=`.status.members`
 //+kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyMembers`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Versions",type=string,JSONPath=`.status.versions`
 //+kubebuilder:printcolumn:name="E2E",type=string,JSONPath=`.status.e2eSummary`
 //+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 

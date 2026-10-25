@@ -7,6 +7,13 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: dev
     spec:
+      # Merged work runs on dev before a release is cut (Steve, 2026-10-25). lake dev-aa9fefd5
+      # (lake#1186, #1187, #1189) and agent-autosuggest c5145f4 (agent-autosuggest#24). Remove both
+      # pins once the next release is cut and dev follows the template again.
+      image: oramasearch/lake:dev-aa9fefd5
+      agents:
+        library:
+        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:c5145f4}
       args:
       - "--listen"
       - 0.0.0.0:4900
@@ -107,7 +114,7 @@ spec:
       secretRef: {name: lake-prod-stripe}
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:v0.6.1
+    image: oramasearch/lake:v0.7.0
     ingressEnabled: true
     postgres:
       enabled: true

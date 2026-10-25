@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.10.1](v0.10.1.md) — 2026-10-25. A patch: versions as columns on `LakeSet` (`Versions`) and `Lake`
+  (`Image`, `Version`, `Revision`), for `kubectl get` and Lens (#984). No workload restarts.
 - [v0.10.0](v0.10.0.md) — 2026-10-24. The operator side of lake v0.7.0: a lake version is only its
   image (`lake manifest`, `lake migrate`), a Lake on a customer-owned domain, a status page for
   lake.live, store restore rehearsals, the Stripe auto top-up permission check, and generated Cloud v1

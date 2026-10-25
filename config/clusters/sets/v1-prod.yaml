@@ -9,7 +9,8 @@
 # an object merges field by field, a list replaces the template's list), so a member cannot remove a
 # template field. The template holds only what both members share; each member carries the rest.
 #
-# NOT READY FOR CUTOVER. Applying this file needs Steve's explicit consent. Since 2026-10-24 it brings
+# NOT READY FOR CUTOVER. Applying this file needs Juan's explicit consent for that apply (D8, which Steve
+# agreed on 2026-10-25: orama-bridge docs/projects/orama-cloud-v1/decisions-2026-10-25.md). Since 2026-10-24 it brings
 # v1-eu up on its production names under orama.ing, production's root domain (Juan, orama-bridge#244),
 # for the end-to-end test there, with no customer data copied and every cron and import suspended.
 # The items under "Blocked" below must be closed before the cutover, not before that test.
@@ -468,6 +469,14 @@ spec:
       profile: light
   # Retain: a member taken out of the set keeps running; it is never deleted by an edit to this list.
   deletionPolicy: Retain
+  # Prod 1 teams copied into the members (operator#654; config/clusters/README.md, "Copying a Prod 1
+  # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
+  # namespace. Applying needs Juan's consent like the rest of this file (D8).
+  #
+  # None at the moment. Run eu-1 of team 4e01bc49 (the #149 pilot team) stopped mid-seed on 2026-10-25,
+  # when the writer lost an acknowledged write (orama-bridge#255). Deleting its entry removed its
+  # partial copy (removeOnDelete). It is copied again as a new run once the fixed engine runs on v1-eu.
+  migrations: []
   secrets:
   - name: oramasearch-dockerhub
     namespace: orama-system
@@ -491,9 +500,10 @@ spec:
       # what was tested there. Both members get them from here. Components not listed (docs, the
       # placeholder workers, oramacore-ai-server) run the v1-sandbox tag, because nothing newer exists.
       overrides:
-        # The combined OramaCore engine from oramacore-private develop 91a1b086: caca2a59 (v1.2.39 with
-        # oramacore#340, #341 and #343) plus the security fixes LSR-063, -064, -149 to -155, -234 and -235.
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-91a1b086@sha256:c55d42b1dbf1d057ca14001bf3fedf883ab06573386fd87c8e4557d7e5aed05a
+        # The combined OramaCore engine from oramacore-private develop 12511370: caca2a59 (v1.2.39 with
+        # oramacore#340, #341 and #343), the security fixes LSR-063, -064, -149 to -155, -234 and -235, and
+        # the replication fixes for orama-bridge#255 (oramacore-private#15, #16). On v1-dev since 19:42Z 2026-10-25.
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-12511370@sha256:c6f3fdc45626fe0d66f2ca82ad49ea93f8e0486b627e69fe7633ae6a7a683eef
         # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
         hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
         # Services from each repository's dev tip with the security fixes, recorded in
