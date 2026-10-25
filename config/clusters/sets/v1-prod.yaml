@@ -473,51 +473,10 @@ spec:
   # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
   # namespace. Applying needs Juan's consent like the rest of this file (D8).
   #
-  # The first production copy: the #149 pilot team, already copied into v1-dev twice
-  # (orama-bridge#206, #222), now into v1-eu. The four Secrets below are created in orama-system on the
-  # managing cluster first, each labelled orama.cloud/purpose=production, from
-  # ~/.config/orama-migration/prod2/secrets.json and the isolation receipt bound to v1-eu (run eu-1),
-  # observed 2026-10-25T18:09:31Z and valid for 48 hours. Created 2026-10-25T18:11:54Z, approved by Juan.
-  migrations:
-  - name: team-4e01bc49
-    member: v1-eu
-    secrets:                                # copied into v1-eu first, deleted once the migration is gone
-    - name: v1-prod-prod1-db-ro             # url: the SELECT-only PlanetScale URL
-      namespace: orama-system
-    - name: v1-prod-prod1-master-key        # key: Prod 1's engine master key
-      namespace: orama-system
-    - name: v1-prod-prod1-settings-ssm      # access_key_id, secret_access_key: the SSM document's IAM key
-      namespace: orama-system
-    - name: team-4e01bc49-eu-evidence       # isolation.json: the reviewed isolation receipt
-      namespace: orama-system
-    spec:                                   # an OramaCloudV1Migration's spec, without targetRef
-      teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
-      projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
-      runID: eu-1
-      step: seed                            # plan Succeeded 18:14Z, the seed dry run 18:15Z (2026-10-25)
-      apply: true                           # writes v1-eu
-      evidenceSecretRef: {name: team-4e01bc49-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:bbecb1d209ce107c45af404298973195acecee62c81db418cfab0cfa3268be97  # dev-28c5192c
-      pullSecretName: oramasearch-dockerhub
-      # removeOnDelete: true only to remove run eu-1's partial copy (orama-bridge#255), approved by Juan
-      # on 2026-10-25: the next change deletes this entry, and the copy is then made again as a new run.
-      removeOnDelete: true
-      # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
-      # names: Prod 1's writer build and its control DB catalog.
-      source:
-        databaseSecretRef: {name: v1-prod-prod1-db-ro, key: url}
-        databaseHost: aws-us-east-2-1.pg.psdb.cloud
-        writerURL: https://writer.bovista.cluster.oramacore.com
-        readerURL: https://collections.orama.com
-        masterKeySecretRef: {name: v1-prod-prod1-master-key, key: key}
-        deploymentRevision: oramacore@1.2.39+890a7e9761dfec61ea8567dcab92b4df737318a2
-        schemaRevision: pg17.11-drizzle-push-catalog-sha256:d995b5cb539d
-        settings:
-          region: us-east-2
-          instanceID: i-0b9478719a8f91e2b
-          document: OramaMigrationReadIndexInfo
-          dataDir: /opt/oramacore/.data/writer
-          credentialsSecretRef: {name: v1-prod-prod1-settings-ssm}
+  # None at the moment. Run eu-1 of team 4e01bc49 (the #149 pilot team) stopped mid-seed on 2026-10-25,
+  # when the writer lost an acknowledged write (orama-bridge#255). Deleting its entry removed its
+  # partial copy (removeOnDelete). It is copied again as a new run once the fixed engine runs on v1-eu.
+  migrations: []
   secrets:
   - name: oramasearch-dockerhub
     namespace: orama-system
