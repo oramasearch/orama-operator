@@ -518,8 +518,11 @@ func certManagerTestCRDs() []*apiextensionsv1.CustomResourceDefinition {
 				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
 					Name: "v1", Served: true, Storage: true,
 					Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-						Type:       "object",
-						Properties: map[string]apiextensionsv1.JSONSchemaProps{"spec": {Type: "object", XPreserveUnknownFields: &preserve}},
+						Type: "object",
+						Properties: map[string]apiextensionsv1.JSONSchemaProps{
+							"spec":   {Type: "object", XPreserveUnknownFields: &preserve},
+							"status": {Type: "object", XPreserveUnknownFields: &preserve},
+						},
 					}},
 				}},
 			},

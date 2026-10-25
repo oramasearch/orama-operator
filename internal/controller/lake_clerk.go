@@ -137,10 +137,12 @@ func (r *LakeReconciler) clerkAPI() string {
 	return clerkBackendAPIBase
 }
 
-// lakeClerkOrigins are the origins the instance must allow: the Lake's host and its apex.
+// lakeClerkOrigins are the origins the instance must allow: the Lake's host, its apex and, once
+// its records are verified, the customer's own host (#947), so sign-in works there the moment it
+// becomes the Lake's public host.
 func lakeClerkOrigins(lake *oramav1alpha1.Lake) []string {
 	var origins []string
-	for _, host := range []string{lake.Spec.Host, lakeApexHost(lake)} {
+	for _, host := range []string{lake.Spec.Host, lakeApexHost(lake), lakeCustomDomainVerifiedHost(lake)} {
 		if host != "" {
 			origins = append(origins, "https://"+host)
 		}
@@ -228,7 +230,7 @@ func lakeClerkDigest(lake *oramav1alpha1.Lake, secretKey, publishableOverride st
 		dns = lake.Spec.DNSSecretRef.Name
 	}
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		secretKey, publishableOverride, lake.Spec.Host, lakeApexHost(lake), dns,
+		secretKey, publishableOverride, strings.Join(lakeClerkOrigins(lake), ","), lakeCustomerZone(lake), dns,
 	}, "\x00")))
 	return fmt.Sprintf("%x", sum[:])
 }
@@ -285,6 +287,19 @@ func (r *LakeReconciler) configureLakeClerk(
 		}
 	}
 
+	// A production instance's DNS records: those in the customer's own zone (an instance on a
+	// white-labelled Lake's domain, #947) are the customer's to create and are published in
+	// status.customDomain.records; the rest are written in the Lake's zone.
+	var ours []clerkDNSTarget
+	var customer []oramav1alpha1.LakeCustomerDNSRecord
+	if instance.EnvironmentType == "production" {
+		ours, customer = splitClerkDNSTargets(lake, primary.targets())
+	}
+	customerJSON, err := json.Marshal(customer)
+	if err != nil {
+		return "", err
+	}
+
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeClerkSecretName(lake.Name), Namespace: ns}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		secret.Labels = labels
@@ -298,6 +313,11 @@ func (r *LakeReconciler) configureLakeClerk(
 		} else {
 			delete(secret.Data, "webhookSecret")
 		}
+		if len(customer) > 0 {
+			secret.Data[lakeClerkCustomerRecordsKey] = customerJSON
+		} else {
+			delete(secret.Data, lakeClerkCustomerRecordsKey)
+		}
 		return controllerutil.SetControllerReference(lake, secret, r.Scheme)
 	}); err != nil {
 		return "", err
@@ -310,11 +330,14 @@ func (r *LakeReconciler) configureLakeClerk(
 	if instance.EnvironmentType != "production" {
 		return summary, r.pruneLakeClerkDNS(ctx, lake, ns, nil)
 	}
-	written, manual, err := r.reconcileLakeClerkDNS(ctx, lake, ns, labels, instance.ID, primary.targets())
+	written, manual, err := r.reconcileLakeClerkDNS(ctx, lake, ns, labels, instance.ID, ours)
 	if err != nil {
 		return "", err
 	}
 	summary += fmt.Sprintf(", %d DNS record(s)", written)
+	if len(customer) > 0 {
+		summary += fmt.Sprintf(", %d for the customer to create (status.customDomain.records)", len(customer))
+	}
 	if len(manual) > 0 {
 		return "", fmt.Errorf("%s; Clerk says these DNS records need a person: %s", summary, strings.Join(manual, ", "))
 	}
@@ -322,6 +345,33 @@ func (r *LakeReconciler) configureLakeClerk(
 }
 
 // ── Lake-owned DNS records for a production instance ─────────────────────────
+
+// lakeClerkCustomerRecordsKey is the key of the Lake's Clerk Secret that holds, as JSON, the DNS
+// records the instance asks for in the customer's zone (#947). Not a credential: the same records
+// are published in the Lake's status.
+const lakeClerkCustomerRecordsKey = "customerDNSRecords"
+
+// splitClerkDNSTargets splits a production instance's DNS targets into those the operator writes in
+// the Lake's zone and those in the zone of the Lake's customer domain, which only the customer can
+// create. A target needing manual resolution stays with the operator's, which reports it.
+func splitClerkDNSTargets(lake *oramav1alpha1.Lake, targets []clerkDNSTarget) ([]clerkDNSTarget, []oramav1alpha1.LakeCustomerDNSRecord) {
+	zone := lakeCustomerZone(lake)
+	var ours []clerkDNSTarget
+	var customer []oramav1alpha1.LakeCustomerDNSRecord
+	for _, target := range targets {
+		if !inCustomerZone(zone, target.Host) {
+			ours = append(ours, target)
+			continue
+		}
+		customer = append(customer, oramav1alpha1.LakeCustomerDNSRecord{
+			Purpose: "clerk",
+			Type:    target.RecordType,
+			Name:    strings.TrimSuffix(strings.ToLower(target.Host), "."),
+			Value:   target.Value,
+		})
+	}
+	return ours, customer
+}
 
 func lakeClerkDNSRecordName(lake *oramav1alpha1.Lake, target clerkDNSTarget) string {
 	sum := sha256.Sum256([]byte(target.RecordType + " " + target.Host))

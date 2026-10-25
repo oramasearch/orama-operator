@@ -305,6 +305,30 @@ spec:
                 required:
                 - secretKeySecretRef
                 type: object
+              customDomain:
+                description: |-
+                  CustomDomain serves this Lake on a host in a zone the customer owns, white-labelled
+                  (orama-operator#947, docs/lake/custom-domains.md). The operator writes no DNS record in the
+                  customer's zone: it publishes in status.customDomain the CNAME and the ownership TXT record the
+                  customer creates, checks both by DNS lookup, and only then routes the host, with its own
+                  Let's Encrypt certificate (HTTP-01) that cert-manager renews. Once the certificate is issued
+                  the Lake's public host becomes CustomDomain.Host (LAKE_PUBLIC_HOST); spec.host keeps working
+                  as an alias (LAKE_HOST_ALIASES) and stays the Lake's name on the operator's control rows
+                  (LAKE_CONTROL_HOST). Removing it removes the route, the certificate and the variables.
+                  It needs IngressEnabled and Host.
+                properties:
+                  host:
+                    description: |-
+                      Host is the customer's host name, for example data.example.com. It must be a name the
+                      customer can point a CNAME at: one below their zone's apex, or the apex with a provider that
+                      flattens CNAMEs.
+                    maxLength: 253
+                    minLength: 4
+                    pattern: ^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$
+                    type: string
+                required:
+                - host
+                type: object
               deploySync:
                 description: |-
                   DeploySync configures how frequently this operator materializes desired deployment rows from
@@ -1612,6 +1636,19 @@ spec:
             - message: 'spec.payments needs spec.billing.enabled: a Lake with billing
                 off takes no payments'
               rule: '!has(self.payments) || (has(self.billing) && self.billing.enabled)'
+            - message: 'spec.customDomain needs spec.host and spec.ingressEnabled:
+                the Orama host stays the Lake''s alias and the custom host is routed
+                through the Lake''s ingress'
+              rule: '!has(self.customDomain) || (has(self.host) && size(self.host)
+                > 0 && has(self.ingressEnabled) && self.ingressEnabled)'
+            - message: spec.customDomain.host must differ from spec.host and spec.apexHost
+              rule: '!has(self.customDomain) || (self.customDomain.host != self.host
+                && (!has(self.apexHost) || self.customDomain.host != self.apexHost))'
+            - message: 'with spec.customDomain the operator sets LAKE_PUBLIC_HOST,
+                LAKE_HOST_ALIASES and LAKE_CONTROL_HOST: remove them from spec.env'
+              rule: '!has(self.customDomain) || !has(self.env) || !self.env.exists(e,
+                e.name == ''LAKE_PUBLIC_HOST'' || e.name == ''LAKE_HOST_ALIASES''
+                || e.name == ''LAKE_CONTROL_HOST'')'
           status:
             description: status defines the observed state of Lake
             properties:
@@ -1678,6 +1715,86 @@ spec:
                   - type
                   type: object
                 type: array
+              customDomain:
+                description: |-
+                  CustomDomain reports spec.customDomain: the records the customer creates, whether they are
+                  found, and whether the host is routed (docs/lake/custom-domains.md). Absent without it.
+                properties:
+                  certificateNotAfter:
+                    description: CertificateNotAfter is when the issued certificate
+                      expires; cert-manager renews it before.
+                    format: date-time
+                    type: string
+                  certificateReady:
+                    description: CertificateReady is whether the host's certificate
+                      is issued and valid.
+                    type: boolean
+                  host:
+                    description: Host is the spec.customDomain.host this status is
+                      for.
+                    type: string
+                  message:
+                    description: Message says what is missing, in plain words.
+                    type: string
+                  phase:
+                    description: |-
+                      Phase is Pending (the records are not both found yet), Verified (both found; the route and
+                      its certificate are being made) or Routed (the host is served with an issued certificate,
+                      and is the Lake's public host).
+                    enum:
+                    - Pending
+                    - Verified
+                    - Routed
+                    type: string
+                  records:
+                    description: |-
+                      Records are the DNS records the customer creates in their zone: the CNAME that routes the
+                      host to this cluster, the TXT record that proves they own it, and any record a Clerk
+                      instance on their domain asks for. Found says whether the last lookup saw it.
+                    items:
+                      description: LakeCustomerDNSRecord is one DNS record the customer
+                        creates in their own zone.
+                      properties:
+                        found:
+                          description: Found is whether the operator's last lookup
+                            saw the record with this value.
+                          type: boolean
+                        name:
+                          description: Name is the record's full name.
+                          type: string
+                        purpose:
+                          description: |-
+                            Purpose is routing (sends the host to this cluster), ownership (proves the customer controls
+                            the name) or clerk (a record a Clerk instance on the customer's domain needs).
+                          enum:
+                          - routing
+                          - ownership
+                          - clerk
+                          type: string
+                        type:
+                          description: Type is CNAME, A, AAAA or TXT.
+                          type: string
+                        value:
+                          description: 'Value is what the record holds: the CNAME
+                            target, the address, or the TXT text.'
+                          type: string
+                      required:
+                      - name
+                      - purpose
+                      - type
+                      - value
+                      type: object
+                    type: array
+                  verifiedTime:
+                    description: |-
+                      VerifiedTime is when both records were first found for Host. Verification is not undone by
+                      a later failed lookup; Records shows what the lookup sees now.
+                    format: date-time
+                    type: string
+                required:
+                - host
+                - phase
+                type: object
               dataServices:
                 description: |-
                   DataServices reports the operational evidence for every data service associated with the

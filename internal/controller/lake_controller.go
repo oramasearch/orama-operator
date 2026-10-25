@@ -78,6 +78,11 @@ type LakeReconciler struct {
 	SvixAPIBase  string
 	// clerkClock throttles the Clerk configuration pass per Lake (lake_clerk.go).
 	clerkClock lakeClerkClock
+	// DomainResolver looks up a customer domain's records (lake_custom_domain.go); nil is the
+	// system resolver. Tests substitute a fake.
+	DomainResolver DomainResolver
+	// customDomainClock throttles those lookups per Lake.
+	customDomainClock lakeCustomDomainClock
 	// StripeAPIBase is Stripe's API for the check of a Lake's own key (lake_payments.go); empty is
 	// https://api.stripe.com. Tests point it at a fake.
 	StripeAPIBase string
@@ -307,6 +312,16 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("reconcile payments: %w", err)
 	}
 
+	// A customer's own domain (spec.customDomain, lake_custom_domain.go): before the Deployment,
+	// whose LAKE_PUBLIC_HOST follows it once it is routed. lakeEnv reads the fresh state from
+	// lake.Status.CustomDomain, which is written below with the rest of the status.
+	customDomain, customDomainCondition, err := r.reconcileLakeCustomDomain(ctx, &lake, ns, name, labels)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile custom domain: %w", err)
+	}
+	previousCustomDomain := lake.Status.CustomDomain
+	lake.Status.CustomDomain = customDomain
+
 	// Service.
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
@@ -440,6 +455,14 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	} else if apimeta.RemoveStatusCondition(&desiredConditions, lakeClerkConditionType) {
 		conditionsChanged = true
 	}
+	// CustomDomainReady exists only on a Lake with spec.customDomain.
+	if customDomainCondition != nil {
+		if apimeta.SetStatusCondition(&desiredConditions, *customDomainCondition) {
+			conditionsChanged = true
+		}
+	} else if apimeta.RemoveStatusCondition(&desiredConditions, lakeCustomDomainConditionType) {
+		conditionsChanged = true
+	}
 	// PaymentsReady exists only on a Lake with spec.payments, or while what it made is removed.
 	if payments.Condition != nil {
 		if apimeta.SetStatusCondition(&desiredConditions, *payments.Condition) {
@@ -458,6 +481,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.DataServicesSummary != dataServicesSummary ||
 		!apiequality.Semantic.DeepEqual(lake.Status.Store, storeStatus) ||
 		!apiequality.Semantic.DeepEqual(lake.Status.Sealing, sealing.Status) ||
+		!apiequality.Semantic.DeepEqual(previousCustomDomain, customDomain) ||
 		conditionsChanged {
 		lake.Status.ReadyReplicas = deploy.Status.ReadyReplicas
 		lake.Status.Phase = phase
@@ -482,6 +506,12 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// A manifest being read is looked at sooner.
 	if manifest.Requeue > 0 && (result.RequeueAfter == 0 || manifest.Requeue < result.RequeueAfter) {
 		result.RequeueAfter = manifest.Requeue
+	}
+	// A customer domain not yet routed is looked at again soon: nothing the operator watches
+	// changes when the customer creates their records or the certificate is issued.
+	if customDomain != nil && customDomain.Phase != lakeCustomDomainRouted &&
+		(result.RequeueAfter == 0 || lakeCustomDomainCheckPending < result.RequeueAfter) {
+		result.RequeueAfter = lakeCustomDomainCheckPending
 	}
 	// The next check of the Lake's Stripe key, or a payments removal, may be due sooner.
 	if payments.Requeue > 0 && (result.RequeueAfter == 0 || payments.Requeue < result.RequeueAfter) {
@@ -1266,8 +1296,15 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	}
 	// LAKE_PUBLIC_HOST names this Lake on every orama_control row lake reads and writes, and lake
 	// refuses to start the operator Zetta client without it. spec.env keeps a value it states;
-	// otherwise the operator gives spec.host.
-	if !lakeSpecEnvSetsPublicHost(lake) {
+	// otherwise the operator gives spec.host. A routed customer domain (#947) replaces it with the
+	// customer's host and names the control rows with LAKE_CONTROL_HOST instead; CEL refuses those
+	// variables in spec.env alongside spec.customDomain.
+	if custom := lakeCustomDomainEnv(lake); custom != nil {
+		env = append(env, custom...)
+		for _, variable := range custom {
+			reserved[variable.Name] = struct{}{}
+		}
+	} else if !lakeSpecEnvSetsPublicHost(lake) {
 		reserved["LAKE_PUBLIC_HOST"] = struct{}{}
 		if lake.Spec.Host != "" {
 			env = append(env, corev1.EnvVar{Name: "LAKE_PUBLIC_HOST", Value: lake.Spec.Host})
