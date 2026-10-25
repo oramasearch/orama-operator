@@ -189,12 +189,14 @@ func pgMigrationScopeCurrent(ps *oramav1alpha1.PostgresSchema, job *batchv1.Job)
 }
 
 // schemaMigrationPattern matches a schema file's migration records,
-// `INSERT INTO schema_migrations (version) VALUES ('NNNN_name')`. The Job script extracts the same
-// lines with pgSchemaMigrationSed; TestSchemaMigrationSedMatchesGo keeps the two in step.
-var schemaMigrationPattern = regexp.MustCompile(`(?m)^[ \t]*INSERT INTO schema_migrations \(version\) VALUES \('([0-9]{4}_[A-Za-z0-9_]+)'\)`)
+// `INSERT INTO schema_migrations (version) VALUES ('NNNN_name')`, with or without whitespace before
+// `(version)`: lake writes 0098_authentication_attempts as `schema_migrations(version)` (#948). The
+// Job script extracts the same lines with pgSchemaMigrationSed; TestSchemaMigrationSedMatchesGo keeps
+// the two in step.
+var schemaMigrationPattern = regexp.MustCompile(`(?m)^[ \t]*INSERT INTO schema_migrations[ \t]*\(version\) VALUES \('([0-9]{4}_[A-Za-z0-9_]+)'\)`)
 
 // pgSchemaMigrationSed prints each migration version a schema file records, one per line.
-const pgSchemaMigrationSed = `sed -n "s/^[[:space:]]*INSERT INTO schema_migrations (version) VALUES ('\([0-9][0-9][0-9][0-9]_[A-Za-z0-9_]*\)').*/\1/p"`
+const pgSchemaMigrationSed = `sed -n "s/^[[:space:]]*INSERT INTO schema_migrations[[:space:]]*(version) VALUES ('\([0-9][0-9][0-9][0-9]_[A-Za-z0-9_]*\)').*/\1/p"`
 
 // schemaMigrationVersions returns the migration versions a schema file records, in file order.
 func schemaMigrationVersions(sql string) []string {

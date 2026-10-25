@@ -198,6 +198,13 @@ The guard check stays. A database with the guard but no `schema_migrations` tabl
 that records no migrations (the v1 dashboard schema), keep the guard-only behavior. The Job extracts
 versions with `sed`; `schemaMigrationVersions` in Go uses the same pattern, and
 `TestSchemaMigrationSedMatchesGo` checks both find the same versions in the vendored file.
+
+Both patterns accept optional whitespace before `(version)`
+([#948](https://github.com/oramasearch/orama-operator/issues/948)). Lake writes
+`0098_authentication_attempts` as `INSERT INTO schema_migrations(version) …`, with no space. Before
+the fix neither pattern saw it, so a database with the guard and every other row, but not 0098, was
+reported applied and left without it. The restore rehearsal's missing-migration query is built from
+the same list, so it now asks for 0098 too.
 `LakeRestoreRehearsal` uses the Go list to fail a restore, upgrade or failover rehearsal whose
 database lacks any of them ([Postgres data-service rehearsals](data-services/postgres.md)).
 
@@ -225,7 +232,7 @@ When lake adds a migration:
 2. Record that commit and SHA-256 in `internal/controller/assets/lake-schema.source.json`.
    Set `lakeSchemaGuardTable` in `lake_controller.go` to the newest migration's completion table.
    Each migration must record itself with `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`
-   on a line of its own: the Job and the rehearsal both read those lines to decide what is applied.
+   (a space before `(version)` is optional) on a line of its own: the Job and the rehearsal both read those lines to decide what is applied.
    The hash includes the guard. Confirm the entire combined SQL remains safe to reapply and that
    the guard becomes visible only after the migration commits. Add the guard to the Postgres
    rehearsal verification query and extend the schema proof for the migration's actual effects.
