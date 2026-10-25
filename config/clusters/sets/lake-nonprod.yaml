@@ -29,6 +29,7 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: staging
     spec:
+      image: oramasearch/lake:v0.7.0
       args:
       - "--listen"
       - 0.0.0.0:4900
