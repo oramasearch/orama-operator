@@ -41,6 +41,7 @@ type fakeR2 struct {
 	puts     map[string]int
 	fail     string
 	requests []string
+	domains  map[string]map[string]any // domain -> stored settings
 }
 
 func (f *fakeR2) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +81,42 @@ func (f *fakeR2) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, `{"success":true}`)
 		default:
 			f.t.Errorf("unexpected configuration method %s", r.Method)
+		}
+	case strings.Contains(path, "/domains/custom"):
+		if f.domains == nil {
+			f.domains = map[string]map[string]any{}
+		}
+		domain := path[strings.Index(path, "/domains/custom")+len("/domains/custom"):]
+		domain = strings.TrimPrefix(domain, "/")
+		switch r.Method {
+		case http.MethodGet:
+			d, ok := f.domains[domain]
+			if !ok {
+				http.Error(w, `{"success":false,"errors":[{"message":"not found"}]}`, http.StatusNotFound)
+				return
+			}
+			out, _ := json.Marshal(map[string]any{"domain": domain, "enabled": d["enabled"], "minTLS": d["minTLS"],
+				"status": map[string]string{"ownership": "active", "ssl": "active"}})
+			fmt.Fprintf(w, `{"success":true,"result":%s}`, out)
+		case http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.domains[body["domain"].(string)] = body
+			fmt.Fprint(w, `{"success":true}`)
+		case http.MethodPut:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			for k, v := range body {
+				f.domains[domain][k] = v
+			}
+			fmt.Fprint(w, `{"success":true}`)
+		case http.MethodDelete:
+			if _, ok := f.domains[domain]; !ok {
+				http.Error(w, `{"success":false}`, http.StatusNotFound)
+				return
+			}
+			delete(f.domains, domain)
+			fmt.Fprint(w, `{"success":true}`)
 		}
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/r2/buckets/"):
 		if !f.buckets[strings.TrimPrefix(path, "/r2/buckets/")] {
@@ -381,5 +418,44 @@ func TestR2BucketInitialConfigurationAfterNotFound(t *testing.T) {
 	reconcileR2(t, r, b)
 	if cf.puts["/r2/buckets/lake-backups/cors"] != 1 || cf.puts["/r2/buckets/lake-backups/lifecycle"] != 1 {
 		t.Fatalf("steady configuration PUT counts = %v", cf.puts)
+	}
+}
+
+func TestR2BucketCustomDomain(t *testing.T) {
+	b := testR2Bucket(oramav1alpha1.BucketDeletionRetain, false)
+	b.Spec.CustomDomain = &oramav1alpha1.CloudflareR2CustomDomain{Domain: "status.lake.live", ZoneID: "zone-1"}
+	r, kube, cf := newR2Fixture(t, b)
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(b)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(b), b); err != nil {
+		t.Fatal(err)
+	}
+	got := cf.domains["status.lake.live"]
+	if got == nil || got["zoneId"] != "zone-1" || got["enabled"] != true || got["minTLS"] != "1.2" {
+		t.Fatalf("attached %v", got)
+	}
+	if b.Status.CustomDomain != "status.lake.live" || b.Status.CustomDomainStatus != "ownership=pending ssl=pending" || result.RequeueAfter == 0 {
+		t.Fatalf("status %+v requeue %v: a pending domain is looked at again", b.Status, result.RequeueAfter)
+	}
+	// Next pass reads Cloudflare's verdict and stops requeueing; a disabled domain is re-enabled.
+	cf.domains["status.lake.live"]["enabled"] = false
+	result, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(b)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = kube.Get(context.Background(), client.ObjectKeyFromObject(b), b)
+	if cf.domains["status.lake.live"]["enabled"] != true || b.Status.CustomDomainStatus != r2CustomDomainActive || result.RequeueAfter != 0 {
+		t.Fatalf("domain %v status %+v requeue %v", cf.domains["status.lake.live"], b.Status, result.RequeueAfter)
+	}
+	// Dropping it from the spec detaches it.
+	b.Spec.CustomDomain = nil
+	if err := kube.Update(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	reconcileR2(t, r, b)
+	if len(cf.domains) != 0 || b.Status.CustomDomain != "" {
+		t.Fatalf("domains %v status %+v", cf.domains, b.Status)
 	}
 }

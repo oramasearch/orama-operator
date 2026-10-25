@@ -3,6 +3,11 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.10.0](v0.10.0.md) — 2026-10-24. The operator side of lake v0.7.0: a lake version is only its
+  image (`lake manifest`, `lake migrate`), a Lake on a customer-owned domain, a status page for
+  lake.live, store restore rehearsals, the Stripe auto top-up permission check, and generated Cloud v1
+  stack-internal credentials. New kind `StatusPage`. **Roll it before lake v0.7.0; rehearse #949 on
+  `v1-dev` before `v1-eu`.**
 - [v0.9.5](v0.9.5.md) — 2026-10-24. A patch for lake v0.6.0: its schema through `0099` and the
   prepaid balance's Stripe events. **Roll it before the lake v0.6.0 image.**
 - [v0.9.4](v0.9.4.md) — 2026-10-24. A patch: a Cloud v1 docs host gets its DNS record (#928).

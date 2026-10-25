@@ -289,6 +289,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareR2Bucket")
 		os.Exit(1)
 	}
+	if err = (&controller.StatusPageReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "StatusPage")
+		os.Exit(1)
+	}
 	if err = (&controller.BackupScheduleReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

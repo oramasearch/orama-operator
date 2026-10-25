@@ -27,6 +27,7 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 | `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order. |
 | `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs, and the pull Secret copied to it. A nonprod cluster names its own (`orama-system/oramasearch-dockerhub-nonprod`, copied as `oramasearch-dockerhub`); a Secret production uses is refused for it (orama-operator#832). |
 | `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose, and the end-to-end runs against them (`spec.e2eTests`). |
+| `status/lake-live.yaml` | lake.live's status page, applied to the managing cluster: a `CloudflareR2Bucket` served on `status.lake.live` and the `StatusPage` whose checks of every lake.live host feed it and alert Steve. Its Secrets are listed at the top of the file. See [`docs/infrastructure/status-pages.md`](../../docs/infrastructure/status-pages.md). |
 | `sets/v1-<purpose>.yaml` | An `OramaCloudV1Set`: the Orama Cloud v1 instances of that purpose, and the Prod 1 teams being copied into them. |
 
 | Cluster | Region | Purpose | Deletion policy |
@@ -262,6 +263,19 @@ digest. Applying the file starts a run, and changing `runID` to the next release
 both are a set change, applied with Steve's consent and committed with it. The result is in the
 set's `E2E` column and `status.e2eTests`. The entry is in the file, commented out, until
 `oramasearch/lake-e2e` has an image and the managing cluster runs an operator that knows the field.
+
+## Restore rehearsals from a set file
+
+A `LakeRestoreRehearsal` also runs on its Lake's cluster, so it is declared the same way: an entry
+under `spec.restoreRehearsals` of a `LakeSet` file, which the managing operator applies as a
+`LakeRestoreRehearsal` on the member's cluster with `spec.lakeRef` filled in
+([#127](https://github.com/oramasearch/orama-operator/issues/127)). It restores into a throwaway
+scratch namespace and never touches the live data. A rehearsal's spec cannot change, so a new run is
+a new entry under a new name; applying the file is Steve's consent, like any set change. The result
+is in the set's `status.restoreRehearsals`. [`sets/lake-prod.yaml`](sets/lake-prod.yaml) carries the
+store and Postgres rehearsals of `shared` and `shared-us`, commented out until the managing cluster
+runs an operator that knows the field. The runbook, with what backups exist per region, is
+[`docs/lake/restore-rehearsals.md`](../../docs/lake/restore-rehearsals.md).
 
 To check that the files match the cluster:
 

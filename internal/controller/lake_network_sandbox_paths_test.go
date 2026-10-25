@@ -235,3 +235,44 @@ func TestLakeNetworkSandboxLetsItsE2ERunnerCallTheLake(t *testing.T) {
 		t.Fatal("e2e ingress lets in pods that are not the runner")
 	}
 }
+
+// A LakeRestoreRehearsal's verifier reads the live control database with the read-only rehearsal
+// login, from the rehearsal's scratch namespace (restore, upgrade) or the Lake's own (failover).
+// The control database's ingress is sandboxed, so without this allowance every Postgres rehearsal
+// of a sandboxed Lake fails before it compares anything. Only this Lake's verifier pods are let in,
+// on 5432 only, from this namespace or a namespace labelled for this Lake.
+func TestLakeNetworkSandboxLetsItsRehearsalVerifierReadTheControlDatabase(t *testing.T) {
+	lake := serviceTestLake()
+	database := metav1.LabelSelector{MatchLabels: map[string]string{"cnpg.io/cluster": lakeControlDB(lake.Name)}}
+	policies := lakeInternalIngressAllowances(lake, lakePodSelector(lake), database, metav1.LabelSelector{}, metav1.LabelSelector{}, metav1.LabelSelector{})
+	sandbox := &oramav1alpha1.NetworkSandbox{Spec: oramav1alpha1.NetworkSandboxSpec{Policies: policies}}
+	assertJustifiedNarrowAllowances(t, sandbox)
+	policy := allowanceByName(t, sandbox, "allow-rehearsal-ingress-to-controldb")
+	if !reflect.DeepEqual(policy.Spec.PodSelector, database) || len(policy.Spec.Egress) != 0 || len(policy.Spec.Ingress) != 1 {
+		t.Fatalf("rehearsal path is not ingress to the control database only: %+v", policy.Spec)
+	}
+	rule := policy.Spec.Ingress[0]
+	if !reflect.DeepEqual(policyPorts(t, rule.Ports), []int32{5432}) || len(rule.From) != 2 {
+		t.Fatalf("unexpected rehearsal ingress: %+v", rule)
+	}
+	// The verifier's pod as the rehearsal controller labels it, and its scratch namespace.
+	job := verificationJobSpec(lake, "source", "restored", "source-db", true)
+	rehearsal := &oramav1alpha1.LakeRestoreRehearsal{ObjectMeta: metav1.ObjectMeta{Name: "r"}, Spec: oramav1alpha1.LakeRestoreRehearsalSpec{LakeRef: lake.Name}}
+	scratch := withLabels(rehearsalLabels(rehearsal), map[string]string{lakeRehearsalLakeLabel: lake.Name})
+	same, other := rule.From[0], rule.From[1]
+	if same.NamespaceSelector != nil || !selectorMatches(t, *same.PodSelector, job.Template.Labels) {
+		t.Fatalf("the failover verifier in the Lake's namespace cannot reach its database: %+v", same)
+	}
+	if other.NamespaceSelector == nil || !selectorMatches(t, *other.NamespaceSelector, scratch) || !selectorMatches(t, *other.PodSelector, job.Template.Labels) {
+		t.Fatalf("the restore verifier in the scratch namespace cannot reach its database: %+v", other)
+	}
+	another := lakeRehearsalPodLabels("another")
+	if selectorMatches(t, *same.PodSelector, another) || selectorMatches(t, *other.PodSelector, another) ||
+		selectorMatches(t, *other.NamespaceSelector, map[string]string{lakeRehearsalLakeLabel: "another"}) ||
+		selectorMatches(t, *other.NamespaceSelector, map[string]string{"app.kubernetes.io/name": lakeRehearsalAppName}) {
+		t.Fatal("rehearsal ingress lets in another Lake's verifier or an unlabelled namespace")
+	}
+	if selectorMatches(t, *same.PodSelector, map[string]string{"app.kubernetes.io/name": lakeRehearsalAppName}) {
+		t.Fatal("rehearsal ingress lets in a pod that does not name this Lake")
+	}
+}

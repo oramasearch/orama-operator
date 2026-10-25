@@ -49,6 +49,12 @@ type fakeMembers struct {
 	e2eMissing   bool                      // the LakeE2ETest CRD is not on the cluster
 	e2eDeleted   []memberRequest           // DeleteE2ETest calls
 	e2eDeleteErr error
+
+	rehearsalApplied []memberRequest           // ApplyRehearsal calls
+	rehearsalStatus  map[string]map[string]any // by name: the status its cluster reports
+	rehearsalSpec    map[string]map[string]any // by name: the spec its cluster already has
+	rehearsalMissing bool                      // the LakeRestoreRehearsal CRD is not on the cluster
+	rehearsalDeleted []memberRequest           // DeleteRehearsal calls
 }
 
 func (f *fakeMembers) ApplyE2ETest(_ context.Context, _ []byte, req memberRequest) (memberState, error) {
@@ -72,6 +78,34 @@ func (f *fakeMembers) ApplyE2ETest(_ context.Context, _ []byte, req memberReques
 func (f *fakeMembers) DeleteE2ETest(_ context.Context, _ []byte, req memberRequest) error {
 	f.e2eDeleted = append(f.e2eDeleted, req)
 	return f.e2eDeleteErr
+}
+
+func (f *fakeMembers) ApplyRehearsal(_ context.Context, _ []byte, req memberRequest) (memberState, error) {
+	f.rehearsalApplied = append(f.rehearsalApplied, req)
+	if f.rehearsalMissing {
+		return memberState{MissingCRD: true}, nil
+	}
+	obj := memberObject(req)
+	obj.SetGeneration(1)
+	obj.Object["spec"] = req.Spec
+	if have := f.rehearsalSpec[req.Name]; have != nil {
+		obj.Object["spec"] = maps.Clone(have)
+		if rehearsalSpecChanged(obj, req.Spec) {
+			if status := f.rehearsalStatus[req.Name]; status != nil {
+				obj.Object["status"] = maps.Clone(status)
+			}
+			return memberState{Object: obj, Changed: true}, nil
+		}
+	}
+	if status := f.rehearsalStatus[req.Name]; status != nil {
+		obj.Object["status"] = maps.Clone(status)
+	}
+	return memberState{Object: obj}, nil
+}
+
+func (f *fakeMembers) DeleteRehearsal(_ context.Context, _ []byte, req memberRequest) error {
+	f.rehearsalDeleted = append(f.rehearsalDeleted, req)
+	return nil
 }
 
 func (f *fakeMembers) ApplyMember(_ context.Context, kubeconfig []byte, req memberRequest) (memberState, error) {

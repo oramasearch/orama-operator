@@ -5,7 +5,10 @@
   live payments from managing-cluster Secret `lake/stripe-live`, copied as `stripe`; each has its
   own operator-managed webhook and signing Secret. EU passed its gate before the US change.
   The common legacy `lake-prod-stripe` copy is removed from this set; retained Secret objects
-  are not deleted.
+  are not deleted. It also carries, commented out, the restore rehearsals of both members
+  (`spec.restoreRehearsals`: the store now, the control database once it is backed up), until the
+  managing cluster runs an operator that knows the field
+  ([runbook](../../../docs/lake/restore-rehearsals.md), #127).
 - [v1-nonprod.yaml](v1-nonprod.yaml) and [v1-prod.yaml](v1-prod.yaml): Cloud v1 instances.
 
 Apply only after the credential checks and production approval in

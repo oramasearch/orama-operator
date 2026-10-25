@@ -111,9 +111,10 @@ type stripeAPIError struct {
 	Path       string
 	StatusCode int
 	// Type and Code are Stripe's error.type (invalid_request_error, ...) and error.code
-	// (resource_missing, ...).
+	// (resource_missing, ...); Param names a rejected or missing request field.
 	Type    string
 	Code    string
+	Param   string
 	Message string
 }
 
@@ -213,12 +214,14 @@ func stripeSend(ctx context.Context, api stripeAPI, call stripeCall, out any) (b
 			Error struct {
 				Type    string `json:"type"`
 				Code    string `json:"code"`
+				Param   string `json:"param"`
 				Message string `json:"message"`
 			} `json:"error"`
 		}
 		if json.Unmarshal(data, &answer) == nil {
 			apiErr.Type = stripeRedact(answer.Error.Type, api.Key)
 			apiErr.Code = stripeRedact(answer.Error.Code, api.Key)
+			apiErr.Param = stripeRedact(answer.Error.Param, api.Key)
 			if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
 				apiErr.Message = stripeRedact(answer.Error.Message, api.Key)
 			}

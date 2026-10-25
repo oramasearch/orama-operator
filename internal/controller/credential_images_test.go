@@ -33,7 +33,7 @@ import (
 func TestCredentialHelpersArePinned(t *testing.T) {
 	ctx := context.Background()
 	for _, compare := range []bool{false, true} {
-		job := &batchv1.Job{Spec: verificationJobSpec("source", "restored", "readonly", compare)}
+		job := &batchv1.Job{Spec: verificationJobSpec(&oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "test"}}, "source", "restored", "readonly", compare)}
 		if err := validateWorkloadImages(job); err != nil {
 			t.Error(err)
 		}
@@ -49,7 +49,7 @@ func TestCredentialHelpersArePinned(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "pin-test"}}
 	lr := &LakeReconciler{Client: cl, Scheme: scheme}
-	if err := lr.reconcileLakeControlDBSchema(ctx, lake, "test", nil); err != nil {
+	if err := lr.reconcileLakeControlDBSchema(ctx, lake, "test", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	ps := &oramav1alpha1.PostgresSchema{}
