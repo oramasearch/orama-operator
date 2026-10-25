@@ -499,8 +499,9 @@ spec:
       evidenceSecretRef: {name: team-4e01bc49-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:bbecb1d209ce107c45af404298973195acecee62c81db418cfab0cfa3268be97  # dev-28c5192c
       pullSecretName: oramasearch-dockerhub
-      # removeOnDelete unset: removing this entry keeps the team's copy on v1-eu, because deleting
-      # production data needs its own approval. The cutover's final catch-up updates this copy.
+      # removeOnDelete: true only to remove run eu-1's partial copy (orama-bridge#255), approved by Juan
+      # on 2026-10-25: the next change deletes this entry, and the copy is then made again as a new run.
+      removeOnDelete: true
       # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
       # names: Prod 1's writer build and its control DB catalog.
       source:
