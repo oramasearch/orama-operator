@@ -21,6 +21,15 @@ spec:
     - jsonPath: .spec.host
       name: Host
       type: string
+    - jsonPath: .spec.image
+      name: Image
+      type: string
+    - jsonPath: .status.imageManifest.version
+      name: Version
+      type: string
+    - jsonPath: .status.imageManifest.revision
+      name: Revision
+      type: string
     - jsonPath: .status.readyReplicas
       name: Ready
       type: integer
