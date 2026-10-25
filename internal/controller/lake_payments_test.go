@@ -7,7 +7,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -462,6 +464,90 @@ func TestLakePaymentsRefuseAnAppKeyOfAnotherAccount(t *testing.T) {
 	}
 }
 
+// Product read alone cannot prove that the restricted key can charge. A Dashboard permission
+// edit keeps the same key, so the failed check retries after a minute without a Secret change.
+func TestLakePaymentsRequirePaymentIntentWriteAndRecoverAfterAPermissionEdit(t *testing.T) {
+	h := newPaymentsHarness(t, paymentsTestLake("testing"), lakePaymentsTestSecret("lake-testing", nil))
+	now := time.Now()
+	h.r.lakeAppKeyChecks.clock.now = func() time.Time { return now }
+	h.stripe.setFailure("POST /v1/payment_intents", &fakeStripeError{
+		status: http.StatusForbidden, errType: "invalid_request_error", message: "refused " + testLakeAppKey,
+	})
+	h.reconcileLake()
+	h.runProvider()
+	h.runEndpoint()
+	h.runCatalog()
+	h.reconcileLake()
+	h.expectReason("AppKeyPermissionsMissing")
+	if h.stripe.count("GET /v1/products/lake_usage") < 1 || h.stripe.count("POST /v1/payment_intents") != 1 {
+		t.Fatal("the product read and charge permission probe must both run")
+	}
+	if env := h.stripeEnv(); len(env) != 0 || h.hash() != "" {
+		t.Errorf("an unchargeable key was given to the Lake: env %+v hash %q", env, h.hash())
+	}
+	if message := h.condition().Message; strings.Contains(message, testLakeAppKey) || !strings.Contains(message, "Payment Intents write") {
+		t.Errorf("permission failure message = %q", message)
+	}
+	h.stripe.setFailure("POST /v1/payment_intents", nil)
+	h.reconcileLake()
+	if got := h.stripe.count("POST /v1/payment_intents"); got != 1 {
+		t.Errorf("a cached failure made %d probes, want 1", got)
+	}
+	now = now.Add(paymentRetry)
+	h.reconcileLake()
+	h.expectReason("Configured")
+	if got := h.stripe.count("POST /v1/payment_intents"); got != 2 {
+		t.Errorf("after a permission edit: %d probes, want 2", got)
+	}
+	if len(h.stripeEnv()) != 2 || h.hash() == "" {
+		t.Fatal("a repaired key was not given to the Lake")
+	}
+	for _, request := range h.stripe.received() {
+		if request.Path == "/v1/payment_intents" && (len(request.Form) != 2 ||
+			request.Form.Get("currency") != "usd" || request.Form.Get("payment_method_types[]") != "card" ||
+			request.Version != lakeStripeAPIVersion || request.IdempotencyKey != "") {
+			t.Errorf("unsafe or unexpected permission probe: %+v", request)
+		}
+	}
+}
+
+// Only Stripe's precise validation error passes; unrelated 4xx errors, outages, malformed
+// answers and unexpected success must never mark a key chargeable.
+func TestLakePaymentIntentPermissionProbeRequiresTheExpectedValidationError(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, reason string
+		status             int
+	}{
+		{"missing amount", `{"error":{"type":"invalid_request_error","code":"parameter_missing","param":"amount"}}`, "", 400},
+		{"wrong parameter", `{"error":{"type":"invalid_request_error","code":"parameter_missing","param":"currency"}}`, "StripeAPIError", 400},
+		{"wrong code", `{"error":{"type":"invalid_request_error","code":"parameter_invalid_integer","param":"amount"}}`, "StripeAPIError", 400},
+		{"wrong type", `{"error":{"type":"permission_error","code":"parameter_missing","param":"amount"}}`, "AppKeyPermissionsMissing", 400},
+		{"forbidden", `{"error":{"type":"invalid_request_error"}}`, "AppKeyPermissionsMissing", 403},
+		{"revoked", `{"error":{"type":"invalid_request_error"}}`, "StripeAPIError", 401},
+		{"rate limited", `{"error":{"type":"rate_limit_error"}}`, "StripeAPIError", 429},
+		{"unavailable", `{"error":{"type":"api_error"}}`, "StripeAPIError", 500},
+		{"malformed", `{`, "StripeAPIError", 400},
+		{"unexpected success", `{}`, "StripeAPIError", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			r := LakeReconciler{StripeAPIBase: server.URL}
+			failure := r.lakeAppKeyChargeFailure(context.Background(), testLakeAppKey)
+			if tc.reason == "" {
+				if failure != nil {
+					t.Fatalf("expected validation error failed the probe: %+v", failure)
+				}
+			} else if failure == nil || failure.Reason != tc.reason {
+				t.Fatalf("failure = %+v, want %s", failure, tc.reason)
+			}
+		})
+	}
+}
+
 // Once given, the variables survive a failed hourly check and a rotated key that fails its check,
 // without rolling the Lake; a key of the wrong mode withdraws them.
 func TestLakePaymentsKeepTheEnvThroughCheckFailuresButNotAWrongMode(t *testing.T) {
@@ -478,6 +564,14 @@ func TestLakePaymentsKeepTheEnvThroughCheckFailuresButNotAWrongMode(t *testing.T
 		t.Errorf("a failed hourly check changed the env or the hash: %+v %q", h.stripeEnv(), h.hash())
 	}
 	h.stripe.setFailure("GET /v1/products/lake_usage", nil)
+	later = later.Add(2 * time.Hour)
+	h.stripe.setFailure("POST /v1/payment_intents", &fakeStripeError{status: http.StatusForbidden, errType: "invalid_request_error"})
+	h.reconcileLake()
+	h.expectReason("AppKeyPermissionsMissing")
+	if !reflect.DeepEqual(h.stripeEnv(), env) || h.hash() != hash {
+		t.Error("a missing charge permission changed the existing env or rolled the Lake")
+	}
+	h.stripe.setFailure("POST /v1/payment_intents", nil)
 
 	h.stripe.acceptKey("rk_test_51OtherAccount", "acct_1Other")
 	h.updatePaymentsSecret(map[string]string{"appKey": "rk_test_51OtherAccount"})

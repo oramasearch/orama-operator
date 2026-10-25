@@ -16,9 +16,9 @@ package controller
 //     events Lake handles, whose signing secret lands in Secret lake-<name>-payments-webhook;
 //   - Lake's PaymentCatalog lake-<name>-catalog: its three products, without prices.
 //
-// It checks that Lake's own key sees the catalog's account and mode, and once all of that is in
-// place gives the Lake LAKE_STRIPE_SECRET_KEY and LAKE_STRIPE_WEBHOOK_SECRET. A payments failure
-// never fails the Lake: without the variables Lake takes payments through its manual provider.
+// It checks that Lake's own key sees the catalog's account and mode and can create card
+// PaymentIntents, then gives the Lake LAKE_STRIPE_SECRET_KEY and LAKE_STRIPE_WEBHOOK_SECRET.
+// A payments failure never fails the Lake: without the variables Lake takes payments through its manual provider.
 // Condition PaymentsReady says where it stands.
 //
 // A Lake without spec.payments is not touched: no request to Stripe, no new object, no new env var.
@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -436,8 +437,9 @@ func (c *lakeAppKeyChecks) check(uid types.UID, digest string, run func() *metav
 	}
 	c.failures[uid] = failure
 	c.mu.Unlock()
-	// Only a check Stripe did not answer is repeated soon, as for the provider.
-	c.clock.record(uid, digest, failure == nil || failure.Reason != "StripeAPIError")
+	// Recheck missing permissions soon too: a Dashboard edit does not change the key's digest.
+	c.clock.record(uid, digest, failure == nil ||
+		(failure.Reason != "StripeAPIError" && failure.Reason != "AppKeyPermissionsMissing"))
 	return failure, c.clock.wait(uid, digest, paymentRecheck)
 }
 
@@ -448,9 +450,9 @@ func (c *lakeAppKeyChecks) forget(uid types.UID) {
 	delete(c.failures, uid)
 }
 
-// checkLakeAppKey checks that Lake's key reads lake_usage in the catalog's account and mode, and
-// returns what is wrong (nil when nothing is) and when to check again. Between checks it returns
-// the last result without asking Stripe.
+// checkLakeAppKey checks the catalog's account and mode and permission to charge saved cards.
+// It returns what is wrong (nil when nothing is) and when to check again. Between checks it
+// returns the last result without asking Stripe.
 func (r *LakeReconciler) checkLakeAppKey(ctx context.Context, lake *oramav1alpha1.Lake, secret lakePaymentsSecret) (*metav1.Condition, time.Duration) {
 	sum := sha256.Sum256([]byte(strings.Join([]string{secret.appKey, secret.accountID, lake.Spec.Payments.Mode}, "\x00")))
 	return r.lakeAppKeyChecks.check(lake.UID, fmt.Sprintf("%x", sum[:]), func() *metav1.Condition {
@@ -483,8 +485,34 @@ func (r *LakeReconciler) lakeAppKeyFailure(ctx context.Context, lake *oramav1alp
 		failure = paymentCondition(false, "ModeMismatch", fmt.Sprintf("spec.payments.mode is %s but %s sees a %s-mode product %s",
 			lake.Spec.Payments.Mode, lakePaymentsAppKeyKey, stripeModeName(product.Livemode), lakeUsageProduct))
 	default:
+		return r.lakeAppKeyChargeFailure(ctx, appKey)
+	}
+	return &failure
+}
+
+// lakeAppKeyChargeFailure probes Payment Intents write without creating a payment: amount is
+// required and deliberately absent. An explicit card type scopes Stripe's permission check to
+// the saved cards Lake charges. Only the expected missing-amount validation error passes.
+func (r *LakeReconciler) lakeAppKeyChargeFailure(ctx context.Context, appKey string) *metav1.Condition {
+	_, err := stripeDo[struct{}](ctx, stripeAPI{Base: r.StripeAPIBase, Key: appKey}, stripeCall{
+		Method: http.MethodPost, Path: "/v1/payment_intents", Version: lakeStripeAPIVersion,
+		Form: url.Values{"currency": {"usd"}, stripeField("payment_method_types", ""): {"card"}},
+	})
+	var apiErr *stripeAPIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
+		apiErr.Type == "invalid_request_error" && apiErr.Code == "parameter_missing" && apiErr.Param == "amount" {
 		return nil
 	}
+	if stripeForbidden(err) {
+		failure := paymentCondition(false, "AppKeyPermissionsMissing",
+			"appKey cannot create card PaymentIntents for auto top-up; grant Payment Intents write in the Stripe Dashboard")
+		return &failure
+	}
+	message := "checking appKey: unexpected success from the PaymentIntent permission probe without an amount"
+	if err != nil {
+		message = "checking appKey: " + stripeCheckFailure("create card PaymentIntents for auto top-up", err)
+	}
+	failure := paymentCondition(false, "StripeAPIError", message)
 	return &failure
 }
 
