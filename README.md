@@ -51,8 +51,10 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.10.0** (2026-10-24), the operator side of lake v0.7.0: a lake version is
-only its image ([`docs/releases/v0.10.0.md`](docs/releases/v0.10.0.md)). Before it, **v0.9.5** carried lake v0.6.0's schema and the prepaid
+The current release is **v0.10.1** (2026-10-25), a patch that shows versions as columns on `LakeSet` and
+`Lake` for `kubectl get` and Lens ([`docs/releases/v0.10.1.md`](docs/releases/v0.10.1.md)). Before it, **v0.10.0**
+(2026-10-24) was the operator side of lake v0.7.0: a lake version is only its image
+([`docs/releases/v0.10.0.md`](docs/releases/v0.10.0.md)). Before it, **v0.9.5** carried lake v0.6.0's schema and the prepaid
 balance's Stripe events. Before that, **v0.9.4**
 (2026-10-24), a patch giving a Cloud v1 docs host its DNS record
 ([`docs/releases/v0.9.4.md`](docs/releases/v0.9.4.md)). Before that, **v0.9.3** (2026-10-24), a patch letting
