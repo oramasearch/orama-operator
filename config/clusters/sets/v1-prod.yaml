@@ -9,7 +9,8 @@
 # an object merges field by field, a list replaces the template's list), so a member cannot remove a
 # template field. The template holds only what both members share; each member carries the rest.
 #
-# NOT READY FOR CUTOVER. Applying this file needs Steve's explicit consent. Since 2026-10-24 it brings
+# NOT READY FOR CUTOVER. Applying this file needs Juan's explicit consent for that apply (D8, which Steve
+# agreed on 2026-10-25: orama-bridge docs/projects/orama-cloud-v1/decisions-2026-10-25.md). Since 2026-10-24 it brings
 # v1-eu up on its production names under orama.ing, production's root domain (Juan, orama-bridge#244),
 # for the end-to-end test there, with no customer data copied and every cron and import suspended.
 # The items under "Blocked" below must be closed before the cutover, not before that test.
