@@ -713,7 +713,7 @@ spec:
       teamID: 4d816f12-b607-404f-af9c-691a418de45b
       projectIDs: [1cab88b6-7bb8-470b-8241-6b19d39acad8, 5ead5a38-b300-42e1-ae15-66063ab70cb9, a4defb10-31ee-4e8f-90f2-af45a18eb8ea, ed507c82-3a19-4078-ae45-cfcf5748a4d6]
       runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
+      step: verify                          # Gate A, in the window
       apply: true                           # writes v1-eu: the copy, in the window
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-4d816f12-eu-evidence, key: isolation.json}
@@ -757,7 +757,7 @@ spec:
       teamID: 5ea13b3b-7981-42ad-8759-e926bcf493a4
       projectIDs: [73dff28e-8695-4285-8805-e447a84e9277]
       runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
+      step: verify                          # Gate A, in the window
       apply: true                           # writes v1-eu: the copy, in the window
       attempt: 2                            # the seed dry run again
       evidenceSecretRef: {name: team-5ea13b3b-eu-evidence, key: isolation.json}
@@ -779,7 +779,7 @@ spec:
       teamID: 6a26bfbd-618b-4db4-9dd0-74351bb77719
       projectIDs: [4b046e11-f9a2-4039-83dd-22930b99fa7f, c6e48c90-4856-4f2b-b850-47dffc4c5181]
       runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
+      step: verify                          # Gate A, in the window
       apply: true                           # writes v1-eu: the copy, in the window
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-6a26bfbd-eu-evidence, key: isolation.json}
@@ -801,7 +801,7 @@ spec:
       teamID: 6ff1b11d-d7f5-48f2-ac31-a5541a8f37e0
       projectIDs: [cd21517a-412d-4024-b62b-cb242cdabc12]
       runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
+      step: verify                          # Gate A, in the window
       apply: true                           # writes v1-eu: the copy, in the window
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-6ff1b11d-eu-evidence, key: isolation.json}
