@@ -129,7 +129,6 @@ type statusFixture struct {
 	mails   []string
 }
 
-
 func newStatusFixture(t *testing.T, mutate func(*oramav1alpha1.StatusPage)) *statusFixture {
 	t.Helper()
 	f := &statusFixture{
