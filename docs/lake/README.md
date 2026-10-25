@@ -251,7 +251,12 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    (`spec.postgres`: enabled by default, instances, storageSize 50Gi, storageClassName), the same
    unstructured path `OramaCloudV1` uses (`controldb.go`). Disabling tears it down **with its
    data**.
-10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
+10. **Schema** — for an image with `lake manifest` (lake#1147 onward, orama-operator#936): Job
+   `lake-<name>-manifest` reads the image's manifest once into `status.imageManifest`, and
+   `PostgresSchema` `lake-<name>-controldb-schema` runs `lake migrate --wait-seconds 600` from the
+   image by digest, version `image:<digest>`, before the Deployment rolls; see
+   [schema.md](schema.md#a-lake-release-is-only-its-image-orama-operator936). For an older image:
+   ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
    `oramasearch/lake` `db/schema.sql`), guard table = `methodology_deployments_guard` from
    `0083_methodology_deployments`, version = hash of the SQL plus guard. The Job skips the file only when

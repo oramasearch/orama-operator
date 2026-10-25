@@ -1,0 +1,70 @@
+lake 0.5.2
+  lake [--listen HOST:PORT] [--node NAME] [--control-db URI] [--store-root PATH] [--external-origin ORIGIN]
+       [--admin-token TOKEN] [--identity-seed BASE64] [--instance-kek VALUE] [--tsa-url URL] [--tunnel-clients-dir PATH] [--memory-store]
+  lake version
+
+  --control-db   Postgres URI of the control plane (default $LAKE_CONTROL_DB_URI)
+  --store-root   customer and instance data root (default $LAKE_STORE_ROOT)
+  --external-origin HTTP(S) origin for repository commands (default $LAKE_EXTERNAL_ORIGIN, then https://$LAKE_PUBLIC_HOST)
+  --admin-token  bearer for /v1 capabilities and MCP tools (default $LAKE_ADMIN_TOKEN)
+  LAKE_REPLICATION_TOKEN bearer presented to peer lake instances (no default; never the admin token)
+  LAKE_REPLICATION_PEERS the peer lake origins replication may pull from, comma separated; any other source is refused
+  LAKE_REPLICATION_TIMEOUT_SECONDS the longest one replication pull may take (default 600)
+  LAKE_REPLICATION_ALLOW_PRIVATE_ADDRESSES=1 lets replication reach loopback and private addresses (local development and tests only)
+  LAKE_MAX_REGISTRY_BLOB_BYTES caps streamed OCI blobs (default 4294967296)
+  --identity-seed base64 Ed25519 seed for lake's TAAP identity (default $LAKE_IDENTITY_SEED)
+  --instance-kek key-encryption key for a generated identity (default $LAKE_INSTANCE_KEK)
+  --clerk-publishable-key Clerk key; browser sign-in goes through Clerk (default $LAKE_CLERK_PUBLISHABLE_KEY)
+  --clerk-webhook-secret Clerk webhook signing secret (whsec_...); enables POST /identity/clerk-webhook (default $LAKE_CLERK_WEBHOOK_SECRET)
+  LAKE_OPENAI_API_KEY OpenAI key for speech-to-text and the model gateway (/openai/v1); LAKE_TRANSCRIBE_MODEL the speech model (default gpt-4o-transcribe)
+  LAKE_MODEL_GATEWAY_MODELS JSON model/provider allowlist; [] disables calls
+  LAKE_MODEL_PROVIDER_URL the model gateway's OpenAI-compatible provider (default https://api.openai.com/v1)
+  LAKE_MCP_ALLOW_PRIVATE_ADDRESSES=1 lets MCP connections reach loopback and private addresses (local development only)
+  LAKE_STORE_ALLOW_PRIVATE_ADDRESSES=1 lets a store's bucket endpoint be a loopback or private address (local development only)
+  LAKE_BILLING=on turns billing on (Orama Cloud); unset or off, as on an enterprise install, billing is absent. LAKE_BILLING_INSTRUCTIONS tells accounts how to pay
+  LAKE_BALANCE_FIRST_TOP_UP_USD (20), LAKE_BALANCE_MINIMUM_TOP_UP_USD (20), LAKE_BALANCE_OVERDRAFT_USD (50), LAKE_BALANCE_WARNING_USD (10), LAKE_BALANCE_REFRESH_SECONDS (300) and LAKE_AUTO_TOP_UPS_PER_DAY (5) set the prepaid balance where billing is on
+  LAKE_STRIPE_SECRET_KEY, LAKE_STRIPE_WEBHOOK_SECRET Stripe's keys (lake's own platform credentials); either unset, invoices are paid outside lake
+  LAKE_ORDER_ENTITLEMENT_GRACE_SECONDS subscription expiry grace (default 259200; 0 to 2592000)
+  LAKE_LOG_MODE air-gapped, witnessed (default), or anchored when LAKE_STORE_ROOT is set
+  LAKE_LOG_WITNESSES JSON witness endpoint/public_key records; LAKE_LOG_WITNESS_THRESHOLD selects their quorum
+  LAKE_LOG_AGGREGATOR endpoint required by anchored mode
+  --tsa-url      RFC 3161 endpoint (default $LAKE_TSA_URL)
+  $LAKE_TSA_TRUST_CERT contains optional PEM trust roots for timestamp tokens
+  $LAKE_TSA_RENEWAL_SECONDS and $LAKE_TSA_RENEW_BEFORE_SECONDS set renewal policy
+  LAKE_OPERATOR_ZETTA_URL and LAKE_OPERATOR_ZETTA_TOKEN enable platform sync
+  LAKE_INTERNAL_URL is lake's in-cluster Service URL for agents and builds
+  LAKE_LOGS_URL and optional LAKE_LOGS_TOKEN enable environment logs
+  LAKE_PLATFORM_SYNC_SECONDS sets the platform poll interval (default 15)
+  LAKE_SERVICE_DIR enables managed services and workspaces (the operator's mount)
+  LAKE_SERVICES_PER_CUSTOMER caps live services per customer (default 0: no limit)
+  LAKE_APPS_WILDCARD is the required parent domain for Ship app hosts
+  LAKE_APPS_RUNTIME_IMAGE is the base image for source-backed Ship App builds
+  LAKE_METHODOLOGY_RUNTIME_IMAGE is the oramasearch/methodology-runtime image workspace methodologies are built from and run with
+  LAKE_MCP_RUNNER_IMAGE is the oramasearch/lake-mcp-runner image a stdio MCP connection's App runs
+  LAKE_APPS_RESERVED_NAMES adds comma-separated names that Ship apps cannot use
+  LAKE_APPS_PER_CUSTOMER caps live apps per account (default 0: no limit)
+  LAKE_APP_REPLICAS_PER_CUSTOMER caps desired app replicas (default 0: no limit)
+  LAKE_AGENT_ENDPOINTS lists the Agent Library agents this lake runs (key=url,...)
+  LAKE_BASE_AGENT_MODEL is the base-agent checkpoint inside a workspace (default /data/models/base-agent)
+  LAKE_AGENT_MODEL is the frontier model Python agents run on (default gpt-4o)
+  LAKE_ALLOW_NON_EXPIRING_CREDENTIALS=false refuses never-expiring keys and tokens
+  LAKE_STORE_OWNER_WAIT_SECONDS bounds the wait for a predecessor to release the store root (default 90)
+  LAKE_WORKSPACE_STORE_LEASE_SECONDS is a workspace store's bucket lease (default 30; renewed every third)
+  LAKE_SEARCH_MEMORY_BYTES bounds the workspace search indexes kept loaded (default 268435456; idle ones are evicted and loaded again on use)
+  LAKE_DRAIN_SECONDS bounds the wait for in-flight requests on SIGTERM (default 20)
+  LAKE_HTTP_WORKERS requests handled at once (default 32); LAKE_HTTP_WORKER_WAIT_SECONDS a request's wait for one before 503 (default 10)
+  LAKE_HTTP_MAX_CONNECTIONS open connections before new ones get 503 (default 4096)
+  LAKE_HTTP_MAX_HEADER_BYTES the request headers' total size, larger is 431 (default 1048576)
+  LAKE_HTTP_IDLE_TIMEOUT_SECONDS closes idle keep-alive connections (default 75, above the proxy's); LAKE_HTTP_HEADER_TIMEOUT_SECONDS bounds a request header (default 10)
+  LAKE_HTTP_IO_TIMEOUT_SECONDS bounds a body read or response write that makes no progress (default 60)
+  LAKE_HTTP_MIN_TRANSFER_RATE bytes per second a client must move while it holds a worker, after 10 s (default 1024; 0 turns it off)
+  LAKE_HTTP_MAX_LONG_REQUESTS long polls and pulls at once (default 512); LAKE_HTTP_MAX_LONG_REQUESTS_PER_CALLER per caller (default 64)
+  LAKE_WORKSPACE_STORE_PREOPEN=false opens workspace stores on first use only (default true: opened in the background from start)
+  --tunnel-clients-dir the tunnel client downloads (default $LAKE_TUNNEL_CLIENTS_DIR, then /usr/share/lake/tunnel-clients)
+  LAKE_REGION, LAKE_REGION_LABEL this Lake's region; LAKE_REGIONS the deployment's regions as JSON [{name,label,host,latitude,longitude}]
+  LAKE_APEX_HOST the host whose every request gets the region picker
+  LAKE_ORDER_SHEET JSON merged over the apex order sheet's default offers, prices and limits (docs/api/orders.md)
+  LAKE_RESEND_API_KEY Orama's Resend key for order email; LAKE_RESEND_FROM the sender (default Lake <orders@lake.live>); LAKE_SUPPORT_EMAIL where orders go (default support@orama.com)
+  --memory-store an in-memory control plane for local demos and tests
+lake: ZETTA_EGRESS_ALLOW is not set: only Zettas on loopback are reachable
+lake: unknown argument manifest

@@ -60,7 +60,7 @@ func applyLakeSchemaForWorkloadTest(t *testing.T, c client.Client, s *runtime.Sc
 		ns = "lake-dev"
 	}
 	r := &LakeReconciler{Client: c, Scheme: s}
-	if err := r.reconcileLakeControlDBSchema(context.Background(), lake, ns, nil); err != nil {
+	if err := r.reconcileLakeControlDBSchema(context.Background(), lake, ns, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	setLakeSchemaAppliedForTest(t, c, client.ObjectKey{Namespace: ns, Name: lakeControlDB(lake.Name) + "-schema"})

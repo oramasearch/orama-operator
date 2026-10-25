@@ -100,6 +100,12 @@ because two Lakes can bill in one account (`shared` and `shared-us` in live mode
 
 ### The webhook events
 
+For a lake image with `lake manifest` (lake#1147 onward), the endpoint subscribes to exactly the
+image's `stripe.webhook_events`, read from `status.imageManifest`
+([schema.md](schema.md#a-lake-release-is-only-its-image-orama-operator936),
+orama-operator#936): adding an event is a lake change only. While a new image's manifest is being
+read, the previous image's list stays. For an older image the list below applies.
+
 The endpoint subscribes to the events lake's Stripe handler takes (lake `src/api/stripe.cpp`):
 
 - `invoice.paid`, `invoice.payment_failed` and `invoice.voided`, which lake handles today;
@@ -115,8 +121,9 @@ The endpoint subscribes to the events lake's Stripe handler takes (lake `src/api
 
 lake answers 2xx to an event type it does not handle, so subscribing to the Checkout events before
 lake handles them is harmless. Stripe cannot filter by metadata, so the endpoint also receives Cloud
-v1's events of these types; lake's handler acknowledges them and changes nothing. The list is
-`lakeStripeWebhookEvents` in `lake_payments.go`; change it together with lake's handler.
+v1's events of these types; lake's handler acknowledges them and changes nothing. For an image
+without `lake manifest` the list is `lakeStripeWebhookEvents` in `lake_payments.go`; it is no longer
+changed for new events, which come from the manifest.
 
 ### Lake's products
 
@@ -128,9 +135,10 @@ v1's events of these types; lake's handler acknowledges them and changes nothing
 
 **These IDs are a contract with lake** ([lake#855](https://github.com/oramasearch/lake/issues/855)):
 lake's invoice and Checkout lines name the product and carry an inline price from Lake's own price
-list or order sheet. Renaming or removing one breaks lake's billing. The products are
-`lakePaymentProducts` in `lake_payments.go`, with `lakePaymentCatalogVersion`, which is bumped on
-every change ([Two catalogs, one product](../infrastructure/payments.md#two-catalogs-one-product)).
+list or order sheet. Renaming or removing one breaks lake's billing. For an image with
+`lake manifest` the products are its `stripe.products`; for an older image, `lakePaymentProducts` in
+`lake_payments.go`. Both are written at `lakePaymentCatalogVersion`, because the manifest carries no
+catalog version; it is bumped on every change to `lakePaymentProducts` ([Two catalogs, one product](../infrastructure/payments.md#two-catalogs-one-product)).
 Deleting the catalog leaves the products in Stripe.
 
 ## The check of Lake's key

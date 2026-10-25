@@ -29,8 +29,8 @@ func TestCredentialJobImagesCannotDrift(t *testing.T) {
 		name string
 		spec batchv1.JobSpec
 	}{
-		{"restore", verificationJobSpec("source", "restored", "source-db", true)},
-		{"failover", verificationJobSpec("source", "", "read-only", false)},
+		{"restore", verificationJobSpec(&oramav1alpha1.Lake{}, "source", "restored", "source-db", true)},
+		{"failover", verificationJobSpec(&oramav1alpha1.Lake{}, "source", "", "read-only", false)},
 		{"postgres-schema", pgMigrationJobSpec(&oramav1alpha1.PostgresSchema{})},
 		{"zetta-schema", zetta.Spec},
 	}
