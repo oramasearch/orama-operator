@@ -1036,7 +1036,7 @@ spec:
       teamID: aee7dc1a-22fb-4a26-832f-0d881a4aa8c2
       projectIDs: [567547b3-42c8-4762-8337-6fb0efa00b8e, be8e361e-ee2c-4455-bebf-e3de358e1d8b]
       runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
+      step: verify                          # Gate A, in the window
       apply: true                           # writes v1-eu: the copy, in the window
       evidenceSecretRef: {name: team-aee7dc1a-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
@@ -1057,7 +1057,7 @@ spec:
       teamID: bd7382c1-e2a5-4ec1-80d8-ca9eb8577477
       projectIDs: [790cea05-ddea-4ba8-a7e6-c9ef3a6a7eb0, f66fb258-f7b1-407d-851d-272da40c6552]
       runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
+      step: verify                          # Gate A, in the window
       apply: true                           # writes v1-eu: the copy, in the window
       evidenceSecretRef: {name: team-bd7382c1-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
@@ -1078,7 +1078,7 @@ spec:
       teamID: be7ff6e4-c88f-4884-88d4-5b8692db5bbd
       projectIDs: [34ae217c-f3ab-4b05-8627-25c565160693]
       runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
+      step: verify                          # Gate A, in the window
       apply: true                           # writes v1-eu: the copy, in the window
       evidenceSecretRef: {name: team-be7ff6e4-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
@@ -1121,7 +1121,7 @@ spec:
       teamID: cbb30e51-0103-429a-a66d-abd7ee59a891
       projectIDs: [45f484c0-5261-433f-ac18-177c5f37b84c, 5ee2609f-7b98-47c9-8d25-3eabecd1cec9, 7ec4f717-5fbe-4ff4-a4c6-f9bec7eff9e8, a9d6e4f0-223a-455a-8e49-2c66b0f44ce2, d7293c6c-261e-4c24-844a-f00e941f87bf, d7a41148-9342-417f-91b5-2f2dac68d72d, df1b5707-2c7b-4154-8866-e6a9c86d895a, fbb3bc63-d9dc-45c7-a109-86a43f62dcde]
       runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
+      step: verify                          # Gate A, in the window
       apply: true                           # writes v1-eu: the copy, in the window
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-cbb30e51-eu-evidence, key: isolation.json}
