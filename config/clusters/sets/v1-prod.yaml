@@ -500,7 +500,7 @@ spec:
       apply: true                           # writes v1-eu
       # Attempt 1 failed when the target's reader refused system prompts, which OramaCore's LSR-235 fix
       # serves only from the writer; dev-c5739f43 reads them there (oramacore-aws#131).
-      attempt: 2
+      attempt: 3                            # the final catch-up, in the window
       evidenceSecretRef: {name: team-4e01bc49-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:3d7ea11ef01b47e2080e3fcf25a1d6a89a376279e59adbdb412dff6f91796a03  # dev-c5739f43
       pullSecretName: oramasearch-dockerhub
@@ -995,7 +995,7 @@ spec:
       projectIDs: [0993c365-2a2d-44d8-9553-477b3f7e611b, 274c64f5-ffc0-46db-9b95-9a55328cf4c7, 5ed72c1d-1583-44d4-9ebd-3303991294a1, 7a67636e-c61c-426a-9aa9-a65c2ebc459a, bc5a3f2e-97b8-4e70-b257-d6a99efa1532, e7b37367-396f-47cf-9127-c8e041b4e98d]
       runID: eu-1
       step: seed                            # the seed dry run (apply: false)
-      apply: false
+      apply: true                           # writes v1-eu: the copy, in the window
       evidenceSecretRef: {name: team-a36cfefa-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
       pullSecretName: oramasearch-dockerhub
