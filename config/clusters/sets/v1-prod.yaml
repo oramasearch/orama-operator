@@ -496,7 +496,7 @@ spec:
       teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
       projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
       runID: eu-2
-      step: seed                            # the eu-2 seed dry run passed 2026-10-25 19:52Z
+      step: catchUp                         # seed reconciled 2026-10-25 20:09Z (attempt 2): 330 documents
       apply: true                           # writes v1-eu
       # Attempt 1 failed when the target's reader refused system prompts, which OramaCore's LSR-235 fix
       # serves only from the writer; dev-c5739f43 reads them there (oramacore-aws#131).
