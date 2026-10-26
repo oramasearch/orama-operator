@@ -239,6 +239,11 @@ spec:
           writer:
             gpu: false
             host: writer.orama.ing
+            # The medium profile's 4Gi limit OOM-killed the writer during the cutover's first copy batch
+            # (2026-10-26 02:38Z); the copy writes every cohort team's documents through it.
+            resources:
+              requests: {cpu: 500m, memory: 4Gi}
+              limits: {cpu: "2", memory: 12Gi}
             # Prod 1's writer root volume is 500 GiB (snapshot of vol-0b8dcc408f8ea762f, orama-bridge
             # production-changes.md; oramacore-aws terraform/live/prod/main.tf root_volume_size = 500)
             # with 343 GiB free on 2026-10-12 (techops-docs incident-2026-10-12-reader-stalls.md, "Host
@@ -256,6 +261,11 @@ spec:
           reader:
             host: collections.orama.ing
             replicas: 2
+            # The medium profile's 2Gi limit is near each reader's use with one team copied; every cohort team's
+            # documents and embeddings land in each reader.
+            resources:
+              requests: {cpu: 250m, memory: 2Gi}
+              limits: {cpu: "1", memory: 8Gi}
             # Each reader's disk is 512Gi, #382's default: about twice the largest Prod 1 reader's use
             # (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3). A larger size grows them (#505).
             storage:
