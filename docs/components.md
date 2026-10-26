@@ -229,7 +229,7 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
   Keycloak non-secret config. Reconciled every pass.
 - **Per-component secrets** `<cr>-<component>-secret` — each holds only remaining dummy
   third-party settings (`componentSecretData`). `search-secret`, `analytics-secret`,
-  `cache-secret` and `broker-secret` are empty; their credentials are generated,
+  `cache-secret`, `broker-secret`, `disco-secret` and `pgadmin-secret` are empty on fresh stacks; their credentials are generated,
   see [Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo));
   `engine-secret` = the LLM keys (`GROQ_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_API_KEY`) + `HF_TOKEN`;
   a third-party key that names its own Secret is not seeded ([#571](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo));
@@ -296,13 +296,16 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-decrypter-auth` | `DECRYPTER_API_SECRET_BASE64`, `API_SECRET` | the bootstrap step, where ingestion or search workers run | index-builder sends the decoded value as `x-api-key`; openai-decrypter checks it as `API_SECRET` |
 | `<cr>-index-builder-auth` | `API_SECRET` | the bootstrap step, where ingestion runs | index-builder checks incoming deploy requests |
 | `<cr>-deployment-api-auth` | `DEPLOYMENT_API_API_KEY` | the bootstrap step, where ingestion runs | index-builder sends it to its configured deployment API; the receiver contract still needs qualification |
+| `<cr>-disco-auth` | `DISCO_SECRET` | the bootstrap step, where DISCO, workers or ingestion run | DISCO and workers as `DISCO_SECRET`, index-builder as `DISCO_SECRET_KEY` |
+| `<cr>-pgadmin-auth` | `PGADMIN_DEFAULT_PASSWORD` | the bootstrap step, where pgAdmin runs | pgAdmin's web login; its Deployment has only a ClusterIP Service |
 | `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`), index-builder, workers, dashboard, the e2e runner; never a reader ([#795](https://github.com/oramasearch/orama-operator/issues/795)) |
 
 - **Generated once.** For broker and cache, where the store runs in this cluster (enabled, not `mode: external`, not
   `placement: central` on a read region) the operator creates the Secret with a random 48-character
   hex password, owner-referenced to the CR and labelled component `credentials`, which no teardown
   removes: disabling the broker or cache keeps its password for the retained volume. An existing
-  Secret, generated or supplied, is never changed, adopted or filled in. A member whose store runs
+  Secret, generated or supplied, is kept, with the exact legacy broker placeholder exception below;
+  missing keys are never filled in. A member whose store runs
   elsewhere receives the Secret through its set's `secrets` list. `<cr>-analytics-api-key` is
   created the same way on every stack, whatever analytics-processor and ClickHouse are set to, so
   re-enabling either finds the same key. It is internal to the readers and the processor, so it is
@@ -310,6 +313,21 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 - **Upgrade cleanup.** Bootstrap removes old `dev-*` placeholder values for retired internal keys
   from existing component Secrets, including ones for disabled components. It preserves any
   user-supplied values and other component settings; a second pass makes no changes.
+- **Remaining credential upgrade (#570).** DISCO and pgAdmin get 48-character hex credentials
+  once, retained across disable/re-enable. Before creating their shared Secrets, bootstrap reads
+  the old component Secrets, including disabled components: one real value, or several agreeing
+  values, seeds the shared Secret. Conflicting real DISCO values stop bootstrap with the Secret
+  names and keys in the error, without values or changes to consumers. An existing real shared
+  credential takes precedence on later reconciles. Only the exact former DISCO and pgAdmin seeds
+  count as placeholders; other `dev-` values and supplied punctuation are retained. These two
+  credentials pass directly through env and do not need the URL character restriction below.
+  The old placeholders are pruned while
+  real legacy copies and unrelated fields stay intact; explicit `secretKeyRef` entries select the
+  shared value. Disabled components get no new component Secret. Bootstrap also replaces the exact
+  legacy broker-admin password once, preserving its username, metadata and unrelated keys. The
+  broker's existing credential hash rolls its StatefulSet, and its boot definitions import updates
+  the admin password even on a retained volume. Real broker passwords are kept. These upgrades run
+  identically on every cluster; no chart value or installation flag selects them.
 - **Checked.** A broker, cache or analytics key Secret missing a key, or holding an empty value or a
   character outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails
   the reconcile with `Ready=False` naming the Secret and key, and is left as it is. The bootstrap
@@ -376,7 +394,9 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   harvest-master; `<cr>-cache-auth` the cache,
   harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master, index-builder and the dashboard; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers on the reader-only config
   and analytics-processor, never the writer; the master key the writer, index-builder, workers and
-  dashboard, never a reader. analytics-processor's hash also covers its component
+  dashboard, never a reader. `<cr>-disco-auth` rolls DISCO, workers and index-builder;
+  `<cr>-pgadmin-auth` rolls pgAdmin, whose emptyDir config DB is initialized with the retained
+  password at each start. analytics-processor's hash also covers its component
   Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
   nothing. An
   existing e2e Job is immutable and keeps the reference it was created with.
@@ -1801,6 +1821,8 @@ A `Deployment` (in-memory → no PVC; restart cold-starts the cache) running the
 instead of a co-located model sidecar (DISCO was the third redundant copy of the model weights).
 Routed through the shared `reconcileApp` builder, so it inherits the workload-hardening baseline
 (probes, securityContext, resources, PDB, grace). Service on `:8080`. **Validated on AKS.**
+Its `DISCO_SECRET` comes from `<cr>-disco-auth`, shared with workers and index-builder's
+`DISCO_SECRET_KEY`; all three deployments hash that Secret for credential changes.
 
 ## IdP + demoSeed (`idp.go`)
 

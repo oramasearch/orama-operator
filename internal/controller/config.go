@@ -233,11 +233,11 @@ func componentSecretData(component string) map[string]string {
 	case "analytics-processor": // pulls /v1/analytics -> ClickHouse
 		return map[string]string{}
 	case "disco":
-		return map[string]string{"DISCO_SECRET": "dev-disco-secret"}
+		return map[string]string{}
 	case "keycloak":
 		return map[string]string{"KC_BOOTSTRAP_ADMIN_PASSWORD": "dev-keycloak-password"}
 	case "pgadmin": // pgAdmin4 web login (PGADMIN_DEFAULT_EMAIL is non-secret, set in the Deployment env)
-		return map[string]string{"PGADMIN_DEFAULT_PASSWORD": "dev-pgadmin-password"}
+		return map[string]string{}
 	case "index-builder": // writes Typesense, embeds via HPES, Ably progress, CF KV, decrypter, DISCO
 		// ORAMA_EMBEDDINGS_BEARER is not seeded: it comes from the generated <cr>-hpes (#574), and
 		// HARVEST_SIGN from the generated <cr>-harvest-sign it shares with harvest-master.
@@ -249,7 +249,6 @@ func componentSecretData(component string) map[string]string {
 		return map[string]string{
 			"ABLY_API_KEY":          "sandbox.dummy:sandboxdummyablysecret000000",
 			"APIFY_TOKEN":           "dev-apify-token",
-			"DISCO_SECRET_KEY":      "dev-disco-secret",
 			"CLOUDFLARE_API_TOKEN":  "dev-cloudflare-token",
 			"CLOUDFLARE_ACCOUNT_ID": "dev-cloudflare-account",
 		}
@@ -284,7 +283,6 @@ func componentSecretData(component string) map[string]string {
 			"GROQ_API_KEY":      "dev-groq-api-key",
 			"ANTHROPIC_API_KEY": "dev-anthropic-api-key",
 			"QSTASH_TOKEN":      "dev-qstash-token",
-			"DISCO_SECRET":      "dev-disco-secret",
 			"SENTRY_DSN":        "dev-sentry-dsn",
 		}
 	default:
@@ -298,12 +296,16 @@ func retiredComponentCredentialKeys(component string) []string {
 	switch component {
 	case "search":
 		return []string{"TYPESENSE_API_KEY"}
-	case "analytics", "analytics-processor", "disco", "workers":
+	case "analytics", "analytics-processor":
 		return []string{"CLICKHOUSE_PASSWORD"}
+	case "disco", "workers":
+		return []string{"CLICKHOUSE_PASSWORD", "DISCO_SECRET"}
+	case "pgadmin":
+		return []string{"PGADMIN_DEFAULT_PASSWORD"}
 	case "dashboard":
 		return []string{"CLICKHOUSE_PASSWORD", "CRON_SECRET", "REDIS_CACHE_TOKEN", "SCRAPER_SIGNATURE"}
 	case "index-builder":
-		return []string{"TYPESENSE_API_KEY", "API_SECRET", "DEPLOYMENT_API_API_KEY", "DECRYPTER_API_SECRET_BASE64", "HARVEST_SIGN", "ORAMA_EMBEDDINGS_BEARER"}
+		return []string{"TYPESENSE_API_KEY", "API_SECRET", "DEPLOYMENT_API_API_KEY", "DECRYPTER_API_SECRET_BASE64", "HARVEST_SIGN", "ORAMA_EMBEDDINGS_BEARER", "DISCO_SECRET_KEY"}
 	case "harvest":
 		return []string{"HARVEST_SIGN"}
 	case "harvest-master":
@@ -313,6 +315,12 @@ func retiredComponentCredentialKeys(component string) []string {
 }
 
 func retiredCredentialPlaceholder(key string, value []byte) bool {
+	switch key {
+	case "DISCO_SECRET", "DISCO_SECRET_KEY":
+		return string(value) == legacyDiscoSecret
+	case "PGADMIN_DEFAULT_PASSWORD":
+		return string(value) == legacyPgAdminPassword
+	}
 	if strings.HasPrefix(string(value), "dev-") {
 		return true
 	}
