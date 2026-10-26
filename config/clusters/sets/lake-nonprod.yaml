@@ -7,22 +7,6 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: dev
     spec:
-      # Merged work runs on dev before a release is cut (Steve, 2026-10-25): lake dev-edb8cf5d (#1186,
-      # #1187, #1189, #1198, #1199, #1201) and every agent's dev build after the 2026-10-25 merges. Remove
-      # these pins when the template names lake v0.7.1 and the agents' v0.2.0.
-      image: oramasearch/lake:dev-edb8cf5d
-      agents:
-        runtimeImage: oramasearch/agent-runtime:fdb6714
-        library:
-        - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:7a044af}
-        - {key: agent-application, image: oramasearch/agent-application:32caa4c}
-        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:9b45383}
-        - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:47fe077}
-        - {key: agent-creator, image: oramasearch/agent-creator:53bc89a-fdb6714}
-        - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:d174d10}
-        - {key: agent-experiments, image: oramasearch/agent-experiments:84fd433}
-        - {key: agent-project, image: oramasearch/agent-project:db8835f}
-        - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:ebd36c8}
       args:
       - "--listen"
       - 0.0.0.0:4900
@@ -123,7 +107,20 @@ spec:
       secretRef: {name: lake-prod-stripe}
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:v0.7.0
+    image: oramasearch/lake:v0.7.1
+    # The agents' releases (2026-10-25), after dev and testing ran them.
+    agents:
+      runtimeImage: oramasearch/agent-runtime:v0.2.0
+      library:
+      - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
+      - {key: agent-application, image: oramasearch/agent-application:v0.2.1}
+      - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
+      - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
+      - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
+      - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
+      - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
+      - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
+      - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
     ingressEnabled: true
     postgres:
       enabled: true

@@ -51,8 +51,10 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.10.2** (2026-10-25), a patch: an app's Zetta binding is the JSON document
-app-runtime reads, and Cloud v1 stacks generate their DISCO and pgAdmin credentials
+The current release is **v0.10.3** (2026-10-25), a patch: the Cloud v1 writer embeds 64 texts per batch, not
+50,000, so a CPU writer's memory stays bounded during a copy
+([`docs/releases/v0.10.3.md`](docs/releases/v0.10.3.md)). Before it, **v0.10.2** (2026-10-25), a patch: an app's
+Zetta binding is the JSON document app-runtime reads, and Cloud v1 stacks generate their DISCO and pgAdmin credentials
 ([`docs/releases/v0.10.2.md`](docs/releases/v0.10.2.md)). Before it, **v0.10.1** (2026-10-25), a patch that shows
 versions as columns on `LakeSet` and `Lake` for `kubectl get` and Lens
 ([`docs/releases/v0.10.1.md`](docs/releases/v0.10.1.md)). Before it, **v0.10.0**

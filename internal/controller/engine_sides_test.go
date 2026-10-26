@@ -60,7 +60,7 @@ writer_side:
 ` + v1HooksFixture + `  master_api_key: '__MASTER_API_KEY__'
   config:
     data_dir: /app/.data/writer
-    embedding_queue_limit: 50000
+    embedding_queue_limit: 64
     insert_batch_commit_size: 50000000
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
@@ -136,7 +136,7 @@ writer_side:
 ` + v1HooksFixture + `  master_api_key: '__LOCAL_WRITER_KEY__'
   config:
     data_dir: /app/.data/writer
-    embedding_queue_limit: 50000
+    embedding_queue_limit: 64
     insert_batch_commit_size: 50000000
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
