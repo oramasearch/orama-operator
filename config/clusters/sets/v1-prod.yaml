@@ -733,7 +733,7 @@ spec:
       projectIDs: [1cab88b6-7bb8-470b-8241-6b19d39acad8, 5ead5a38-b300-42e1-ae15-66063ab70cb9, a4defb10-31ee-4e8f-90f2-af45a18eb8ea, ed507c82-3a19-4078-ae45-cfcf5748a4d6]
       runID: eu-1
       step: seed                            # the seed dry run (apply: false)
-      apply: false
+      apply: true                           # writes v1-eu: the copy, in the window
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-4d816f12-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
