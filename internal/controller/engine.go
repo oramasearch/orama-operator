@@ -337,6 +337,14 @@ func oramacoreCombinedReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 // oramacore-reader-local as oramacore-reader, with a master key only that pod knows and no JWT.
 // Requests reach a reader's writer routes only through the reader Service, and none of them can
 // authenticate: the key is unknown and its collection store is empty.
+// writerEmbeddingBatch is the writer's embedding_queue_limit: how many texts its embedding loop takes into one
+// batch, and the capacity of the queue in front of it, so inserts wait for the writer instead of piling up.
+// Prod 1's GPU writer (64 GB RAM, a 48 GB GPU) ran 50000; on a CPU writer one batch of thousands of texts needs
+// more memory than the node has (attention grows with batch size and text length), and v1-eu's writer was
+// OOM-killed three times copying cohort teams at 4, 12 and 16Gi (orama-bridge#257), losing the writes it had not
+// committed. 64 bounds a batch to a few hundred MB.
+const writerEmbeddingBatch = 64
+
 func readerLocalWriterSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return fmt.Sprintf(`writer_side:
   output:
@@ -352,12 +360,12 @@ func readerLocalWriterSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
 %s  master_api_key: '%s'
   config:
     data_dir: /app/.data/writer
-    embedding_queue_limit: 50000
+    embedding_queue_limit: %d
     insert_batch_commit_size: 50000000
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
     commit_interval: 1m
-`, oc.Name+"-broker", brokerReaderUser, brokerReaderLocalStream, hooksYAML(oc), keyPlaceholder(localWriterKeyEnv))
+`, oc.Name+"-broker", brokerReaderUser, brokerReaderLocalStream, hooksYAML(oc), keyPlaceholder(localWriterKeyEnv), writerEmbeddingBatch)
 }
 
 // oramacoreWriterConfigYAML is the writer-only image's config: no reader_side.
@@ -428,12 +436,12 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
 %s  master_api_key: '__MASTER_API_KEY__'
   config:
     data_dir: /app/.data/writer
-    embedding_queue_limit: 50000
+    embedding_queue_limit: %d
     insert_batch_commit_size: 50000000
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
     commit_interval: 1m
-`, oc.Name+"-broker", brokerWriterUser, hooksYAML(oc)) + writerJWTYAML(oc)
+`, oc.Name+"-broker", brokerWriterUser, hooksYAML(oc), writerEmbeddingBatch) + writerJWTYAML(oc)
 }
 
 // readerSideYAML is the reader_side section: the readers consume the writer's stream from the same
