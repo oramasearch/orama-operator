@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.10.2](v0.10.2.md) — 2026-10-25. A patch: an app's Zetta binding is the JSON document app-runtime reads
+  (#1001, lake#1205), and Cloud v1 stacks generate their DISCO and pgAdmin credentials and replace the placeholder
+  RabbitMQ admin password (#1017, #570). Each bound app and the affected Cloud v1 consumers roll once.
 - [v0.10.1](v0.10.1.md) — 2026-10-25. A patch: versions as columns on `LakeSet` (`Versions`) and `Lake`
   (`Image`, `Version`, `Revision`), for `kubectl get` and Lens (#984). No workload restarts.
 - [v0.10.0](v0.10.0.md) — 2026-10-24. The operator side of lake v0.7.0: a lake version is only its

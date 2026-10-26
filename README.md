@@ -51,8 +51,11 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.10.1** (2026-10-25), a patch that shows versions as columns on `LakeSet` and
-`Lake` for `kubectl get` and Lens ([`docs/releases/v0.10.1.md`](docs/releases/v0.10.1.md)). Before it, **v0.10.0**
+The current release is **v0.10.2** (2026-10-25), a patch: an app's Zetta binding is the JSON document
+app-runtime reads, and Cloud v1 stacks generate their DISCO and pgAdmin credentials
+([`docs/releases/v0.10.2.md`](docs/releases/v0.10.2.md)). Before it, **v0.10.1** (2026-10-25), a patch that shows
+versions as columns on `LakeSet` and `Lake` for `kubectl get` and Lens
+([`docs/releases/v0.10.1.md`](docs/releases/v0.10.1.md)). Before it, **v0.10.0**
 (2026-10-24) was the operator side of lake v0.7.0: a lake version is only its image
 ([`docs/releases/v0.10.0.md`](docs/releases/v0.10.0.md)). Before it, **v0.9.5** carried lake v0.6.0's schema and the prepaid
 balance's Stripe events. Before that, **v0.9.4**
