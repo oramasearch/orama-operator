@@ -116,7 +116,7 @@ spec:
       runtimeImage: oramasearch/agent-runtime:v0.2.0
       library:
       - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-      - {key: agent-application, image: oramasearch/agent-application:v0.2.1}
+      - {key: agent-application, image: oramasearch/agent-application:v0.2.2}
       - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
       - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
       - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
