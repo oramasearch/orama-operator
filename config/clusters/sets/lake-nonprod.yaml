@@ -7,22 +7,6 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: dev
     spec:
-      # lake v0.7.1 and the agents' releases run on dev first (Steve, 2026-10-25: "cut releases, push all to
-      # nonprod"); then testing (the e2e gate), then the template for staging. Remove these pins when the
-      # template names them.
-      image: oramasearch/lake:v0.7.1
-      agents:
-        runtimeImage: oramasearch/agent-runtime:v0.2.0
-        library:
-        - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-        - {key: agent-application, image: oramasearch/agent-application:v0.2.1}
-        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
-        - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
-        - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
-        - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
-        - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
-        - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
-        - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
       args:
       - "--listen"
       - 0.0.0.0:4900
@@ -65,20 +49,6 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: testing
     spec:
-      # lake v0.7.1 and the agents' releases, after dev passed (2026-10-25); the e2e gate runs here.
-      image: oramasearch/lake:v0.7.1
-      agents:
-        runtimeImage: oramasearch/agent-runtime:v0.2.0
-        library:
-        - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-        - {key: agent-application, image: oramasearch/agent-application:v0.2.1}
-        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
-        - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
-        - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
-        - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
-        - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
-        - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
-        - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
       args:
       - "--listen"
       - 0.0.0.0:4900
@@ -137,7 +107,20 @@ spec:
       secretRef: {name: lake-prod-stripe}
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:v0.7.0
+    image: oramasearch/lake:v0.7.1
+    # The agents' releases (2026-10-25), after dev and testing ran them.
+    agents:
+      runtimeImage: oramasearch/agent-runtime:v0.2.0
+      library:
+      - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
+      - {key: agent-application, image: oramasearch/agent-application:v0.2.1}
+      - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
+      - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
+      - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
+      - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
+      - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
+      - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
+      - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
     ingressEnabled: true
     postgres:
       enabled: true
