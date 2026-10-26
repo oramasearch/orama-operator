@@ -389,8 +389,8 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "workers", image: img, port: 8080, replicas: w.Replicas,
-		env:               append([]corev1.EnvVar{masterAPIKeyEnv(oc), clickhousePasswordEnv(oc)}, keyRefEnv(refs)...),
-		credentialSecrets: append([]string{masterKey, clickhouseAuthSecretName(oc)}, keyRefSecrets(refs)...),
+		env:               append([]corev1.EnvVar{masterAPIKeyEnv(oc), clickhousePasswordEnv(oc), secretKeyEnv("DISCO_SECRET", discoAuthSecretName(oc), "DISCO_SECRET")}, keyRefEnv(refs)...),
+		credentialSecrets: append([]string{masterKey, clickhouseAuthSecretName(oc), discoAuthSecretName(oc)}, keyRefSecrets(refs)...),
 		resources:         resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }

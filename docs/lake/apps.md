@@ -179,8 +179,20 @@ Lake hashes each bearer and enforces its purpose against the current row:
 - `pull`: Basic-auth registry reads with username `app`, limited to manifests and blobs in
   `<space>/<app name>`; it cannot read another app or cache repository and cannot push.
 
-Runtime pods receive `APP_TOKEN` from the app token Secret's `source` key. The Zetta token is copied to the local
-binding Secret and mounted at `/var/run/orama/bindings/zetta`. `EVENTS_TOKEN` comes from
+Runtime pods receive `APP_TOKEN` from the app token Secret's `source` key. The Zetta token goes into
+the local binding Secret's `zetta` key, mounted at `/var/run/orama/bindings/zetta`, as the one JSON
+object app-runtime reads (its `docs/data-apps/bindings.md`):
+
+```json
+{"lake_url":"http://lake-<lake>.<lake namespace>.svc.cluster.local:80/w/<workspace id>","customer_id":"<customer id>","token":"<zetta token>"}
+```
+
+`lake_url` is the same value as `LAKE_URL`, and `customer_id` is `spec.bindings.zetta.customerId`.
+app-runtime calls `<lake_url>/workspaces/<customer_id>/zetta/v1/<capability>` with the token as its
+bearer. The bare token is never written to that file: it is not JSON, and app-runtime stopped every
+app with workspace data at startup with *"binding is not valid JSON"* while it was (lake#1205). The
+bytes are a contract: `internal/controller/testdata/app-binding-zetta.json` is checked byte for byte
+by `lakeapp_binding_contract_test.go`, and app-runtime parses the same file in its own test. `EVENTS_TOKEN` comes from
 the token Secret's `events` key, `APP_ID` is the row ID, and `EVENTS_URL` is Lake's in-cluster
 `/v1/publish_app_event` endpoint. The publisher reads that same Secret. Tokens never appear in
 Postgres, specs, literal env values, annotations, status or logs. SQL/client errors are reduced to
@@ -278,7 +290,8 @@ even when the source Secret holds other keys.
 
 `spec.bindings.secretRef` points at a Secret with these data keys:
 
-- `zetta`: the Lake-minted scoped workspace token when `bindings.zetta` is present;
+- `zetta`: the Lake-minted scoped workspace token when `bindings.zetta` is present. The controller
+  delivers it inside the JSON binding document above, with Lake's in-cluster URL as `lake_url`;
 - one key equal to each requested service identifier: that service's connection document.
 
 The controller copies only those named keys. `spec.secretEnv` maps each environment name to a
@@ -464,6 +477,9 @@ The regression files are `lake_apps_test.go` (row lifecycle, rollback, isolation
 writes), `lake_apps_pgx_test.go` (SQL and concurrent row changes), `lake_apps_dns_test.go`
 (wildcard ownership and ingress class), `lake_apps_notify_test.go` (listener and polling gates),
 and `lakeapp_tokens_test.go` (credential ownership, unbinding, DNS finalization and event HTTP).
+`lakeapp_binding_contract_test.go` pins the Zetta binding file app-runtime reads: the exact bytes of
+`testdata/app-binding-zetta.json`, and a synchronized app's binding carrying the registered token
+inside that document (lake#1205).
 `lakeapp_isolation_test.go` pins the isolation rules a tenant's app runs under: restricted pod
 security and no Kubernetes token, egress only to cluster DNS, the Lake's API port and the app's own
 workspace, ingress only from ingress-nginx and the owning Lake, no workspace Kubernetes API or

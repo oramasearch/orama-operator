@@ -90,6 +90,12 @@ func indexBuilderAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string {
 func deploymentAPISecretName(oc *oramav1alpha1.OramaCloudV1) string {
 	return oc.Name + "-deployment-api-auth"
 }
+func discoAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-disco-auth"
+}
+func pgAdminAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-pgadmin-auth"
+}
 
 func clickhousePasswordEnv(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
 	return secretKeyEnv("CLICKHOUSE_PASSWORD", clickhouseAuthSecretName(oc), "CLICKHOUSE_PASSWORD")
@@ -128,6 +134,10 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 		return []string{"API_SECRET"}
 	case deploymentAPISecretName(oc):
 		return []string{"DEPLOYMENT_API_API_KEY"}
+	case discoAuthSecretName(oc):
+		return []string{"DISCO_SECRET"}
+	case pgAdminAuthSecretName(oc):
+		return []string{"PGADMIN_DEFAULT_PASSWORD"}
 	case generatedMasterAPIKeySecretName(oc):
 		if masterAPIKeyGenerated(oc) {
 			return []string{masterAPIKeyEnvName}
@@ -220,9 +230,10 @@ func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 // index-builder sends (#574), and HARVEST's two keys, each 64 hex characters: <cr>-harvest-sign,
 // the control key index-builder sends and harvest-master checks, and <cr>-harvest-notification,
 // harvest-master's own notification signing key.
-// It also creates stack-internal ClickHouse, Typesense, cron, decrypter and index-builder keys (#570).
-// An existing Secret, generated or
-// supplied, is never changed. Each one is then read back, so a Secret that won a create race is the
+// It also creates stack-internal ClickHouse, Typesense, cron, decrypter, index-builder, DISCO and
+// pgAdmin keys (#570). Exact legacy DISCO, pgAdmin and broker placeholders are replaced once;
+// agreeing real component values seed the new shared Secrets. Other existing values are kept.
+// Each Secret is then read back, so a Secret that won a create race is the
 // one checked: a missing, empty or unsupported value fails the reconcile, naming the Secret and key.
 // Elsewhere a broker or cache client's Secret must come through the set's secrets list.
 func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
@@ -240,10 +251,11 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		// rotate is the generation the CR asks this credential to be at (#594); 0 for the
 		// credentials that never rotate.
 		rotate int64
+		legacy *legacyCredential
 	}{
 		{local: storeLocal(oc, c.Broker), name: brokerAdminSecretName(oc), values: func(p string) map[string][]byte {
 			return map[string][]byte{"username": []byte(brokerAdminUser), "password": []byte(p)}
-		}, rotate: rotation.Broker},
+		}, rotate: rotation.Broker, legacy: &legacyCredential{key: "password", placeholder: legacyBrokerPassword}},
 		{local: storeLocal(oc, c.Cache), name: cacheAuthSecretName(oc), rotate: rotation.Cache, values: func(p string) map[string][]byte {
 			return map[string][]byte{"password": []byte(p)}
 		}},
@@ -287,6 +299,18 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		{local: c.Ingestion.Enabled, name: deploymentAPISecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
 			return map[string][]byte{"DEPLOYMENT_API_API_KEY": []byte(k)}
 		}},
+		{local: c.Disco.Enabled || c.Workers.Enabled || c.Ingestion.Enabled, name: discoAuthSecretName(oc), legacy: &legacyCredential{
+			key: "DISCO_SECRET", placeholder: legacyDiscoSecret, sources: []legacyCredentialSource{
+				{component: "disco", key: "DISCO_SECRET"}, {component: "workers", key: "DISCO_SECRET"}, {component: "index-builder", key: "DISCO_SECRET_KEY"},
+			},
+		}, values: func(k string) map[string][]byte {
+			return map[string][]byte{"DISCO_SECRET": []byte(k)}
+		}},
+		{local: c.PgAdmin.Enabled, name: pgAdminAuthSecretName(oc), legacy: &legacyCredential{
+			key: "PGADMIN_DEFAULT_PASSWORD", placeholder: legacyPgAdminPassword, sources: []legacyCredentialSource{{component: "pgadmin", key: "PGADMIN_DEFAULT_PASSWORD"}},
+		}, values: func(k string) map[string][]byte {
+			return map[string][]byte{"PGADMIN_DEFAULT_PASSWORD": []byte(k)}
+		}},
 		// Only when the CR names no master key Secret; a named one is supplied, never created.
 		{local: masterAPIKeyGenerated(oc), name: generatedMasterAPIKeySecretName(oc), values: func(k string) map[string][]byte {
 			return map[string][]byte{masterAPIKeyEnvName: []byte(k)}
@@ -303,6 +327,12 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		if err != nil {
 			return fmt.Errorf("generate %s: %w", s.name, err)
 		}
+		if s.legacy != nil {
+			pass, err = r.legacyCredentialSeed(ctx, oc, s.name, *s.legacy, pass)
+			if err != nil {
+				return err
+			}
+		}
 		if err := r.createSecretIfAbsent(ctx, oc, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: s.name, Namespace: oc.Namespace, Labels: labelsFor(oc, credentialsComponent)},
 			Type:       corev1.SecretTypeOpaque,
@@ -313,6 +343,12 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		stored := &corev1.Secret{}
 		if err := r.secretReader().Get(ctx, types.NamespacedName{Namespace: oc.Namespace, Name: s.name}, stored); err != nil {
 			return fmt.Errorf("read credential Secret %s/%s: %w", oc.Namespace, s.name, err)
+		}
+		if s.legacy != nil && string(stored.Data[s.legacy.key]) == s.legacy.placeholder {
+			stored.Data[s.legacy.key] = []byte(pass)
+			if err := r.Update(ctx, stored); err != nil {
+				return fmt.Errorf("replace legacy credential Secret %s/%s key %s: %w", oc.Namespace, s.name, s.legacy.key, err)
+			}
 		}
 		if err := r.rotateCredential(ctx, oc, stored, s.rotate, s.values); err != nil {
 			return err
@@ -409,6 +445,11 @@ const credentialCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0
 
 func checkCredentialValue(sec *corev1.Secret, key string) error {
 	v, ok := sec.Data[key]
+	// These values are passed directly through env, never interpolated into URLs or config files.
+	// Retain the character set of real credentials adopted from the former component Secrets.
+	if ok && len(v) > 0 && (key == "DISCO_SECRET" || key == "DISCO_SECRET_KEY" || key == "PGADMIN_DEFAULT_PASSWORD") {
+		return nil
+	}
 	if key == "DECRYPTER_API_SECRET_BASE64" && ok && len(v) > 0 {
 		decoded, err := base64.StdEncoding.DecodeString(string(v))
 		if err != nil || len(decoded) == 0 {

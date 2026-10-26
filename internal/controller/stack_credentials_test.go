@@ -18,12 +18,13 @@ func TestStackInternalCredentialsAreSharedAndStable(t *testing.T) {
 		o.Spec.Components.Analytics = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
 		o.Spec.Components.SearchWorkers.Enabled = true
 		o.Spec.Components.Disco.Enabled = true
+		o.Spec.Components.PgAdmin.Enabled = true
 	})
 	provided := secretOf("v1-typesense-auth", map[string]string{"TYPESENSE_API_KEY": "provided-typesense-key"})
 	h := newEngineHarness(t, oc, engineSecret(), provided)
 	h.mustRun()
 
-	for _, name := range []string{"v1-clickhouse-auth", "v1-typesense-auth", "v1-cron-secret", "v1-decrypter-auth", "v1-index-builder-auth", "v1-deployment-api-auth"} {
+	for _, name := range []string{"v1-clickhouse-auth", "v1-typesense-auth", "v1-cron-secret", "v1-decrypter-auth", "v1-index-builder-auth", "v1-deployment-api-auth", "v1-disco-auth", "v1-pgadmin-auth", "v1-broker-admin"} {
 		sec := h.secret(name)
 		if name != provided.Name && sec.Labels[componentLabel] != credentialsComponent {
 			t.Errorf("%s has component label %q", name, sec.Labels[componentLabel])
@@ -33,6 +34,9 @@ func TestStackInternalCredentialsAreSharedAndStable(t *testing.T) {
 		}
 		if len(sec.Data) == 0 {
 			t.Errorf("%s has no data", name)
+		}
+		if name == "v1-disco-auth" && !hex48.Match(sec.Data["DISCO_SECRET"]) || name == "v1-pgadmin-auth" && !hex48.Match(sec.Data["PGADMIN_DEFAULT_PASSWORD"]) || name == "v1-broker-admin" && !hex48.Match(sec.Data["password"]) {
+			t.Errorf("%s did not get a generated 48-character hex credential", name)
 		}
 	}
 	if got := h.secret(provided.Name); !reflect.DeepEqual(got.Data, provided.Data) {
@@ -59,6 +63,10 @@ func TestStackInternalCredentialsAreSharedAndStable(t *testing.T) {
 		{"index-builder", "index-builder", "DEPLOYMENT_API_API_KEY", "v1-deployment-api-auth", "DEPLOYMENT_API_API_KEY"},
 		{"dashboard", "dashboard", "CRON_SECRET", "v1-cron-secret", "CRON_SECRET"},
 		{"dashboard", "dashboard", "SCRAPER_SIGNATURE", "v1-harvest-sign", harvestSignKey},
+		{"disco", "disco", "DISCO_SECRET", "v1-disco-auth", "DISCO_SECRET"},
+		{"workers", "workers", "DISCO_SECRET", "v1-disco-auth", "DISCO_SECRET"},
+		{"index-builder", "index-builder", "DISCO_SECRET_KEY", "v1-disco-auth", "DISCO_SECRET"},
+		{"pgadmin", "pgadmin", "PGADMIN_DEFAULT_PASSWORD", "v1-pgadmin-auth", "PGADMIN_DEFAULT_PASSWORD"},
 	} {
 		tmpl, ok := templates[tc.workload]
 		if !ok {
@@ -73,12 +81,12 @@ func TestStackInternalCredentialsAreSharedAndStable(t *testing.T) {
 	}
 
 	stable := map[string]*corev1.Secret{}
-	for _, name := range []string{"v1-clickhouse-auth", "v1-typesense-auth", "v1-cron-secret", "v1-decrypter-auth", "v1-index-builder-auth", "v1-deployment-api-auth"} {
+	for _, name := range []string{"v1-clickhouse-auth", "v1-typesense-auth", "v1-cron-secret", "v1-decrypter-auth", "v1-index-builder-auth", "v1-deployment-api-auth", "v1-disco-auth", "v1-pgadmin-auth", "v1-broker-admin"} {
 		stable[name] = h.secret(name).DeepCopy()
 	}
 	h.mustRun()
 	for name, before := range stable {
-		if !reflect.DeepEqual(h.secret(name).Data, before.Data) {
+		if !reflect.DeepEqual(h.secret(name), before) {
 			t.Errorf("a second reconcile changed %s", name)
 		}
 	}
@@ -98,6 +106,8 @@ func TestStackInternalCredentialsAreSharedAndStable(t *testing.T) {
 		{"v1-decrypter-auth", "API_SECRET", []string{"index-builder", "openai-decrypter"}},
 		{"v1-index-builder-auth", "API_SECRET", []string{"index-builder"}},
 		{"v1-deployment-api-auth", "DEPLOYMENT_API_API_KEY", []string{"index-builder"}},
+		{"v1-disco-auth", "DISCO_SECRET", []string{"disco", "workers", "index-builder"}},
+		{"v1-pgadmin-auth", "PGADMIN_DEFAULT_PASSWORD", []string{"pgadmin"}},
 	} {
 		before := h.templates()
 		value := "updated-" + tc.secret + "-12345678901234567890"

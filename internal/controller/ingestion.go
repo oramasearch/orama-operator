@@ -41,7 +41,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 			port:      8080,
 			env:       append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
 			// controlDBAppSecret is its DATABASE_URL (pgURIEnv): a new control DB has a new password.
-			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), typesenseAuthSecretName(oc), decrypterAuthSecretName(oc), indexBuilderAuthSecretName(oc), deploymentAPISecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
+			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), typesenseAuthSecretName(oc), decrypterAuthSecretName(oc), indexBuilderAuthSecretName(oc), deploymentAPISecretName(oc), discoAuthSecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
 			resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
 		}); err != nil {
 			return err
@@ -165,6 +165,7 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		pgURIEnv(oc, "DATABASE_URL"), // CNPG-generated URI (real password), not a placeholder (#32)
 		{Name: "DISCO_URL", Value: "http://" + n + "-disco:8080"},
 		{Name: "DISCO_PEERS", Value: ""},
+		secretKeyEnv("DISCO_SECRET_KEY", discoAuthSecretName(oc), "DISCO_SECRET"),
 		// ORAMA_EMBEDDINGS_URL and ORAMA_EMBEDDINGS_BEARER: the stack's own HPES (#574).
 		{Name: embeddingsURLEnv, Value: hpesURL(oc)},
 		secretKeyEnv(embeddingsBearerEnv, hpesSecretName(oc), hpesTokenKey),

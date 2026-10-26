@@ -58,10 +58,11 @@ func (r *OramaCloudV1Reconciler) reconcilePgAdmin(ctx context.Context, oc *orama
 		port:      80,
 		env: []corev1.EnvVar{
 			{Name: "PGADMIN_DEFAULT_EMAIL", Value: "steve@orama.com"}, // pgAdmin rejects non-TLD domains (.local)
-			// PGADMIN_DEFAULT_PASSWORD is injected from the <cr>-pgadmin-secret via envFrom.
+			secretKeyEnv("PGADMIN_DEFAULT_PASSWORD", pgAdminAuthSecretName(oc), "PGADMIN_DEFAULT_PASSWORD"),
 			{Name: "PGADMIN_LISTEN_PORT", Value: "80"},
 			{Name: "PGADMIN_SERVER_JSON_FILE", Value: "/config/servers.json"},
 		},
+		credentialSecrets: []string{pgAdminAuthSecretName(oc)},
 		// pgAdmin runs as uid 5050 and writes its config DB to /var/lib/pgadmin — fsGroup makes the
 		// mounted emptyDir writable by that non-root user. (Pod-level; composes with the per-container
 		// hardening baseline reconcileApp applies.)

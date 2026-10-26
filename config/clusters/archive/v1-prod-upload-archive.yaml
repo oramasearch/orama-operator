@@ -1,0 +1,21 @@
+# The archive of Cloud v1 customers' upload originals, applied to the managing cluster
+# (orama-bridge decisions 25 October, 5). The cutover copies each active-cohort team's uploaded_files rows
+# as they are; this bucket keeps the original files, copied from Prod 1's S3 (airbyte-exports-prod,
+# dashboard-uploads/) under the same keys and verified, so Prod 1 can be retired.
+#
+# It is not a stack's uploads bucket (<cr>-uploads): no import consumer reads it, it has no CORS rule (no
+# browser writes to it) and no expiry, and deleting the resource keeps the bucket and its files.
+# Applying this file needs Steve's consent.
+apiVersion: orama.cloud/v1alpha1
+kind: CloudflareR2Bucket
+metadata:
+  name: v1-prod-upload-archive
+  namespace: orama-system
+spec:
+  # The orama.ing token the v1-prod set already uses for its R2 buckets (KV and R2 storage only).
+  secretRef: cloudflare-api-token-orama-ing
+  name: v1-prod-upload-archive
+  deletionPolicy: Retain
+  credentials:
+    # Bucket-scoped S3 credentials, written by the operator, used only to copy and verify the originals.
+    secretName: v1-prod-upload-archive-r2

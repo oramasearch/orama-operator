@@ -642,7 +642,11 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 			if !found || len(value) == 0 {
 				return result, "BindingPending", fmt.Sprintf("binding Secret %q has no zetta key", sourceName), nil
 			}
-			data["zetta"] = value
+			binding, err := lakeAppZettaBinding(lake, app, value)
+			if err != nil {
+				return result, "", "", err
+			}
+			data["zetta"] = binding
 		}
 		for _, serviceID := range app.Spec.Bindings.Services {
 			value, found := source.Data[serviceID]
@@ -1220,11 +1224,41 @@ func lakeAppAuth(app *oramav1alpha1.LakeApp) string {
 	return oramav1alpha1.LakeAppAuthPublic
 }
 
-func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secrets lakeAppSecrets) []corev1.EnvVar {
-	lakeURL := lakeInternalURL(lake, app.Namespace)
+// lakeAppLakeURL is the Lake base URL an app calls: the workspace's /w/<workspace id> route for a
+// synchronized app, Lake's in-cluster Service for a standalone one. LAKE_URL and the Zetta binding
+// both use it.
+func lakeAppLakeURL(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) string {
 	if app.Spec.Sync != nil {
-		lakeURL = workspaceLakeInternalURL(lake, app.Spec.Sync.WorkspaceID)
+		return workspaceLakeInternalURL(lake, app.Spec.Sync.WorkspaceID)
 	}
+	return lakeInternalURL(lake, app.Namespace)
+}
+
+// lakeAppZettaBindingDocument is the file app-runtime reads at /var/run/orama/bindings/zetta
+// (app-runtime docs/data-apps/bindings.md): one JSON object naming Lake, the workspace owner and the
+// scoped bearer. app-runtime calls <lake_url>/workspaces/<customer_id>/zetta/v1/<capability> with it.
+// A bare token in that file is not JSON and stops the app at startup (lake#1205).
+type lakeAppZettaBindingDocument struct {
+	LakeURL    string `json:"lake_url"`
+	CustomerID string `json:"customer_id"`
+	Token      string `json:"token"`
+}
+
+// lakeAppZettaBinding renders the Zetta binding file for an app whose spec.bindings.zetta is set.
+func lakeAppZettaBinding(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, token []byte) ([]byte, error) {
+	encoded, err := json.Marshal(lakeAppZettaBindingDocument{
+		LakeURL:    lakeAppLakeURL(lake, app),
+		CustomerID: app.Spec.Bindings.Zetta.CustomerID,
+		Token:      string(token),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cannot encode the zetta binding: %w", err)
+	}
+	return encoded, nil
+}
+
+func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secrets lakeAppSecrets) []corev1.EnvVar {
+	lakeURL := lakeAppLakeURL(lake, app)
 	env := []corev1.EnvVar{
 		{Name: "LAKE_URL", Value: lakeURL},
 		{Name: "APP_PORT", Value: fmt.Sprint(app.Spec.Port)},
