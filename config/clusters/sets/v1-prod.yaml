@@ -1328,7 +1328,7 @@ spec:
       teamID: d33ca50a-5eee-4671-b010-574c0a9e56bd
       projectIDs: [5ddc9c71-8c05-4cba-a42d-b81983fefe93]
       runID: eu-2
-      step: plan
+      step: seed                            # the seed dry run (apply: false)
       apply: false
       evidenceSecretRef: {name: team-d33ca50a-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:a121fdf1d494177e59636ade4c48087e4070a1a1902428c5eaeab7bdd5ea41c0  # dev-a6a6ad0f
