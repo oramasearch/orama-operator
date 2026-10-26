@@ -479,6 +479,14 @@ spec:
                     x-kubernetes-validations:
                     - message: app ID is immutable
                       rule: self == oldSelf
+                  restartGeneration:
+                    description: |-
+                      RestartGeneration is the generation Lake's restart_app last wrote (lake#1228), 0 when the app
+                      was never restarted. It is written on the pod template, so each restart replaces the pods
+                      even when nothing else about the app changed.
+                    format: int64
+                    minimum: 0
+                    type: integer
                   tokenHashes:
                     description: TokenHashes gates rollout until the sync has registered
                       these hashes in Postgres.

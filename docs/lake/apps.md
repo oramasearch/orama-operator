@@ -46,6 +46,21 @@ and token hashes. Status and hash writes match ID, customer, generation and desi
 old read cannot acknowledge a newer row or recreate a removed row. Unchanged observations write
 nothing; `updated_at` changes on status transitions.
 
+### Restart
+
+Lake's `restart_app` writes `restart_generation` (lake#1228, Lake migration `0104_app_restarts`): the
+generation of that restart, 0 for an app never restarted. Before, a restart only bumped
+`generation`, which the operator does not put on the pod template, so the template stayed the same
+and Kubernetes replaced no pod. The apps sync reads the column as
+`COALESCE((to_jsonb(a)->>'restart_generation')::bigint, 0)`, so a Lake schema older than `0104`
+reads 0 and this operator can roll before the Lake image that writes it. It is copied to
+`spec.sync.restartGeneration`, and when it is above 0 the Deployment's pod template carries
+`orama.cloud/lake-app-restart: "<restart generation>"`: each restart is a new template and the
+Deployment rolls its pods. No other edit changes it, so scaling or an access change restarts
+nothing, and an app never restarted has no annotation, so upgrading the operator rolls no pod.
+Verify: `TestARestartChangesThePodTemplateAndNothingElseDoes` and, with
+`LAKE_APPS_TEST_POSTGRES_URI`, `TestLakeAppsPgxStoreAgainstPostgres` (the column absent, then read).
+
 `env_json` is a string-to-string JSON object. `secret_env_refs` is a JSON object whose keys are
 environment variable names and whose values are **lake secret references only**
 ([below](#lake-secret-references-lake625)). `{}`, SQL `NULL`, JSON `null`, and an empty decoded value
@@ -264,8 +279,9 @@ Secret always remains in the Lake namespace. Standalone CRs retain the original 
 their private namespace because they do not have operator-generated synchronized-app tokens.
 
 The apps sync sets `spec.sync` on its Lake-owned CRs: the immutable app `id`, `customerId` and
-`workspaceId`, the operator-written `workspaceNamespace`, the desired row `generation`, and
-`tokenHashes` acknowledging credentials registered in Postgres.
+`workspaceId`, the operator-written `workspaceNamespace`, the desired row `generation`, the
+`restartGeneration` of its last restart ([restart](#restart)), and `tokenHashes` acknowledging
+credentials registered in Postgres.
 Only SHA-256 hashes appear here. `bindings.serviceNames` records the service IDs' resolved names
 for mount filenames. Standalone CRs omit `sync` and keep their explicit Secret references.
 There is no `spec.apps.buildkit`; build Jobs belong to #195 and `spec.builds`.

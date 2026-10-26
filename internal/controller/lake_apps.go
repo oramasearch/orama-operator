@@ -320,9 +320,11 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 		Sync: &oramav1alpha1.LakeAppSync{
 			ID: row.ID, CustomerID: row.CustomerID, WorkspaceID: row.WorkspaceID,
 			WorkspaceNamespace: row.WorkspaceNamespace, Generation: row.Generation,
+			RestartGeneration: row.RestartGeneration,
 		},
 	}
-	if row.CustomerID == "" || row.Generation < 1 || len(validation.IsDNS1123Label(row.Name)) != 0 {
+	if row.CustomerID == "" || row.Generation < 1 || row.RestartGeneration < 0 ||
+		len(validation.IsDNS1123Label(row.Name)) != 0 {
 		return spec, errors.New("app customer, generation or name is invalid")
 	}
 	if _, err := uuid.Parse(row.CustomerID); err != nil {
