@@ -161,7 +161,8 @@
 #     PRIVATE_API_KEY is prepared in this source (64 hex characters); the target import consumer
 #     reads the same dashboard source.
 #     Clerk keys come from orama-system/clerk-cloud-v1-prod, copied only into v1-eu.
-#     Its standalone Frontend API is clerk.orama.ing; dashboard sign-in stays on app.orama.ing/login.
+#     Its primary domain is app.orama.com since 2026-10-26 (secondary application, Frontend API
+#     clerk.app.orama.com; orama-bridge decisions 25 October, 13), so sign-in works on app.orama.com/login only.
 #     controlDB.stripePrices carries Prod 1's live-mode price IDs (#378).
 #     REDIS_CACHE_URL/TOKEN and NEXT_PUBLIC_APP_URL in envFrom are overridden by operator env entries;
 #     uploads endpoint/bucket/region/access keys likewise use the owned R2 Secret once provisioned.
@@ -221,10 +222,10 @@ spec:
           # The production dashboard: dashboard dev 79abacb3 (the new-device sign-in code, dashboard#190;
           # custom system prompts read from the writer, dashboard#192; GitHub sign-in hidden until #245,
           # dashboard#193) built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-prod
-          # (app.orama.ing, standalone Cloud v1 Clerk); recorded in orama-cloud-v1-bridge#23.
-          # Sentry uses the existing Orama project with environment v1-prod and release
-          # dashboard@79abacb32d8461c06531ba7a906ab559890a907b (dashboard#194).
-          dashboard: oramasearch/dashboard:v1-prod-79abacb3-sentry@sha256:de985a120bf7f28bb6690a9e02b34dabf12ce561eef5792b07fc0913ed7715a2
+          # for https://app.orama.com, Cloud v1's Clerk now on clerk.app.orama.com (orama-bridge decisions
+          # 25 October, 13); recorded in orama-cloud-v1-bridge#24. Sentry uses the existing Orama project
+          # with environment v1-prod and release dashboard@79abacb32d8461c06531ba7a906ab559890a907b (dashboard#194).
+          dashboard: oramasearch/dashboard:v1-prod-79abacb3-com@sha256:d7fb4c31d8bed3145347415a45ac30b22ae5b6ded16710f852c0017e79ec65e5
       # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
       # default is Standard SSD. v1-eu was created as a sandbox on 10Gi Standard SSD volumes, which
       # cannot change class in place, so each volume approved its replacement once (approveDataDeletion,
@@ -264,8 +265,11 @@ spec:
         dashboard:
           enabled: true
           host: app.orama.ing
-          # app.orama.com is added as an extra host at the cutover, which decides whether it serves
-          # the dashboard directly at cutover (orama-bridge#246). Until then it stays Prod 1's.
+          # The Ingress also answers app.orama.com, with its own origin certificate (DNS-01 in orama.com,
+          # orama-bridge decisions 25 October, 12). An extra host gets no DNS record: app.orama.com stays
+          # Prod 1's (Vercel) until the cutover runbook's step 8 points it here.
+          extraHosts:
+          - app.orama.com
           envFrom:
           - secretRef: { name: v1-prod-dashboard-env }
           # Cloud v1's own Clerk application, with sign-in on /login. Public runtime values
@@ -275,8 +279,10 @@ spec:
             valueFrom: {secretKeyRef: {name: clerk-cloud-v1-prod, key: secretKey}}
           - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
             valueFrom: {secretKeyRef: {name: clerk-cloud-v1-prod, key: publishableKey}}
-          - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app.orama.ing/auth/complete}
-          - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app.orama.ing/auth/complete}
+          # The image is built for app.orama.com, so the runtime value matches it rather than dashboard.host.
+          - {name: NEXT_PUBLIC_APP_URL, value: https://app.orama.com}
+          - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app.orama.com/auth/complete}
+          - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app.orama.com/auth/complete}
           stripeSecretKeySecretRef:
             name: v1-prod-dashboard-stripe
             key: STRIPE_SECRET_KEY
