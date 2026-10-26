@@ -649,7 +649,7 @@ spec:
       apply: false
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-2136daa8-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-283c9f0d
@@ -693,7 +693,7 @@ spec:
       apply: false
       attempt: 2                            # the seed dry run again
       evidenceSecretRef: {name: team-2da0913d-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-43ba6c6c
@@ -758,7 +758,7 @@ spec:
       apply: false
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-53c8367c-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-5ea13b3b
@@ -868,7 +868,7 @@ spec:
       apply: false
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-7408c7cf-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-874b5280
@@ -1016,7 +1016,7 @@ spec:
       step: seed                            # the seed dry run (apply: false)
       apply: false
       evidenceSecretRef: {name: team-a36cfefa-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-abc9560a
@@ -1122,7 +1122,7 @@ spec:
       apply: false
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-c406ce64-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-cbb30e51
@@ -1186,7 +1186,7 @@ spec:
       step: seed                            # the seed dry run (apply: false)
       apply: false
       evidenceSecretRef: {name: team-d33ca50a-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-d8432dbe
@@ -1229,7 +1229,7 @@ spec:
       step: seed                            # the seed dry run (apply: false)
       apply: false
       evidenceSecretRef: {name: team-db628e91-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-dcf88ea8
@@ -1336,7 +1336,7 @@ spec:
       apply: false
       attempt: 1                            # the seed dry run again
       evidenceSecretRef: {name: team-7c243b24-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   secrets:
