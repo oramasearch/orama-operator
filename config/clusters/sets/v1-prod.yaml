@@ -1245,7 +1245,7 @@ spec:
       projectIDs: [3ca945dc-9b2d-424d-af16-ddfd6958021f, 5d42c8ae-35bd-4ac1-bc2a-66b2d6621d55, 97f59a22-f645-48e0-a1c4-dc52ae48e0b4, 9b9beded-d398-4c49-b49d-3f58848f5938, a05d3305-3cfd-4d71-a9b2-1016fa13101d, aa11da0c-933f-4297-ab23-7051a60072fa, aeee54fc-6a7f-4d34-8c71-37bb6fa8a833, b01aadd0-11ba-44bb-82d4-83ffa0949b57, d87368a5-0736-497f-b9f4-77a14a1d6e37, f5c0a2b6-8ae7-4ecf-88fc-187b729ff44b]
       runID: eu-2
       step: seed                            # the seed dry run (apply: false)
-      apply: false
+      apply: true                           # writes v1-eu: the copy
       attempt: 1                            # the seed dry run again, on a receipt bound to the live engine
       evidenceSecretRef: {name: team-35a5f5a1-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:a121fdf1d494177e59636ade4c48087e4070a1a1902428c5eaeab7bdd5ea41c0  # dev-a6a6ad0f
