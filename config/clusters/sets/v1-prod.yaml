@@ -283,7 +283,7 @@ spec:
           # Prod 1's Vercel crons as CronJobs; the cutover sets suspend: false in this file.
           crons:
             enabled: true
-            suspend: true
+            suspend: false
         docs:
           enabled: true
           host: docs.orama.ing
@@ -342,7 +342,7 @@ spec:
           # The cutover sets suspend: false in this file.
           import:
             enabled: true
-            suspend: true
+            suspend: false
         cache:
           enabled: true
           mode: in-cluster
