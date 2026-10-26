@@ -973,29 +973,6 @@ spec:
       image: docker.io/oramasearch/cloud-v1-migration@sha256:a121fdf1d494177e59636ade4c48087e4070a1a1902428c5eaeab7bdd5ea41c0  # dev-a6a6ad0f
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
-  - name: team-cbb30e51
-    member: v1-eu
-    secrets:
-    - name: v1-prod-prod1-db-ro
-      namespace: orama-system
-    - name: v1-prod-prod1-master-key
-      namespace: orama-system
-    - name: v1-prod-prod1-settings-ssm
-      namespace: orama-system
-    - name: team-cbb30e51-eu-evidence
-      namespace: orama-system
-    spec:
-      teamID: cbb30e51-0103-429a-a66d-abd7ee59a891
-      projectIDs: [45f484c0-5261-433f-ac18-177c5f37b84c, 5ee2609f-7b98-47c9-8d25-3eabecd1cec9, 7ec4f717-5fbe-4ff4-a4c6-f9bec7eff9e8, a9d6e4f0-223a-455a-8e49-2c66b0f44ce2, d7293c6c-261e-4c24-844a-f00e941f87bf, d7a41148-9342-417f-91b5-2f2dac68d72d, df1b5707-2c7b-4154-8866-e6a9c86d895a, fbb3bc63-d9dc-45c7-a109-86a43f62dcde]
-      runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
-      apply: true                           # writes v1-eu: the copy, in the window
-      attempt: 1                            # the seed dry run again
-      removeOnDelete: true                  # recovery: removing the entry removes its copy (decisions 25 October, 14)
-      evidenceSecretRef: {name: team-cbb30e51-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
-      pullSecretName: oramasearch-dockerhub
-      source: *prod1-source
   - name: team-ce98294c
     member: v1-eu
     secrets:
