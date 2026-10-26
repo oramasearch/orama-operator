@@ -332,11 +332,6 @@ func oramacoreCombinedReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return engineCommonYAML() + readerLocalWriterSideYAML(oc) + readerSideYAML(oc, brokerReaderUser) + aiServerYAML(oc)
 }
 
-// readerLocalWriterSideYAML is the writer_side of the combined reader config: the same writer settings
-// and hooks as the writer's, its data in the reader's own claim as before, but producing to
-// oramacore-reader-local as oramacore-reader, with a master key only that pod knows and no JWT.
-// Requests reach a reader's writer routes only through the reader Service, and none of them can
-// authenticate: the key is unknown and its collection store is empty.
 // writerEmbeddingBatch is the writer's embedding_queue_limit: how many texts its embedding loop takes into one
 // batch, and the capacity of the queue in front of it, so inserts wait for the writer instead of piling up.
 // Prod 1's GPU writer (64 GB RAM, a 48 GB GPU) ran 50000; on a CPU writer one batch of thousands of texts needs
@@ -345,6 +340,11 @@ func oramacoreCombinedReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 // committed. 64 bounds a batch to a few hundred MB.
 const writerEmbeddingBatch = 64
 
+// readerLocalWriterSideYAML is the writer_side of the combined reader config: the same writer settings
+// and hooks as the writer's, its data in the reader's own claim as before, but producing to
+// oramacore-reader-local as oramacore-reader, with a master key only that pod knows and no JWT.
+// Requests reach a reader's writer routes only through the reader Service, and none of them can
+// authenticate: the key is unknown and its collection store is empty.
 func readerLocalWriterSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return fmt.Sprintf(`writer_side:
   output:
