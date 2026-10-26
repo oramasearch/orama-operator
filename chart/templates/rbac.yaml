@@ -171,6 +171,8 @@ rules:
   # mounted services Secret at once (lake#197). Listed uncached: no pod informer.
   # Create and delete a methodology run's or served model's quota reservation, a pod that is never
   # scheduled, in its workspace's namespace (orama-operator#799).
+  # Delete an owned, crash-looping previous-image Cloud v1 writer to unblock its requested
+  # image rollout, with UID/resource-version preconditions (orama-operator#1035).
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "patch", "create", "delete"]
