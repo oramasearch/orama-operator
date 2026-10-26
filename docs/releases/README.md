@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.10.3](v0.10.3.md) — 2026-10-25. A patch: the Cloud v1 writer embeds 64 texts per batch, not 50,000, so a
+  CPU writer's memory stays bounded during a copy (#1023, orama-bridge#257). Each Cloud v1 stack's writer and readers
+  roll once.
 - [v0.10.2](v0.10.2.md) — 2026-10-25. A patch: an app's Zetta binding is the JSON document app-runtime reads
   (#1001, lake#1205), and Cloud v1 stacks generate their DISCO and pgAdmin credentials and replace the placeholder
   RabbitMQ admin password (#1017, #570). Each bound app and the affected Cloud v1 consumers roll once.
