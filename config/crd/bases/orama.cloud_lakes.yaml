@@ -122,7 +122,7 @@ spec:
                       type: object
                     type: array
                   model:
-                    default: gpt-5.5
+                    default: gpt-6.1-sol
                     description: Model is the frontier model agents default to.
                     type: string
                   openaiSecretName:

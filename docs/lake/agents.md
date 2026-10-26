@@ -17,7 +17,7 @@ and reports back, as it does for services and stores.
 | `runtimeImage` | `oramasearch/agent-runtime:<tag>`, the one image every launch runs on. Empty uses the operator's default (`internal/controller/lake_defaults.go`) |
 | `library[]` | `{key, image}`: replaces the image of one specialized agent. Every Lake runs all nine (`agent-ask-orama`, `agent-project`, `agent-autosuggest`, `agent-creator`, `agent-eval-generator`, `agent-project-corpus`, `agent-autosuggest-corpus`, `agent-application`, `agent-experiments`) on the operator's default images; an entry cannot remove an agent |
 | `openaiSecretName` | a Secret in `spec.namespace` holding `OPENAI_API_KEY`, the general Orama key. **People provide it**. Only the library agents in `spec.namespace` get it; it is **never** copied into a workspace namespace or given to a launch or schedule pod ([below](#oramas-provider-key-never-reaches-a-workspace)), and never written to a row or status |
-| `model` | the frontier model agents default to (default `gpt-5.5`) |
+| `model` | the frontier model agents default to (default `gpt-6.1-sol`) |
 | `jobDeadlineSeconds` | the bound on one job launch (default 3600) |
 
 Every Lake runs its agents; there is no switch ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)). The default images are listed in [the Lake README](README.md#default-images).
