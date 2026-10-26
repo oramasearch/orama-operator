@@ -241,10 +241,11 @@ spec:
             host: writer.orama.ing
             # The medium profile's 4Gi limit OOM-killed the writer during the cutover's first copy batch
             # (2026-10-26 02:38Z), and 12Gi did again with four copies at once (03:06Z): the writer computes
-            # every copied document's embeddings. The copy then runs one team at a time.
+            # every copied document's embeddings. The copy then runs one team at a time. A 2-CPU limit throttled
+            # multilingual E5 inference, which runs eight ONNX threads, so the limit is 6 CPUs.
             resources:
-              requests: {cpu: 500m, memory: 6Gi}
-              limits: {cpu: "2", memory: 16Gi}
+              requests: {cpu: "2", memory: 6Gi}
+              limits: {cpu: "6", memory: 16Gi}
             # Prod 1's writer root volume is 500 GiB (snapshot of vol-0b8dcc408f8ea762f, orama-bridge
             # production-changes.md; oramacore-aws terraform/live/prod/main.tf root_volume_size = 500)
             # with 343 GiB free on 2026-10-12 (techops-docs incident-2026-10-12-reader-stalls.md, "Host
