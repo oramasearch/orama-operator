@@ -542,29 +542,6 @@ spec:
   # The other active-cohort teams (decisions 25 October, 3), generated with the bridge's
   # docs/projects/orama-cloud-v1/cohort-copy/cohort_copy.py from read-only observations. Each team has its own
   # isolation receipt in orama-system/<entry>-eu-evidence. Added in batches; each starts at step plan.
-  - name: team-09f7d45c
-    member: v1-eu
-    secrets:
-    - name: v1-prod-prod1-db-ro
-      namespace: orama-system
-    - name: v1-prod-prod1-master-key
-      namespace: orama-system
-    - name: v1-prod-prod1-settings-ssm
-      namespace: orama-system
-    - name: team-09f7d45c-eu-evidence
-      namespace: orama-system
-    spec:
-      teamID: 09f7d45c-7136-40fe-8c14-d16f90e19fd4
-      projectIDs: [5bd9d15f-c87c-4b81-b497-a1a253f18e60]
-      runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
-      apply: true                           # writes v1-eu: the copy, in the window
-      attempt: 1                            # the copy again, in the window
-      removeOnDelete: true                  # recovery: removing the entry removes its copy (decisions 25 October, 14)
-      evidenceSecretRef: {name: team-09f7d45c-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:ae8647535d92a97c0c69f892b91998fdea1e514cb859fd764a3b0638a2f5c845  # dev-e1f419cc
-      pullSecretName: oramasearch-dockerhub
-      source: *prod1-source
   - name: team-0b68d4f8
     member: v1-eu
     secrets:
