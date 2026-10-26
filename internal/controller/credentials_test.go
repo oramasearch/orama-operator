@@ -142,14 +142,14 @@ func expandEnv(t *testing.T, env []corev1.EnvVar, secrets map[string]*corev1.Sec
 
 var hex48 = regexp.MustCompile(`^[0-9a-f]{48}$`)
 
-// The broker password literal is gone from the operator's source: only tests may name it.
-func TestNoBrokerPasswordLiteralOutsideTests(t *testing.T) {
+// The former password is recognized only by the upgrade; no consumer or seed carries it.
+func TestNoBrokerPasswordLiteralOutsideMigration(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
+		if strings.HasSuffix(f, "_test.go") || f == "legacy_credentials.go" {
 			continue
 		}
 		b, err := os.ReadFile(f)
@@ -157,7 +157,7 @@ func TestNoBrokerPasswordLiteralOutsideTests(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(b), "dev-rabbitmq-"+"password") {
-			t.Errorf("%s holds the old broker password literal", f)
+			t.Errorf("%s holds the old broker password literal outside the upgrade", f)
 		}
 	}
 }
