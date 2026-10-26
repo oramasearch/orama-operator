@@ -71,17 +71,19 @@ func TestThirdPartyKeysComeFromTheirOwnSecrets(t *testing.T) {
 			map[string][2]string{
 				"OPENAI_API_KEY": {"v1-llm-keys", "OPENAI_API_KEY"}, "GROQ_API_KEY": {"v1-llm-keys", "GROQ_API_KEY"},
 				"ANTHROPIC_API_KEY": {"v1-llm-keys", "ANTHROPIC_API_KEY"}, "SENTRY_DSN": {"v1-sentry", "dsn"},
+				"DISCO_SECRET": {"v1-disco-auth", "DISCO_SECRET"},
 			},
 			map[string]string{"OPENAI_API_KEY": "sk-openai-real", "GROQ_API_KEY": "groq-real",
 				"ANTHROPIC_API_KEY": "anthropic-real", "SENTRY_DSN": "https://key@sentry.example/1"},
-			[]string{"OPENAI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY", "SENTRY_DSN"},
-			[]string{"QSTASH_TOKEN", "DISCO_SECRET"}},
+			[]string{"OPENAI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY", "SENTRY_DSN", "DISCO_SECRET"},
+			[]string{"QSTASH_TOKEN"}},
 		{"index-builder", "v1-index-builder",
 			map[string][2]string{
 				"CLOUDFLARE_API_TOKEN": {"cloudflare-api-token", "token"}, "CLOUDFLARE_ACCOUNT_ID": {"cloudflare-api-token", "accountID"},
+				"DISCO_SECRET_KEY": {"v1-disco-auth", "DISCO_SECRET"},
 			},
 			map[string]string{"CLOUDFLARE_API_TOKEN": "cf-token-real", "CLOUDFLARE_ACCOUNT_ID": "cf-account-real"},
-			[]string{"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"},
+			[]string{"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "DISCO_SECRET_KEY"},
 			[]string{"ABLY_API_KEY", "APIFY_TOKEN"}},
 	} {
 		t.Run(tc.component, func(t *testing.T) {
