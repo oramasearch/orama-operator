@@ -1360,8 +1360,9 @@ spec:
       overrides:
         # The combined OramaCore engine from oramacore-private develop 12511370: caca2a59 (v1.2.39 with
         # oramacore#340, #341 and #343), the security fixes LSR-063, -064, -149 to -155, -234 and -235, and
-        # the replication fixes for orama-bridge#255 (oramacore-private#15, #16). On v1-dev since 19:42Z 2026-10-25.
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-12511370@sha256:c6f3fdc45626fe0d66f2ca82ad49ea93f8e0486b627e69fe7633ae6a7a683eef
+        # the replication fixes for orama-bridge#255 (oramacore-private#15, #16), and the CPU E5 embedding containment
+        # for orama-bridge#260 (oramacore-private#17, ed6db61c: 8 texts per inference call, no ONNX CPU memory arena).
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-ed6db61c@sha256:a1f0608ed4b8cb993e79c00779a2a3a45c66827669d88db1e52402368b1ff877
         # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
         hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
         # Services from each repository's dev tip with the security fixes, recorded in
