@@ -108,6 +108,9 @@ spec:
     dnsSecretRef:
       name: cloudflare-api-token
     image: oramasearch/lake:v0.7.1
+    # app-runtime v0.1.1 (2026-10-26): Streamlit apps load behind their public host (#17); identity only behind Lake auth (#14).
+    apps:
+      runtimeImage: oramasearch/app-runtime:v0.1.1
     # The agents' releases (2026-10-25), after dev and testing ran them.
     agents:
       runtimeImage: oramasearch/agent-runtime:v0.2.0
