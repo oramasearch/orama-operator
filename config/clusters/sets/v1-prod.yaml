@@ -1334,6 +1334,7 @@ spec:
       runID: eu-2
       step: seed                            # the seed dry run (apply: false)
       apply: true                           # writes v1-eu: the copy
+      removeOnDelete: true                  # recovery: removing the entry removes its copy (decisions 25 October, 14)
       evidenceSecretRef: {name: team-6a26bfbd-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:7fd3e6d29c5e332d91637ec8a2abf329afe9cf1eeef20b47e05661eb46782bc4  # dev-bd049eb1
       pullSecretName: oramasearch-dockerhub
