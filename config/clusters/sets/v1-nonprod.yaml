@@ -157,10 +157,10 @@ spec:
         # orama-cloud-v1-bridge#23. Sentry shares the Orama project with environment v1-dev
         # and dashboard@79abacb32d8461c06531ba7a906ab559890a907b (dashboard#194).
         dashboard: oramasearch/dashboard:v1-dev-79abacb3-sentry@sha256:1fdf0fd4a1a9d50b8a4808d7992612d4bcdbde3f41e7e8de4ff730a4f65d9d70
-        # Combined OramaCore engine from oramacore-private develop ed6db61c, preserving the
-        # existing security and replication fixes (#15, #16). CPU E5 inference uses batches
-        # of eight chunks with its memory arena disabled (oramacore-private#17; orama-bridge#260).
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-ed6db61c@sha256:a1f0608ed4b8cb993e79c00779a2a3a45c66827669d88db1e52402368b1ff877
+        # Combined engine from oramacore-private develop a06e0efe (#18): CPU BGE batches
+        # of 32, E5 batches of eight, CPU arena disabled, stable input ordering restored.
+        # The operator's existing eight embedding threads now reach ONNX Runtime.
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-a06e0efe@sha256:a8752261d7c608394059e06d4cd001862bf2ab5c804535d726258f12d6aa8a4e
         # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
         hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
         # Services from each repository's dev tip with the security fixes, recorded in
