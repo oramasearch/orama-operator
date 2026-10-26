@@ -888,28 +888,6 @@ spec:
       image: docker.io/oramasearch/cloud-v1-migration@sha256:a121fdf1d494177e59636ade4c48087e4070a1a1902428c5eaeab7bdd5ea41c0  # dev-a6a6ad0f
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
-  - name: team-abc9560a
-    member: v1-eu
-    secrets:
-    - name: v1-prod-prod1-db-ro
-      namespace: orama-system
-    - name: v1-prod-prod1-master-key
-      namespace: orama-system
-    - name: v1-prod-prod1-settings-ssm
-      namespace: orama-system
-    - name: team-abc9560a-eu-evidence
-      namespace: orama-system
-    spec:
-      teamID: abc9560a-900f-4508-97e4-59df73d89cbf
-      projectIDs: [11e6cb04-316a-425d-b3cc-19aa02f42a3b]
-      runID: eu-1
-      step: seed                            # the seed dry run (apply: false)
-      apply: true                           # writes v1-eu: the copy, in the window
-      removeOnDelete: true                  # recovery: removing the entry removes its copy (decisions 25 October, 14)
-      evidenceSecretRef: {name: team-abc9560a-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:d2264d30c5f2a036fe6d99f48ab388fb9e65eb5326d32d238931d841aaa2dc60  # dev-8695ffbf
-      pullSecretName: oramasearch-dockerhub
-      source: *prod1-source
   - name: team-aee7dc1a
     member: v1-eu
     secrets:
