@@ -114,6 +114,12 @@ type LakeAppSync struct {
 	WorkspaceNamespace string `json:"workspaceNamespace"`
 	// +kubebuilder:validation:Minimum=1
 	Generation int64 `json:"generation"`
+	// RestartGeneration is the generation Lake's restart_app last wrote (lake#1228), 0 when the app
+	// was never restarted. It is written on the pod template, so each restart replaces the pods
+	// even when nothing else about the app changed.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	RestartGeneration int64 `json:"restartGeneration,omitempty"`
 	// TokenHashes gates rollout until the sync has registered these hashes in Postgres.
 	// +optional
 	TokenHashes *LakeAppTokenHashes `json:"tokenHashes,omitempty"`
