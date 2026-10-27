@@ -1329,6 +1329,7 @@ spec:
       runID: eu-2
       step: seed                            # the seed dry run (apply: false)
       apply: true                           # writes v1-eu: the copy
+      attempt: 1                            # the copy again
       evidenceSecretRef: {name: team-7c243b24-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:64044018dab68e80a3f10a048d2139b088599813ea2617c307f98189ecc0e848  # dev-dcccdd4d
       pullSecretName: oramasearch-dockerhub
