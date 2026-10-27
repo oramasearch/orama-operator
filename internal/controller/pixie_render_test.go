@@ -323,6 +323,16 @@ func TestRenderPixieCloud(t *testing.T) {
 			t.Errorf("the hub still fetches %s", value)
 		}
 	}
+	scriptmgr := byKey[pixieObjectKey{"Deployment", "scriptmgr-server"}].(*appsv1.Deployment)
+	for _, env := range containerNamed(&scriptmgr.Spec.Template.Spec, "scriptmgr-server").Env {
+		// Google's storage client prepends http:// itself; a scheme here breaks every read.
+		if env.Name == "STORAGE_EMULATOR_HOST" && env.Value != "pixie-scripts.plc.svc:8080" {
+			t.Errorf("STORAGE_EMULATOR_HOST is %q, want host:port of the bundle server", env.Value)
+		}
+	}
+	if scriptmgr.Spec.Template.Annotations["orama.cloud/pixie-script-bundle"] != string(cloud.Spec.Release.Images["script-bundle"]) {
+		t.Error("a new script bundle does not roll the script manager, which reads it only at start")
+	}
 	nginx := byKey[pixieObjectKey{"ConfigMap", pixieProxyNginxConfig}].(*corev1.ConfigMap)
 	if !strings.Contains(nginx.Data["pixie_api.conf"], "location /pxl_scripts/") {
 		t.Error("the proxy does not serve the script bundle")

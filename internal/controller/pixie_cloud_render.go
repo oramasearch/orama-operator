@@ -291,10 +291,14 @@ func transformPixieCloudObject(object client.Object, input pixieCloudRender) err
 		setEnv(app, "PL_OPERATOR_VERSION", cloud.Spec.Release.VizierVersion)
 		dropVolume(spec, "artifact-access-sa")
 	case "scriptmgr-server":
-		// The script manager reads its bundle through Google's storage client, which honours
-		// STORAGE_EMULATOR_HOST: it is pointed at the bundle server in this namespace.
+		// The script manager reads its bundle through Google's storage client (v1.10.0), which
+		// sends object reads to http://$STORAGE_EMULATOR_HOST/<bucket>/<object> (host:port, no
+		// scheme): the bundle server in this namespace. Its once-a-minute refresh asks Google's
+		// metadata API, which an air-gapped hub cannot reach, so the bundle is read at start and the
+		// pod rolls when the bundle image changes.
 		app := containerNamed(spec, "scriptmgr-server")
-		setEnv(app, "STORAGE_EMULATOR_HOST", fmt.Sprintf("http://%s.%s.svc:%d", pixieScriptsService, oramav1alpha1.PixieCloudNamespace, pixieScriptsPort))
+		setEnv(app, "STORAGE_EMULATOR_HOST", fmt.Sprintf("%s.%s.svc:%d", pixieScriptsService, oramav1alpha1.PixieCloudNamespace, pixieScriptsPort))
+		podTemplateAnnotations(object)["orama.cloud/pixie-script-bundle"] = string(cloud.Spec.Release.Images["script-bundle"])
 	}
 	pruneUnmountedVolumes(spec)
 	return nil

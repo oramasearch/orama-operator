@@ -140,7 +140,9 @@ func prunePixieObjects(ctx context.Context, c client.Client, namespace, managed 
 
 // pixieWorkloadStatus reads the readiness of each workload a render holds, one entry per
 // component, sorted by name.
-func pixieWorkloadStatus(ctx context.Context, c client.Reader, namespace string, objects []client.Object) ([]oramav1alpha1.ObservabilityComponentStatus, error) {
+// pods reads a component's pods, uncached and only for a component that is not ready, to say
+// what blocks it.
+func pixieWorkloadStatus(ctx context.Context, c client.Reader, pods client.Reader, namespace string, objects []client.Object) ([]oramav1alpha1.ObservabilityComponentStatus, error) {
 	var components []oramav1alpha1.ObservabilityComponentStatus
 	for _, object := range objects {
 		var ready bool
@@ -169,6 +171,13 @@ func pixieWorkloadStatus(ctx context.Context, c client.Reader, namespace string,
 			ready, message = daemonSetReady(found, &live)
 		default:
 			continue
+		}
+		if !ready && pods != nil {
+			blocked, err := podImageProblem(ctx, pods, namespace, object.GetName())
+			if err != nil {
+				return nil, err
+			}
+			message = firstNonEmpty(blocked, message)
 		}
 		components = append(components, oramav1alpha1.ObservabilityComponentStatus{Name: object.GetName(), Ready: ready, Message: message})
 	}
@@ -225,6 +234,32 @@ func daemonSetReady(found bool, d *appsv1.DaemonSet) (bool, string) {
 		return false, "not running on every node"
 	}
 	return true, ""
+}
+
+// podImageProblem names an image a component's pods cannot pull, or "". ErrImagePull and
+// ImagePullBackOff alternate while a pull is retried; both say the same thing here, so the status
+// does not flap. The likeliest cause is a mirror or build that does not exist yet.
+func podImageProblem(ctx context.Context, reader client.Reader, namespace, component string) (string, error) {
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{pixieComponentLabel: component}); err != nil {
+		return "", err
+	}
+	var images []string
+	for _, pod := range pods.Items {
+		for _, status := range append(append([]corev1.ContainerStatus{}, pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...) {
+			if waiting := status.State.Waiting; waiting != nil {
+				switch waiting.Reason {
+				case "ErrImagePull", "ImagePullBackOff", "InvalidImageName":
+					images = append(images, status.Image)
+				}
+			}
+		}
+	}
+	if len(images) == 0 {
+		return "", nil
+	}
+	sort.Strings(images)
+	return "cannot pull image " + images[0] + ": it is not in the registry or the pull Secret cannot read it (hack/observability-images.yaml)", nil
 }
 
 // summarizeComponents is the phase and "n/total" of a component list, and why it is not Ready.

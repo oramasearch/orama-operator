@@ -144,7 +144,7 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 	if err := applyPixieObjects(ctx, r.Client, r.Scheme, vz, pixieManagedVizier, objects); err != nil {
 		return oramav1alpha1.PixieVizierStatus{}, nil, err
 	}
-	components, err := pixieWorkloadStatus(ctx, r.Client, vz.Namespace, objects)
+	components, err := pixieWorkloadStatus(ctx, r.Client, r.reader(), vz.Namespace, objects)
 	if err != nil {
 		return oramav1alpha1.PixieVizierStatus{}, nil, err
 	}

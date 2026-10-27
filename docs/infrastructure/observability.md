@@ -163,7 +163,7 @@ from `pl-cloud-config`). `PL_DISABLE_AUTO_UPDATE` is `true`.
 | The plugin loader Job | Apache-2.0 | Not run: it downloads plugin definitions from GitHub (`pixie-io/pixie-plugin`) at run time. Export plugins (the ClickHouse retention path) wait for a mirrored plugin artifact from #455. |
 | Sentry, Segment, LaunchDarkly, announcements, contact, support access | outside services | Off; the keys exist, empty. |
 | The artifact tracker's public manifest and Google Cloud Storage | outside services | Versions pinned to the release (`vizierVersion`, `cliVersion`), so it never polls; no credentials mounted. |
-| PxL scripts from `artifacts.px.dev` and a GCS bucket | outside services | Served inside the cluster by `pixie-scripts` (image `script-bundle`): to the UI through the proxy at `/pxl_scripts/`, and to the script manager as a storage emulator (`STORAGE_EMULATOR_HOST`). |
+| PxL scripts from `artifacts.px.dev` and a GCS bucket | outside services | Served inside the cluster by `pixie-scripts` (image `script-bundle`): to the UI through the proxy at `/pxl_scripts/`, and to the script manager through Google's storage client, whose v1.10.0 sends object reads to `http://$STORAGE_EMULATOR_HOST/<bucket>/<object>`. Its once-a-minute refresh asks Google's metadata API, which the sandbox blocks (an error logged each minute), so the script manager reads the bundle at start and rolls when the bundle image changes. The API server's own copy needs `hack/pixie-patches/0001`. |
 | Auth0, Google sign-in | outside services | Not configured. Sign-in is Ory (Kratos, password), with the administrator the operator creates. Clerk as Kratos' OIDC provider is a later step and needs the internet, so the on-prem default stays Ory. |
 
 ### The bootstrap
@@ -188,6 +188,10 @@ What a person would do after installing Pixie Cloud, done by the hub cluster's o
    every key; nothing writes Pixie's key tables.
 
 ### OpenSearch in place of Elasticsearch, checked against the sources
+
+This is a reading of the pinned sources, not a run: it shows nothing in Pixie's use is known to be
+missing from OpenSearch 2.19, and it does not prove the indexer and autocomplete work end to end.
+That is step 4 of the rollout.
 
 | Question | Evidence (pinned versions) |
 |---|---|
@@ -227,7 +231,7 @@ exactly these keys, or the provider is not Ready:
 | `nats`, `curl`, `postgres` | mirrors of the images Pixie's manifests name (`ghcr.io/pixie-io/...`); `postgres` is a CloudNativePG operand image |
 | `envoy`, `hydra`, `hydra-cli`, `kratos` | mirrors of `envoyproxy/envoy`, `oryd/hydra` (`-sqlite` and `-alpine`), `oryd/kratos` at the versions the manifests pin |
 | `opensearch` | a mirror of `opensearchproject/opensearch` 2.19 |
-| `script-bundle` | new in #455: a static, non-root image serving PxL's `bundle.json` built from the same commit on port 8080 at `/pixie-scripts/bundle.json`, and its storage metadata at `/storage/v1/b/pixie-scripts/o/bundle.json` |
+| `script-bundle` | new in #455: `hack/pixie-script-bundle` (nginx, non-root) serving `bundle-oss.json`, built with `px create-bundle` at the same commit, on port 8080 at `/pixie-scripts/bundle.json` |
 
 Pixie's operator image and OLM are not needed.
 
@@ -350,35 +354,43 @@ Versions change only with a release; nothing updates itself.
 
 ## Rolling it out
 
-Nothing here creates infrastructure or changes a live cluster by itself. In order, each with Steve's
-consent where the cluster rules ask for it:
+Nothing here creates infrastructure or changes a live cluster by itself. Each step needs what the
+one before it published, and a missing piece is a status that says so, never a fallback. With
+Steve's consent where the cluster rules ask for it:
 
-1. **Images (#455).** Build every key above from `4b445e0b7907` into private `oramasearch/pixie-*`
-   repositories and record the digests. Until then no provider is Ready and nothing Pixie runs
-   anywhere; steps 2, 3 and the hubs' and agents' resources can go first, and give every cluster
-   its alert routing (paging for `v1-eu` and `v1-us`) before Pixie exists.
-2. **Operator.** Roll the release that carries these kinds onto every cluster
-   ([`operations.md`](operations.md)). Its CRDs go on as usual
-   ([`crd-rollout.md`](../operations/crd-rollout.md)). Nothing changes on a Cloud v1 stack yet:
-   its monitoring waits for the monitoring CRDs of step 3. This must come before step 3: the
-   `ClusterHelmRelease` CRD it carries adds `imagePullSecretRef`, which an older CRD would prune
-   from the platform files.
-3. **Platform layer.** Mirror every `platform` image of the inventory into its private
-   repository (nothing installs until they exist). Then apply the new `ClusterHelmRelease`s in each
-   `config/clusters/*/platform.yaml` (kube-prometheus-stack, then Perses); on the managing cluster,
-   create the `monitoring` pull Secret ([`install.md`](../install.md)) and `helmfile apply` the
-   merged file, with consent. kube-prometheus-stack adds the monitoring CRDs and Prometheus' 50 Gi
-   and Alertmanager's 2 Gi volumes per cluster. Each Cloud v1 stack then gets its PodMonitors,
-   rules, dashboards and two scrape allowances in its sandbox (additive: no pod restarts).
+1. **Publish the artifacts and the credentials they need.**
+   - Pixie (#455): every release key from `4b445e0b7907` plus `hack/pixie-patches`, and the
+     `script-bundle` image (`hack/pixie-patches/README.md`, "Building"), each digest recorded.
+     Missing: the `ObservabilityProvider` is not Ready and names what is missing; no Pixie pod is
+     created.
+   - The platform mirrors: every `platform` image of `hack/observability-images.yaml`. Missing:
+     the chart's pods cannot pull, and the `ClusterHelmRelease` reports each workload that is not
+     rolled out with its pods' pull error.
+   - The pull Secrets: the existing per-cluster registry Secrets on the managing cluster, and on the
+     managing cluster itself one in `monitoring` ([`install.md`](../install.md)). Missing: the
+     release is `Degraded` (`PullSecretUnavailable`).
+2. **CRDs, then the operator.** Roll the release that carries these kinds onto every cluster,
+   CRDs widened then exact ([`crd-rollout.md`](../operations/crd-rollout.md)). Everything is
+   additive: new kinds, new optional `ClusterHelmRelease` fields, a `PixieVizier` field made
+   optional. Nothing changes on a Cloud v1 stack yet: its monitoring waits for step 3's CRDs. This
+   precedes step 3 because an older `ClusterHelmRelease` CRD would prune `imagePullSecretRef` from
+   the platform files.
+3. **The platform charts.** Apply the new `ClusterHelmRelease`s in each
+   `config/clusters/*/platform.yaml` (kube-prometheus-stack, then Perses), and on the managing
+   cluster `helmfile apply` the merged file, with consent. kube-prometheus-stack adds the
+   monitoring CRDs and Prometheus' 50 Gi and Alertmanager's 2 Gi volumes per cluster. Each Cloud v1
+   stack then gets its PodMonitors, rules, dashboards and two scrape allowances in its sandbox
+   (additive: no pod restarts).
 4. **Nonprod first** (#456's order): an `ObservabilityProvider`, an `ObservabilityHub` on
-   `orama-nonprod-cluster-01` and an `ObservabilityAgent` for it; prove the node images (Ubuntu
-   22.04/24.04, Azure Linux 3), the protocols (HTTP, gRPC, Postgres, Redis, Kafka, AMQP) and that
-   nothing calls out. Samples: [`config/samples/observability.yaml`](../../config/samples/observability.yaml).
+   `orama-nonprod-cluster-01` and an `ObservabilityAgent` for it
+   ([`config/samples/observability.yaml`](../../config/samples/observability.yaml)). The agent's alert
+   routing is written at once; the rest follows the artifacts. Qualify here what is listed under
+   *Not yet qualified* below.
 5. **prod-support.** Create the `KubernetesCluster` (`purpose: prod-support`; region and size are
    Steve's), its platform layer and operator, then its hub.
 6. **Production agents** on `orama-production-cluster-02` and `-03`, each with its own pull Secret,
-   reporting to the prod-support hub over their peer links. Committed under `config/clusters/` like
-   every applied resource.
+   reporting to the prod-support hub over their peer links, committed under `config/clusters/` like
+   every applied resource. `config/clusters/sets/v1-prod.yaml` is not part of this.
 
 Rollback: delete the agents, then the hub (each withdraws what it placed); remove the platform
 releases from both installation paths in one change; the CRDs stay, as always.
@@ -401,7 +413,10 @@ Native tests (`go test ./internal/controller -run 'Pixie|Observability|OramaClou
 - `TestObservabilityCRDsRefuseMalformedResources` (envtest).
 - `TestEveryClusterRunsPermissiveMetricsAlertingAndDashboards`, `TestHelmfileAndEveryLeafInstallTheSamePlatform`.
 
-**Not yet qualified on a cluster**, because the images do not exist yet (#455): Pixie on the AKS node
-images, the bootstrap against a live Pixie Cloud (the Kratos admin API and the SQL against Pixie's
-migrated schema), OpenSearch with Pixie's indexer, the script bundle image, the kube-state-metrics
-custom-resource metrics and the PodMonitors against live targets. Each is step 4 of the rollout.
+**Not yet qualified on a cluster**, because the images and mirrors do not exist yet (#455): Pixie
+on the AKS node images (Ubuntu 22.04/24.04, Azure Linux 3) and the protocols traced; the bootstrap
+against a live Pixie Cloud (Kratos' admin API, the adapter against the migrated profile database,
+the GraphQL key calls with the operator's token); OpenSearch 2.19 with Pixie's indexer and
+autocomplete at run time; the script bundle through the proxy and the script manager; the
+kube-state-metrics custom-resource metrics; the PodMonitors and alerts against live targets; and the
+platform charts installing from the mirrors. Each is step 4 of the rollout.

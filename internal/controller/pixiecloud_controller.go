@@ -169,7 +169,7 @@ func (r *PixieCloudReconciler) reconcile(ctx context.Context, cloud *oramav1alph
 
 	workloads := append(append([]client.Object{}, search...), scripts...)
 	workloads = append(workloads, vendored...)
-	components, err := pixieWorkloadStatus(ctx, r.Client, cloud.Namespace, workloads)
+	components, err := pixieWorkloadStatus(ctx, r.Client, r.reader(), cloud.Namespace, workloads)
 	if err != nil {
 		return oramav1alpha1.PixieCloudStatus{}, nil, err
 	}

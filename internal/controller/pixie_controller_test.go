@@ -515,3 +515,33 @@ func TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys(t *testing.T) {
 		t.Error("revoking prod3 touched prod2's key")
 	}
 }
+
+// A component whose image is not in the registry yet (a mirror or #455 build missing) says so,
+// instead of "rolling out" for ever.
+func TestPixieVizierNamesAnImageItCannotPull(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPixieScheme(t)
+	vz := testPixieVizier()
+	vz.Name = pixieConcreteName
+	image := string(vz.Spec.Release.Images["vizier-kelvin"])
+	stuck := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "kelvin-0", Namespace: "pl", Labels: map[string]string{pixieComponentLabel: "kelvin"}},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "app", Image: image,
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}}}}},
+	}
+	kube := newPixieTestClient(t, scheme, interceptor.Funcs{}, append(vizierSecrets(), vz, stuck)...)
+	reconcileTwice(t, &PixieVizierReconciler{Client: kube, Scheme: scheme}, "pl", pixieConcreteName)
+	var got oramav1alpha1.PixieVizier
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(vz), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, component := range got.Status.Components {
+		if component.Name == "kelvin" {
+			if !strings.Contains(component.Message, "cannot pull image "+image) {
+				t.Fatalf("kelvin says %q", component.Message)
+			}
+			return
+		}
+	}
+	t.Fatal("no kelvin component")
+}

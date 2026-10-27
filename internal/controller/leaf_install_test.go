@@ -322,6 +322,10 @@ func TestClusterHelmReleaseInstallsAndReportsItsWorkloads(t *testing.T) {
 	if req.Release != "cnpg" || req.Namespace != "nonprod-cnpg-system" || req.Chart.Version != "0.29.0" || req.Chart.Name != "cloudnative-pg" || req.Values["replicaCount"] != float64(1) {
 		t.Fatalf("request: %+v", req)
 	}
+	// A release without imagePullSecretRef installs exactly as before: no Secret is written.
+	if req.PullSecret != nil {
+		t.Fatalf("a release without imagePullSecretRef carried a pull Secret: %+v", req.PullSecret)
+	}
 	rel := getRelease(t, c, "nonprod-cnpg")
 	if rel.Status.Phase != operatorPhaseInstalling || !strings.Contains(rel.Status.Message, "0 of 1 ready (pod x Unschedulable") || rel.Status.AppVersion != "1.30.0" {
 		t.Fatalf("status: %+v", rel.Status)

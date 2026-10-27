@@ -75,7 +75,7 @@ pixie:
   - {key: cloud-scriptmgr, build: "//k8s/cloud:cloud_images_push (scriptmgr_server)", licence: Apache-2.0}
   - {key: cloud-vzconn, build: "//k8s/cloud:cloud_images_push (vzconn_server)", licence: Apache-2.0}
   - {key: cloud-vzmgr, build: "//k8s/cloud:cloud_images_push (vzmgr_server)", licence: Apache-2.0}
-  - {key: script-bundle, build: "new in #455: a static non-root server of src/pxl_scripts' bundle.json on :8080 (docs/infrastructure/observability.md)", licence: Apache-2.0}
+  - {key: script-bundle, build: "new in #455: hack/pixie-script-bundle (nginx-unprivileged base, BSD-2-Clause, mirrored for the build) serving px create-bundle's bundle-oss.json on :8080", licence: Apache-2.0 (scripts) and BSD-2-Clause (nginx)}
   - {key: nats, upstream: "ghcr.io/pixie-io/nats:2.9.25-scratch-pl1@sha256:ac7228464fbc7154e91c9a00cba85b5da1df9a3ded6c784cdd6009cece85a1e3", licence: Apache-2.0}
   - {key: curl, upstream: "ghcr.io/pixie-io/pixie-oss-pixie-dev-public-curl:8.15.0@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922", licence: MIT (curl)}
   - {key: envoy, upstream: "envoyproxy/envoy:v1.34.2@sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9", licence: Apache-2.0}

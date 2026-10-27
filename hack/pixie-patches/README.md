@@ -11,3 +11,26 @@ applies with `git apply` at that commit (checked with `git apply --check`).
 
 The image renaming (`pixie-*`) and the build itself are #455's steps; these patches are only the
 behaviour.
+
+## Building (#455)
+
+The release the `ObservabilityProvider` names is built from one commit, the one the operator vendors:
+
+```sh
+git -C oramasearch/pixie checkout -b orama 4b445e0b7907c79d034bcb4a227bbaede94d370a
+git -C oramasearch/pixie am --3way <this repository>/hack/pixie-patches/*.patch   # or git apply + commit
+# Vizier and Cloud images (amd64), named pixie-* per #455's step 1:
+bazel run //k8s/vizier:vizier_images_push --//k8s:image_repository=docker.io/oramasearch --//k8s:image_version=<version>
+bazel run //k8s/cloud:cloud_images_push   --//k8s:image_repository=docker.io/oramasearch --//k8s:image_version=<version>
+# The script bundle, with the px CLI of the same commit:
+bazel build //src/pixie_cli:px
+make -C src/pxl_scripts bundle-oss.json EXECUTABLES=$(bazel cquery --output=files //src/pixie_cli:px)
+cp src/pxl_scripts/bundle-oss.json <this repository>/hack/pixie-script-bundle/
+docker build --build-arg NGINX_IMAGE=docker.io/oramasearch/platform-nginx-unprivileged@sha256:<digest> \
+  -t docker.io/oramasearch/pixie-script-bundle:<version> <this repository>/hack/pixie-script-bundle
+```
+
+Then mirror the dependency images of `hack/observability-images.yaml` (`nats`, `curl`, `envoy`,
+`hydra`, `hydra-cli`, `kratos`, `postgres`, `opensearch`), record every digest, and write them into
+the `ObservabilityProvider`. `hack/fetch-pixie-manifests.sh` refuses a commit to which these patches
+no longer apply.

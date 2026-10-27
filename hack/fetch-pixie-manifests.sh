@@ -59,6 +59,10 @@ awk '/^const IndexMapping = `/{f=1;next} f&&/^`/{exit} f' \
 # against (TestPixieBootstrapMatchesVendoredSchema).
 rm -rf "${OUT_DIR}/profile-schema" && mkdir -p "${OUT_DIR}/profile-schema"
 cp "${PIXIE_SOURCE}"/src/cloud/profile/schema/*.up.sql "${OUT_DIR}/profile-schema/"
+# The source patches #455 builds with must still apply to this commit (hack/pixie-patches).
+for patch in "${ROOT}"/hack/pixie-patches/*.patch; do
+  git -C "${PIXIE_SOURCE}" apply --check "${patch}" || { echo "error: ${patch} does not apply to ${PIXIE_COMMIT}" >&2; exit 1; }
+done
 cp "${PIXIE_SOURCE}/LICENSE" "${OUT_DIR}/LICENSE"
 echo "${PIXIE_COMMIT}" >"${OUT_DIR}/COMMIT"
 echo ">> vendored Pixie ${PIXIE_COMMIT} into ${OUT_DIR}"
