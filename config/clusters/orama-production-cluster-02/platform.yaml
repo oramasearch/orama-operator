@@ -163,6 +163,7 @@ spec:
   releaseName: valkey-operator
 ---
 # Observability (operator#15): the same release and values as helmfile.yaml, which has the reasons.
+# Its images come from Orama's private mirrors, pulled with this cluster's own Secret.
 apiVersion: orama.cloud/v1alpha1
 kind: ClusterHelmRelease
 metadata:
@@ -177,7 +178,19 @@ spec:
   releaseName: kube-prometheus-stack
   dependsOn:
   - prod2-cert-manager
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system
+  imagePullSecretAs: oramasearch-dockerhub
   values:
+    # Air-gapped (#15, #456): every image comes from Orama's private mirror of the upstream release,
+    # oramasearch/platform-<name> at the upstream tag (docs/infrastructure/observability.md, "Images";
+    # hack/observability-images.yaml lists each). A mirror that does not exist yet fails the pull: there
+    # is no fallback to a public registry. The pull Secret is the cluster's own, copied into this
+    # namespace (ClusterHelmRelease imagePullSecretRef; on the managing cluster, docs/install.md).
+    global:
+      imagePullSecrets:
+        - name: oramasearch-dockerhub
     # Grafana is AGPL-3.0 and never shipped (#15): the chart installs it as a subchart by default.
     grafana:
       enabled: false
@@ -199,6 +212,20 @@ spec:
         kubeSchedulerAlerting: false
         kubeSchedulerRecording: false
     prometheusOperator:
+      image:
+        registry: docker.io
+        repository: oramasearch/platform-prometheus-operator
+        tag: v0.94.1
+      prometheusConfigReloader:
+        image:
+          registry: docker.io
+          repository: oramasearch/platform-prometheus-config-reloader
+          tag: v0.94.1
+      # Not run (no Thanos sidecar); named so the operator's default points at the mirror too.
+      thanosImage:
+        registry: docker.io
+        repository: oramasearch/platform-thanos
+        tag: v0.42.4
       # cert-manager is on every cluster; no certificate Jobs.
       admissionWebhooks:
         certManager:
@@ -212,6 +239,10 @@ spec:
           memory: 256Mi
     prometheus:
       prometheusSpec:
+        image:
+          registry: docker.io
+          repository: oramasearch/platform-prometheus
+          tag: v3.15.0-distroless
         # Durable on the cluster: 15 days or 45 GB on a 50 Gi volume, whichever is reached first.
         # Prometheus 3 sets its Go memory limit from the container's (auto-gomemlimit).
         retention: 15d
@@ -238,6 +269,10 @@ spec:
                   storage: 50Gi
     alertmanager:
       alertmanagerSpec:
+        image:
+          registry: docker.io
+          repository: oramasearch/platform-alertmanager
+          tag: v0.34.1
         # Each cluster's receivers come from its hub, through one AlertmanagerConfig the operator
         # writes (orama.cloud/alerting), which applies to every namespace's alerts.
         alertmanagerConfigSelector:
@@ -260,6 +295,10 @@ spec:
                 requests:
                   storage: 2Gi
     kube-state-metrics:
+      image:
+        registry: docker.io
+        repository: oramasearch/platform-kube-state-metrics
+        tag: v2.20.0
       resources:
         requests:
           cpu: 20m
@@ -355,6 +394,11 @@ spec:
                         path: [status, phase]
                         list: [Pending, Ready, Failed, Deleted]
     prometheus-node-exporter:
+      image:
+        registry: docker.io
+        repository: oramasearch/platform-node-exporter
+        tag: v1.12.1
+        distroless: true
       resources:
         requests:
           cpu: 20m
@@ -377,7 +421,18 @@ spec:
   releaseName: perses
   dependsOn:
   - prod2-kube-prometheus-stack
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system
+  imagePullSecretAs: oramasearch-dockerhub
   values:
+    # Air-gapped: images from Orama's private mirror, as kube-prometheus-stack's (helmfile.yaml).
+    image:
+      registry: docker.io
+      name: oramasearch/platform-perses
+      version: v0.54.0
+    imagePullSecrets:
+      - name: oramasearch-dockerhub
     # Dashboards come from ConfigMaps labelled perses.dev/resource=true, which the operator writes next
     # to what they show; nothing is edited by hand, so the server is read-only and keeps no volume.
     config:
@@ -385,6 +440,10 @@ spec:
         readonly: true
     sidecar:
       enabled: true
+      image:
+        registry: docker.io
+        repository: oramasearch/platform-k8s-sidecar
+        tag: 2.13.3
       allNamespaces: true
       resources:
         requests:
@@ -401,4 +460,7 @@ spec:
         cpu: 500m
         memory: 256Mi
     persistence:
+      enabled: false
+    # The chart's helm test pod pulls a public image; it is never installed or run.
+    testFramework:
       enabled: false

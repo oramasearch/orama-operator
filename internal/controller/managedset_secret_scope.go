@@ -246,6 +246,26 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of production cluster " + operator.Spec.ClusterRef + " (OramaOperator " + operator.Name + ")"
 		}
 	}
+	// A platform chart's pull Secret on a production-tier cluster (operator#15).
+	var releases oramav1alpha1.ClusterHelmReleaseList
+	if err := r.List(ctx, &releases); err != nil {
+		return nil, fmt.Errorf("list ClusterHelmReleases to find production Secrets: %w", err)
+	}
+	sort.Slice(releases.Items, func(i, j int) bool { return releases.Items[i].Name < releases.Items[j].Name })
+	for index := range releases.Items {
+		release := &releases.Items[index]
+		ref := release.Spec.ImagePullSecretRef
+		if ref == nil {
+			continue
+		}
+		production, err := isProduction(&oramav1alpha1.ManagedSetSpec{Clusters: []oramav1alpha1.SetMember{{ClusterRef: release.Spec.ClusterRef}}}, "")
+		if err != nil {
+			return nil, err
+		}
+		if _, found := sources[ref.Namespace+"/"+ref.Name]; production && !found {
+			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of ClusterHelmRelease " + release.Name + " on production-tier cluster " + release.Spec.ClusterRef
+		}
+	}
 	// Observability (operator#15): a production-tier agent's or hub's pull Secret, and the alert
 	// receivers of a hub serving production, are production credentials.
 	var hubs oramav1alpha1.ObservabilityHubList

@@ -2013,6 +2013,7 @@ How it fits: [`infrastructure/README.md`](infrastructure/README.md#installing-it
 | `spec.dependsOn[]` | Other `ClusterHelmRelease` names, on the same cluster, that must be `Ready` first. A release others depend on is not uninstalled until they are deleted. |
 | `spec.requiredCRDs[]` | CRDs that must exist on the cluster before this chart is installed or upgraded. |
 | `spec.crdURLs[]` | `https://` URLs of manifests holding CRDs the chart ships apart from itself. Applied server-side before the chart on every install and upgrade; a manifest holding anything but CustomResourceDefinitions is refused. |
+| `spec.imagePullSecretRef` / `.imagePullSecretAs` | Registry credentials on the managing cluster, copied into the release's namespace (under `imagePullSecretAs`, default its own name) before every install and upgrade, for a chart whose images come from a private registry; the chart's values name the copy. A Secret production uses is never copied to a cluster that is not production (`Degraded`, `ProductionCredential`), and a production-tier cluster's release pull Secret counts as production. |
 | `status.phase` | `Pending` (waiting for the cluster, a dependency or a CRD), `Installing`, `Ready`, `Degraded` or `Deleting`. |
 | `status.chartVersion`, `.appVersion`, `.revision`, `.releaseStatus` | The release on the cluster, in Helm's words. |
 | `status.workloads`, `.readyWorkloads` | The release's Deployments, StatefulSets and DaemonSets, and how many are rolled out. |

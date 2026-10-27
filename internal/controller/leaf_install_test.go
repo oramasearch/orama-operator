@@ -531,3 +531,38 @@ func TestHelmWaitsLongEnoughForAChartsHooks(t *testing.T) {
 		t.Fatal("the hook timeout is the API timeout again")
 	}
 }
+
+// A release whose images come from a private registry gets its cluster's pull Secret in its
+// namespace (operator#15); a production Secret never reaches a cluster that is not production.
+func TestClusterHelmReleaseCopiesItsPullSecretUnderTheProductionRule(t *testing.T) {
+	leaf := &fakeLeaf{releaseState: helmReleaseState{Status: "deployed"}}
+	rel := testRelease("nonprod-kube-prometheus-stack")
+	rel.Spec.ImagePullSecretRef = &oramav1alpha1.ClusterSecretReference{Name: "oramasearch-dockerhub", Namespace: "orama-system"}
+	rel.Spec.ImagePullSecretAs = "platform-pull"
+	c := leafTestClient(t, append(readyLeaf(), rel, dockerHubSecret())...)
+	r := &ClusterHelmReleaseReconciler{Client: c, Scheme: clusterTestScheme(t), Installer: leaf}
+	if _, err := reconcileRelease(t, r, rel.Name); err != nil {
+		t.Fatal(err)
+	}
+	if len(leaf.releaseRequests) != 1 || leaf.releaseRequests[0].PullSecret == nil || leaf.releaseRequests[0].PullSecret.Name != "platform-pull" ||
+		string(leaf.releaseRequests[0].PullSecret.Data[corev1.DockerConfigJsonKey]) == "" {
+		t.Fatalf("the pull Secret was not passed with the release: %+v", leaf.releaseRequests)
+	}
+
+	// The same Secret labelled for production is refused for this nonprod-or-untagged cluster.
+	production := dockerHubSecret()
+	production.Labels = map[string]string{secretPurposeLabel: productionPurpose}
+	if err := c.Update(context.Background(), production); err != nil {
+		t.Fatal(err)
+	}
+	leaf.releaseRequests = nil
+	if _, err := reconcileRelease(t, r, rel.Name); err != nil {
+		t.Fatal(err)
+	}
+	if len(leaf.releaseRequests) != 0 {
+		t.Fatal("a release was installed with a production pull Secret on a cluster that is not production")
+	}
+	if got := getRelease(t, c, rel.Name); got.Status.Phase != clusterPhaseDegraded || !strings.Contains(got.Status.Message, "never copied") {
+		t.Fatalf("status %+v", got.Status)
+	}
+}

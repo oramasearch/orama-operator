@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -414,5 +416,32 @@ func TestHubCertificateIsVerifiedForTheDialedAddress(t *testing.T) {
 		if err := checkVizierCloudAddress(refused); err == nil {
 			t.Errorf("cloudAddress %s is rendered", refused)
 		}
+	}
+}
+
+// hack/observability-images.yaml lists exactly the keys a release must name, so the inventory #455
+// builds and mirrors from is the one the operator renders.
+func TestPixieInventoryMatchesReleaseKeys(t *testing.T) {
+	data, err := os.ReadFile("../../hack/observability-images.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inventory struct {
+		Pixie []struct {
+			Key string `json:"key"`
+		} `json:"pixie"`
+	}
+	if err := sigsyaml.Unmarshal(data, &inventory); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for _, entry := range inventory.Pixie {
+		keys = append(keys, entry.Key)
+	}
+	want := append([]string(nil), pixieImageKeys...)
+	sort.Strings(keys)
+	sort.Strings(want)
+	if strings.Join(keys, ",") != strings.Join(want, ",") {
+		t.Fatalf("inventory keys %v, release keys %v", keys, want)
 	}
 }

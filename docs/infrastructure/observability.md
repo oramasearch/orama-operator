@@ -218,6 +218,28 @@ exactly these keys, or the provider is not Ready:
 
 Pixie's operator image and OLM are not needed.
 
+### Air-gapped: every image and artifact inventoried, mirrored, and nothing public
+
+[`hack/observability-images.yaml`](../../hack/observability-images.yaml) lists every image and chart
+this work runs, with the upstream it is mirrored from and its licence:
+
+- **Pixie**: the release keys above, each a private `oramasearch/pixie-*` repository, by digest.
+  A missing or tag-only key keeps the provider not Ready; nothing Pixie runs.
+- **The platform layer**: every image the two charts render is overridden in their values to a
+  private mirror, `docker.io/oramasearch/platform-<name>` at the upstream tag, pulled with the
+  cluster's own Secret (`ClusterHelmRelease` `imagePullSecretRef`; on the managing cluster,
+  [`install.md`](../install.md)). A mirror that does not exist fails the pull: there is no fallback
+  to a public registry. Perses' helm test pod, the one public image the chart renders, is off.
+- **The charts** are vendored in `hack/charts/` and checked against their recorded sha256.
+  `TestPlatformChartsRenderOfflineWithOnlyMirroredImages` renders them offline with the exact
+  values and fails on any image outside the inventory or any pod without the pull Secret;
+  `TestPixieInventoryMatchesReleaseKeys` keeps the Pixie list equal to what the operator renders.
+- **The PxL script bundle** is the `script-bundle` image, served inside the hub.
+
+The charts themselves are still fetched from their public repositories by `helmfile` and
+`ClusterHelmRelease`, as every platform chart is today; an on-prem install without internet pulls
+the vendored tarballs from its own chart repository (OCI, `spec.chart.credentialsSecretRef`).
+
 ### Budgets
 
 Every container has requests and limits, and every binary is held to its limit by its own setting:
@@ -322,14 +344,19 @@ consent where the cluster rules ask for it:
    repositories and record the digests. Until then no provider is Ready and nothing Pixie runs
    anywhere; steps 2, 3 and the hubs' and agents' resources can go first, and give every cluster
    its alert routing (paging for `v1-eu` and `v1-us`) before Pixie exists.
-2. **Platform layer on the leaves.** Apply the new `ClusterHelmRelease`s in each
-   `config/clusters/*/platform.yaml` (kube-prometheus-stack, then Perses). On the managing cluster it
-   is a `helmfile apply` of the merged file, with consent. kube-prometheus-stack adds the monitoring
-   CRDs and Prometheus' 50 Gi and Alertmanager's 2 Gi volumes per cluster.
-3. **Operator.** Roll the release that carries these kinds onto every cluster
+2. **Operator.** Roll the release that carries these kinds onto every cluster
    ([`operations.md`](operations.md)). Its CRDs go on as usual
-   ([`crd-rollout.md`](../operations/crd-rollout.md)). Cloud v1 stacks then get their PodMonitors,
-   rules, dashboards and two scrape allowances in their sandbox (additive: no pod restarts).
+   ([`crd-rollout.md`](../operations/crd-rollout.md)). Nothing changes on a Cloud v1 stack yet:
+   its monitoring waits for the monitoring CRDs of step 3. This must come before step 3: the
+   `ClusterHelmRelease` CRD it carries adds `imagePullSecretRef`, which an older CRD would prune
+   from the platform files.
+3. **Platform layer.** Mirror every `platform` image of the inventory into its private
+   repository (nothing installs until they exist). Then apply the new `ClusterHelmRelease`s in each
+   `config/clusters/*/platform.yaml` (kube-prometheus-stack, then Perses); on the managing cluster,
+   create the `monitoring` pull Secret ([`install.md`](../install.md)) and `helmfile apply` the
+   merged file, with consent. kube-prometheus-stack adds the monitoring CRDs and Prometheus' 50 Gi
+   and Alertmanager's 2 Gi volumes per cluster. Each Cloud v1 stack then gets its PodMonitors,
+   rules, dashboards and two scrape allowances in its sandbox (additive: no pod restarts).
 4. **Nonprod first** (#456's order): an `ObservabilityProvider`, an `ObservabilityHub` on
    `orama-nonprod-cluster-01` and an `ObservabilityAgent` for it; prove the node images (Ubuntu
    22.04/24.04, Azure Linux 3), the protocols (HTTP, gRPC, Postgres, Redis, Kafka, AMQP) and that

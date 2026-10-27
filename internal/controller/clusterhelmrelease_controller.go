@@ -15,6 +15,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -102,9 +103,32 @@ func (r *ClusterHelmReleaseReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 	}
 
+	var pullSecret *corev1.Secret
+	if ref := rel.Spec.ImagePullSecretRef; ref != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				err = fmt.Errorf("image pull Secret %s/%s does not exist on this cluster", ref.Namespace, ref.Name)
+			}
+			return r.fail(ctx, &rel, observed, "PullSecretUnavailable", err)
+		}
+		// The rule OramaOperator keeps for its pull Secret (orama-operator#832).
+		scope, err := operatorSecretScope(ctx, r.Client, rel.Spec.ClusterRef)
+		if err != nil {
+			return r.fail(ctx, &rel, observed, "ClusterUnreadable", err)
+		}
+		copyName := firstNonEmpty(rel.Spec.ImagePullSecretAs, ref.Name)
+		if refused := scope.refuse(oramav1alpha1.SetSecret{Name: ref.Name, Namespace: ref.Namespace}, copyName, secret); refused != nil {
+			setClusterStatus(&rel.Status.Phase, &rel.Status.Message, &rel.Status.Conditions,
+				rel.Generation, clusterPhaseDegraded, "ProductionCredential", refused.Error())
+			return settle(ctrl.Result{RequeueAfter: leafOperatorSteadyRecheck}, r.writeStatus(ctx, &rel, observed))
+		}
+		pullSecret = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: copyName}, Type: secret.Type, Data: secret.Data}
+	}
+
 	state, err := r.installer().EnsureRelease(ctx, kubeconfig, helmReleaseRequest{
 		Release: rel.Spec.ReleaseName, Namespace: rel.Spec.Namespace, Chart: source, Values: values,
-		RequiredCRDs: rel.Spec.RequiredCRDs, CRDURLs: rel.Spec.CRDURLs,
+		RequiredCRDs: rel.Spec.RequiredCRDs, CRDURLs: rel.Spec.CRDURLs, PullSecret: pullSecret,
 	})
 	rel.Status.ChartVersion, rel.Status.AppVersion = state.ChartVersion, state.AppVersion
 	rel.Status.Revision, rel.Status.ReleaseStatus = int32(state.Revision), state.Status

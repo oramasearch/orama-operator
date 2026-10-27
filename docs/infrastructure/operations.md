@@ -133,6 +133,13 @@ Make the same change in both (`version`, values, a new or removed chart), in one
 - apply the helmfile to the management cluster, **with Steve's consent**
   (`helmfile -l name=<release> sync`), and check `helm list -A` there against the file.
 
+A chart whose images come from a private registry (the observability charts pull only Orama's
+mirrors, `hack/observability-images.yaml`) names its pull Secret in each `ClusterHelmRelease`'s
+`imagePullSecretRef`; on the management cluster the Secret is created as in
+[`install.md`](../install.md). Upgrading such a chart means mirroring its new images first and
+updating the inventory; `go test ./cmd -run PlatformCharts` renders the vendored chart offline and
+fails on any image that is not a listed mirror.
+
 Edit the `ClusterHelmRelease` (`spec.chart.version`, `spec.values`) and
 apply. Read the chart's release notes for CRD changes first. `dependsOn` orders installs
 (cert-manager before K8ssandra); `crdURLs` names CRDs a chart ships in a separate file (TiDB).

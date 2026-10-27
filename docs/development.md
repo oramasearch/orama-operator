@@ -114,6 +114,16 @@ go test ./internal/controller -run 'Pixie|RenderVizier'
 The tests name every new object, image or unbudgeted container. The provider's images must then be
 built from the same commit (#455); [`observability.md`](infrastructure/observability.md#upgrading-pixie).
 
+### The observability platform charts
+
+`hack/charts/` holds the exact tarballs of kube-prometheus-stack and Perses that `helmfile.yaml` and
+every `platform.yaml` install, with their sha256 in `hack/observability-images.yaml`.
+`TestPlatformChartsRenderOfflineWithOnlyMirroredImages` renders them with the Helm SDK, offline,
+with the helmfile's values, and fails on any image that is not one of the inventory's private
+mirrors or on a pod without the pull Secret. Moving a chart's version means replacing its tarball
+(from the repository index's URL, checking the index's digest), updating the inventory's version,
+sha256 and mirrors, and mirroring the new images.
+
 The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgainstAPIServer`
 (operator#268) checks that every workspace NetworkPolicy passes API validation, that the
 Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and
