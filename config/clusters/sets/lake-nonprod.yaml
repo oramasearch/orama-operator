@@ -119,12 +119,12 @@ spec:
       runtimeImage: oramasearch/agent-runtime:v0.2.0
       library:
       - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-      - {key: agent-application, image: oramasearch/agent-application:v0.2.4}
+      - {key: agent-application, image: oramasearch/agent-application:v0.2.6}
       - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
       - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
       - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
       - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
-      - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
+      - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.2}
       - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
       - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
     ingressEnabled: true
