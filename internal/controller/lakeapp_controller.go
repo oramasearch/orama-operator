@@ -1117,15 +1117,23 @@ func (r *LakeAppReconciler) copyLakeAppSecret(ctx context.Context, app *oramav1a
 	return nil
 }
 
+// deleteStaleLakeAppSecrets deletes the app's Secrets that wanted no longer names. The Ingress's
+// certificate copies and edge client CA carry the app's labels too, but reconcileLakeAppIngress
+// keeps them: deleting them here made every pass delete and recreate them, so ingress-nginx served
+// its fake certificate between the two and Cloudflare answered 526 under Full (strict).
 func (r *LakeAppReconciler) deleteStaleLakeAppSecrets(ctx context.Context, app *oramav1alpha1.LakeApp, namespace string, wanted map[string]bool) error {
 	var secrets corev1.SecretList
 	if err := r.List(ctx, &secrets, client.InNamespace(namespace), client.MatchingLabels(lakeAppLabels(app))); err != nil {
 		return err
 	}
+	edgeClientCA := lakeAppWorkloadObjectName(app) + "-edge-client-ca"
 	for i := range secrets.Items {
 		secret := &secrets.Items[i]
 		if secret.Annotations[lakeAppOwnerAnnotation] != lakeAppOwner(app) || wanted[secret.Name] {
 			continue
+		}
+		if secret.Labels[lakeTLSCopyLabel] == "true" || secret.Name == edgeClientCA {
+			continue // the Ingress's own; reconcileLakeAppIngress and deleteLakeAppTLS manage it
 		}
 		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
 			return err

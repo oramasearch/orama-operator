@@ -7,23 +7,6 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: dev
     spec:
-      # lake v0.7.2 and agent-application v0.2.3 (Steve, 2026-10-26: "deploy the fixes as patch releases (to all envs)"),
-      # agents on gpt-6.1-sol: dev and testing (the e2e gate), then the template for staging. Remove these pins when the
-      # template names them.
-      image: oramasearch/lake:v0.7.2
-      agents:
-        model: gpt-6.1-sol
-        runtimeImage: oramasearch/agent-runtime:v0.2.0
-        library:
-        - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-        - {key: agent-application, image: oramasearch/agent-application:v0.2.3}
-        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
-        - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
-        - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
-        - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
-        - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
-        - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
-        - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
       args:
       - "--listen"
       - 0.0.0.0:4900
@@ -66,23 +49,6 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: testing
     spec:
-      # lake v0.7.2 and agent-application v0.2.3 (Steve, 2026-10-26: "deploy the fixes as patch releases (to all envs)"),
-      # agents on gpt-6.1-sol: dev and testing (the e2e gate), then the template for staging. Remove these pins when the
-      # template names them.
-      image: oramasearch/lake:v0.7.2
-      agents:
-        model: gpt-6.1-sol
-        runtimeImage: oramasearch/agent-runtime:v0.2.0
-        library:
-        - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-        - {key: agent-application, image: oramasearch/agent-application:v0.2.3}
-        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
-        - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
-        - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
-        - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
-        - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
-        - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
-        - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
       args:
       - "--listen"
       - 0.0.0.0:4900
@@ -141,21 +107,24 @@ spec:
       secretRef: {name: lake-prod-stripe}
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:v0.7.1
-    # app-runtime v0.1.1 (2026-10-26): Streamlit apps load behind their public host (#17); identity only behind Lake auth (#14).
+    image: oramasearch/lake:v0.8.0
+    # app-runtime v0.1.2 (2026-10-26): Streamlit behind the public host (#17), identity only behind Lake auth (#14), exact file bytes (#22).
     apps:
-      runtimeImage: oramasearch/app-runtime:v0.1.1
+      runtimeImage: oramasearch/app-runtime:v0.1.2
     # The agents' releases (2026-10-25), after dev and testing ran them.
+    # lake v0.7.3 (hotfix, lake#1245): agents on gpt-5.5, because gpt-6.x refuses tools with reasoning_effort on Chat
+    # Completions; gpt-6.1-sol is the default again once the gateway uses the Responses API (v0.8.0). People choose per workspace.
     agents:
+      model: gpt-6.1-sol
       runtimeImage: oramasearch/agent-runtime:v0.2.0
       library:
       - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-      - {key: agent-application, image: oramasearch/agent-application:v0.2.2}
+      - {key: agent-application, image: oramasearch/agent-application:v0.2.6}
       - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
       - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
       - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
       - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
-      - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
+      - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.2}
       - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
       - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
     ingressEnabled: true
