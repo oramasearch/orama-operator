@@ -161,3 +161,244 @@ spec:
   clusterRef: orama-production-cluster-03
   namespace: valkey-operator-system
   releaseName: valkey-operator
+---
+# Observability (operator#15): the same release and values as helmfile.yaml, which has the reasons.
+apiVersion: orama.cloud/v1alpha1
+kind: ClusterHelmRelease
+metadata:
+  name: prod3-kube-prometheus-stack
+spec:
+  chart:
+    name: kube-prometheus-stack
+    repository: https://prometheus-community.github.io/helm-charts
+    version: 92.3.0
+  clusterRef: orama-production-cluster-03
+  namespace: monitoring
+  releaseName: kube-prometheus-stack
+  dependsOn:
+  - prod3-cert-manager
+  values:
+    # Grafana is AGPL-3.0 and never shipped (#15): the chart installs it as a subchart by default.
+    grafana:
+      enabled: false
+    # AKS runs the control plane, and Cilium replaces kube-proxy: there is nothing of these to
+    # scrape, and their rules would fire TargetDown for ever.
+    kubeControllerManager:
+      enabled: false
+    kubeScheduler:
+      enabled: false
+    kubeEtcd:
+      enabled: false
+    kubeProxy:
+      enabled: false
+    defaultRules:
+      rules:
+        etcd: false
+        kubeControllerManager: false
+        kubeProxy: false
+        kubeSchedulerAlerting: false
+        kubeSchedulerRecording: false
+    prometheusOperator:
+      # cert-manager is on every cluster; no certificate Jobs.
+      admissionWebhooks:
+        certManager:
+          enabled: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+    prometheus:
+      prometheusSpec:
+        # Durable on the cluster: 15 days or 45 GB on a 50 Gi volume, whichever is reached first.
+        # Prometheus 3 sets its Go memory limit from the container's (auto-gomemlimit).
+        retention: 15d
+        retentionSize: 45GB
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        # The operator's PodMonitors and PrometheusRules live beside what they watch, in any namespace.
+        serviceMonitorSelectorNilUsesHelmValues: false
+        podMonitorSelectorNilUsesHelmValues: false
+        ruleSelectorNilUsesHelmValues: false
+        probeSelectorNilUsesHelmValues: false
+        scrapeConfigSelectorNilUsesHelmValues: false
+        storageSpec:
+          volumeClaimTemplate:
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests:
+                  storage: 50Gi
+    alertmanager:
+      alertmanagerSpec:
+        # Each cluster's receivers come from its hub, through one AlertmanagerConfig the operator
+        # writes (orama.cloud/alerting), which applies to every namespace's alerts.
+        alertmanagerConfigSelector:
+          matchLabels:
+            orama.cloud/alerting: "true"
+        alertmanagerConfigMatcherStrategy:
+          type: None
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        storage:
+          volumeClaimTemplate:
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests:
+                  storage: 2Gi
+    kube-state-metrics:
+      resources:
+        requests:
+          cpu: 20m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      # The operator's own status as metrics: alerts say what a resource's status says
+      # (docs/infrastructure/observability.md, "Alerting").
+      rbac:
+        extraRules:
+          - apiGroups: ["orama.cloud"]
+            resources: ["oramacloudv1s", "pixieclouds", "pixieviziers", "peerconnections"]
+            verbs: ["list", "watch"]
+      customResourceState:
+        enabled: true
+        config:
+          kind: CustomResourceStateMetrics
+          spec:
+            resources:
+              - groupVersionKind: {group: orama.cloud, version: v1alpha1, kind: OramaCloudV1}
+                metricNamePrefix: orama_oramacloudv1
+                labelsFromPath:
+                  name: [metadata, name]
+                  namespace: [metadata, namespace]
+                metrics:
+                  - name: phase
+                    help: The stack's phase.
+                    each:
+                      type: StateSet
+                      stateSet:
+                        labelName: phase
+                        path: [status, phase]
+                        list: [Progressing, Ready, Degraded]
+                  - name: component_ready
+                    help: 1 while the component is fully available.
+                    each:
+                      type: Gauge
+                      gauge:
+                        path: [status, components]
+                        labelsFromPath:
+                          component: [name]
+                        valueFrom: [ready]
+              - groupVersionKind: {group: orama.cloud, version: v1alpha1, kind: PixieCloud}
+                metricNamePrefix: orama_pixiecloud
+                labelsFromPath:
+                  name: [metadata, name]
+                  namespace: [metadata, namespace]
+                metrics:
+                  - name: phase
+                    help: The observability hub's phase.
+                    each:
+                      type: StateSet
+                      stateSet:
+                        labelName: phase
+                        path: [status, phase]
+                        list: [Pending, Progressing, Ready, Degraded, Refused]
+                  - name: agent_connected
+                    help: 1 while the hub sees the agent cluster heartbeat.
+                    each:
+                      type: Gauge
+                      gauge:
+                        path: [status, agents]
+                        labelsFromPath:
+                          agent: [name]
+                        valueFrom: [connected]
+              - groupVersionKind: {group: orama.cloud, version: v1alpha1, kind: PixieVizier}
+                metricNamePrefix: orama_pixievizier
+                labelsFromPath:
+                  name: [metadata, name]
+                  namespace: [metadata, namespace]
+                metrics:
+                  - name: phase
+                    help: The cluster's observability agents' phase.
+                    each:
+                      type: StateSet
+                      stateSet:
+                        labelName: phase
+                        path: [status, phase]
+                        list: [Pending, Progressing, Ready, Degraded, Refused]
+              - groupVersionKind: {group: orama.cloud, version: v1alpha1, kind: PeerConnection}
+                metricNamePrefix: orama_peerconnection
+                labelsFromPath:
+                  name: [metadata, name]
+                  namespace: [metadata, namespace]
+                metrics:
+                  - name: phase
+                    help: The peer's phase.
+                    each:
+                      type: StateSet
+                      stateSet:
+                        labelName: phase
+                        path: [status, phase]
+                        list: [Pending, Ready, Failed, Deleted]
+    prometheus-node-exporter:
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 250m
+          memory: 64Mi
+---
+apiVersion: orama.cloud/v1alpha1
+kind: ClusterHelmRelease
+metadata:
+  name: prod3-perses
+spec:
+  chart:
+    name: perses
+    repository: https://perses.github.io/helm-charts
+    version: 0.23.3
+  clusterRef: orama-production-cluster-03
+  namespace: monitoring
+  releaseName: perses
+  dependsOn:
+  - prod3-kube-prometheus-stack
+  values:
+    # Dashboards come from ConfigMaps labelled perses.dev/resource=true, which the operator writes next
+    # to what they show; nothing is edited by hand, so the server is read-only and keeps no volume.
+    config:
+      security:
+        readonly: true
+    sidecar:
+      enabled: true
+      allNamespaces: true
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    persistence:
+      enabled: false
