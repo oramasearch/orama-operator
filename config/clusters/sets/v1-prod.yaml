@@ -479,6 +479,10 @@ spec:
       idp:
         provider: none
       images:
+        # The CPU BGE memory/threads engine (orama-bridge#262, oramacore-private develop b6ee20fb), on US first while
+        # the EU copy runs. Juan waived the remaining nonprod live rehearsal and asked to deploy (2026-10-27).
+        overrides:
+          oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-b6ee20fb@sha256:b34b18676a7a050829a354291f32681a524c11d13e86c4ad7370aeb6e5f30b48
         tag: v1-sandbox
       llm:
         default: groq
