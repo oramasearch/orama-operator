@@ -1077,9 +1077,9 @@ spec:
       runID: eu-1
       step: seed                            # the seed dry run (apply: false)
       apply: true                           # writes v1-eu: the copy, in the window
-      attempt: 1                            # the seed dry run again
+      attempt: 2                            # the same copy, resumed after the EU engine roll (2026-10-27)
       evidenceSecretRef: {name: team-7c243b24-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:a121fdf1d494177e59636ade4c48087e4070a1a1902428c5eaeab7bdd5ea41c0  # dev-a6a6ad0f
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:64044018dab68e80a3f10a048d2139b088599813ea2617c307f98189ecc0e848  # dev-dcccdd4d (T1 target pacing, oramacore-aws#145)
       pullSecretName: oramasearch-dockerhub
       source: *prod1-source
   - name: team-0b51d6e5
