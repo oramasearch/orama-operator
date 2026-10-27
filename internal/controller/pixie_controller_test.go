@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -283,13 +284,14 @@ func TestPixieVizierToleratesMissingMonitoringCRDs(t *testing.T) {
 	}
 }
 
-// fakeHubBackend records what the bootstrap asked of the hub's services.
+// fakeHubBackend stands in for Pixie Cloud's API and the bootstrap's services.
 type fakeHubBackend struct {
 	ready     bool
 	index     string
 	admin     [2]string
 	org       string
-	keys      map[string]string // key -> description
+	keys      map[string]string // id -> key, as Pixie holds them
+	created   int
 	deleted   []string
 	connected map[string]bool
 }
@@ -305,24 +307,37 @@ func (f *fakeHubBackend) EnsureAdmin(_ context.Context, email, password string) 
 	f.admin = [2]string{email, password}
 	return "identity-1", nil
 }
-func (f *fakeHubBackend) EnsureOrg(_ context.Context, name, _, identity string) (string, string, error) {
+func (f *fakeHubBackend) EnsureOrg(_ context.Context, name, email, identity string) (pixieIdentity, error) {
 	f.org = name + "/" + identity
-	return "org-1", "user-1", nil
+	return pixieIdentity{OrgID: "org-1", UserID: "user-1", Email: email}, nil
 }
-func (f *fakeHubBackend) EnsureDeployKey(_ context.Context, orgID, userID, key, description string) error {
-	if orgID != "org-1" || userID != "user-1" {
-		return apierrors.NewBadRequest("wrong owner")
+func (f *fakeHubBackend) DeployKeyIDs(_ context.Context, as pixieIdentity) (map[string]bool, error) {
+	if as.OrgID != "org-1" {
+		return nil, apierrors.NewBadRequest("wrong identity")
 	}
-	f.keys[key] = description
+	ids := map[string]bool{}
+	for id := range f.keys {
+		ids[id] = true
+	}
+	return ids, nil
+}
+func (f *fakeHubBackend) CreateDeployKey(context.Context, pixieIdentity) (pixieDeployKey, error) {
+	f.created++
+	key := pixieDeployKey{ID: fmt.Sprintf("id-%d", f.created), Key: fmt.Sprintf("px-dep-%d", f.created)}
+	f.keys[key.ID] = key.Key
+	return key, nil
+}
+func (f *fakeHubBackend) DeleteDeployKey(_ context.Context, _ pixieIdentity, id string) error {
+	f.deleted = append(f.deleted, id)
+	delete(f.keys, id)
 	return nil
 }
-func (f *fakeHubBackend) DeleteDeployKey(_ context.Context, key string) error {
-	f.deleted = append(f.deleted, key)
-	delete(f.keys, key)
-	return nil
-}
-func (f *fakeHubBackend) AgentState(_ context.Context, _, cluster string) (pixieAgentState, error) {
-	return pixieAgentState{Registered: f.connected[cluster], Connected: f.connected[cluster]}, nil
+func (f *fakeHubBackend) Clusters(context.Context, pixieIdentity) (map[string]pixieAgentState, error) {
+	states := map[string]pixieAgentState{}
+	for cluster, connected := range f.connected {
+		states[cluster] = pixieAgentState{Registered: true, Connected: connected}
+	}
+	return states, nil
 }
 func (f *fakeHubBackend) Close() {}
 
@@ -421,20 +436,20 @@ func TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys(t *testing.T) {
 	if backend.org != "orama/identity-1" {
 		t.Fatalf("organisation bootstrap %q", backend.org)
 	}
-	keys := map[string]string{}
+	ids := map[string]string{}
 	for _, agent := range []string{"prod2", "prod3"} {
 		var secret corev1.Secret
 		if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieDeployKeyPrefix + agent}, &secret); err != nil {
 			t.Fatal(err)
 		}
-		key := string(secret.Data["deploy-key"])
-		if !strings.HasPrefix(key, "px-dep-") || backend.keys[key] == "" {
-			t.Fatalf("agent %s key %q not registered", agent, key)
+		id := string(secret.Data["id"])
+		if backend.keys[id] == "" || backend.keys[id] != string(secret.Data["deploy-key"]) {
+			t.Fatalf("agent %s holds key %q (id %q), which Pixie did not issue", agent, secret.Data["deploy-key"], id)
 		}
-		keys[agent] = key
+		ids[agent] = id
 	}
-	if keys["prod2"] == keys["prod3"] {
-		t.Fatal("two clusters share a deploy key")
+	if ids["prod2"] == ids["prod3"] || backend.created != 2 {
+		t.Fatalf("keys created %d, ids %v: want one per cluster", backend.created, ids)
 	}
 	var got oramav1alpha1.PixieCloud
 	if err := kube.Get(ctx, client.ObjectKeyFromObject(cloud), &got); err != nil {
@@ -464,20 +479,39 @@ func TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys(t *testing.T) {
 		t.Error("a steady hub rewrote its status")
 	}
 
+	if backend.created != 2 {
+		t.Errorf("a steady hub created %d more keys", backend.created-2)
+	}
+
+	// A rebuilt hub forgets prod2's key: Pixie issues a new one and the Secret takes it.
+	delete(backend.keys, ids["prod2"])
+	reconcileTwice(t, r, "plc", pixieConcreteName)
+	var reissued corev1.Secret
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieDeployKeyPrefix + "prod2"}, &reissued); err != nil {
+		t.Fatal(err)
+	}
+	if string(reissued.Data["id"]) == ids["prod2"] || backend.keys[string(reissued.Data["id"])] == "" {
+		t.Fatalf("prod2's key was not reissued: %v", reissued.Data)
+	}
+	ids["prod2"] = string(reissued.Data["id"])
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(cloud), &got); err != nil {
+		t.Fatal(err)
+	}
+
 	// The managing cluster stops listing prod3: its key is revoked and its Secret deleted.
 	got.Spec.Agents = got.Spec.Agents[:1]
 	if err := kube.Update(ctx, &got); err != nil {
 		t.Fatal(err)
 	}
 	reconcileTwice(t, r, "plc", pixieConcreteName)
-	if len(backend.deleted) != 1 || backend.deleted[0] != keys["prod3"] {
-		t.Fatalf("revoked %v, want prod3's key", backend.deleted)
+	if len(backend.deleted) != 1 || backend.deleted[0] != ids["prod3"] {
+		t.Fatalf("revoked %v, want prod3's key %s", backend.deleted, ids["prod3"])
 	}
 	var revoked corev1.Secret
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieDeployKeyPrefix + "prod3"}, &revoked); !apierrors.IsNotFound(err) {
 		t.Error("the revoked cluster's key Secret remains")
 	}
-	if backend.keys[keys["prod2"]] == "" {
+	if backend.keys[ids["prod2"]] == "" {
 		t.Error("revoking prod3 touched prod2's key")
 	}
 }

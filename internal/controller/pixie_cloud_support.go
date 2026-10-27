@@ -64,6 +64,22 @@ func pixieDBClusterObject(cloud *oramav1alpha1.PixieCloud) *unstructured.Unstruc
 			"passwordSecret":  map[string]interface{}{"name": pixieDatabaseSecret(db)},
 		})
 	}
+	// The bootstrap's own role (pixie_cloud_bootstrap.go): it may read and insert organisations and
+	// users in the profile database, granted by their owner, and nothing else.
+	roles = append(roles, map[string]interface{}{
+		"name":            pixieBootstrapRole,
+		"comment":         "Pixie Cloud organisation and administrator bootstrap (operator#15)",
+		"ensure":          "present",
+		"login":           true,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         true,
+		"connectionLimit": int64(2),
+		"passwordSecret":  map[string]interface{}{"name": pixieDatabaseSecret(pixieBootstrapRole)},
+	})
 	storageSpec := map[string]interface{}{"size": storage.String()}
 	if class := cloud.Spec.Storage.StorageClassName; class != "" {
 		storageSpec["storageClass"] = class

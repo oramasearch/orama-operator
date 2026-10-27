@@ -110,10 +110,11 @@ it succeeds for the two addresses and fails for another name or another CA.
 
 | Credential | Minted by | Lives |
 |---|---|---|
-| Deploy key `px-dep-<uuid>` | the hub's operator, one per accepted agent | `plc/pixie-deploy-key-<agent>` on the hub; copied only to that agent's cluster as `pl/pl-deploy-secrets`. A row in vzmgr's `vizier_deployment_keys`, written with vzmgr's own SQL. Removing the agent deletes the row, then the Secret. |
+| Deploy key | Pixie Cloud's API (`CreateDeploymentKey`), called by the hub's operator, one per accepted agent | `plc/pixie-deploy-key-<agent>` (`deploy-key`, `id`) on the hub; copied only to that agent's cluster as `pl/pl-deploy-secrets`. Kept while Pixie still lists its id; a rebuilt hub gets a new one. Removing the agent calls `DeleteDeploymentKey`, then deletes the Secret. |
 | Vizier's CA, service certificates, signing key | the agent's operator | `pl/pixie-vizier-ca`, `pl/service-tls-certs`, `pl/pl-cluster-secrets` (the cloud connector adds `cluster-id` and `cluster-name` there after it registers; the operator never changes them). |
 | The hub's two CAs (services; what agents and people reach), certificates, JWT, session and Hydra secrets | the hub's operator | `plc/pixie-service-ca`, `plc/pixie-cloud-ca`, `plc/service-tls-*`, `plc/cloud-proxy-tls-certs`, `plc/cloud-auth-secrets`, `plc/cloud-session-secrets`, `plc/pl-hydra-secrets`. The public trust root is `PixieCloud.status.caCertificate`, copied to each agent as `pl/pixie-cloud-ca`. |
 | One Postgres role and database per Pixie service, each with its own encryption key | the hub's operator | `plc/pixie-db-<service>`; CloudNativePG managed roles, never superuser, 30 connections each. vzconn and the artifact tracker never open the database and get no credentials. |
+| The bootstrap role | the hub's operator | `plc/pixie-db-bootstrap`: may only read and insert `orgs` and `users` in the profile database (granted by their owner when missing), two connections. |
 | OpenSearch users | the hub's operator | `plc/pixie-search`: `pixie-indexer` writes the metadata indices, `pixie-api` only reads them; only bcrypt hashes reach OpenSearch. |
 | The administrator's password | the hub's operator | `plc/pixie-admin`. Upstream creates `admin@default.com` with password `admin`; that container is removed. |
 | Registry credentials and alert receiver URLs | people, on the managing cluster | Copied to each cluster under the production-credential rules. Give each cluster its own pull Secret. |
@@ -151,6 +152,36 @@ from `pl-cloud-config`). `PL_DISABLE_AUTO_UPDATE` is `true`.
 | The artifact tracker's public manifest and Google Cloud Storage | outside services | Versions pinned to the release (`vizierVersion`, `cliVersion`), so it never polls; no credentials mounted. |
 | PxL scripts from `artifacts.px.dev` and a GCS bucket | outside services | Served inside the cluster by `pixie-scripts` (image `script-bundle`): to the UI through the proxy at `/pxl_scripts/`, and to the script manager as a storage emulator (`STORAGE_EMULATOR_HOST`). |
 | Auth0, Google sign-in | outside services | Not configured. Sign-in is Ory (Kratos, password), with the administrator the operator creates. Clerk as Kratos' OIDC provider is a later step and needs the internet, so the on-prem default stays Ory. |
+
+### The bootstrap
+
+What a person would do after installing Pixie Cloud, done by the hub cluster's operator
+(`pixie_cloud_bootstrap.go`), once the hub is Ready:
+
+1. **The metadata index**, created in OpenSearch with the indexer's own body (vendored from
+   `src/cloud/indexer/md/mapping.o.go` as `assets/pixie/md-index.json`). The indexer compares its
+   desired settings with the live index and reindexes on any difference, so the body must be its
+   own.
+2. **The administrator**, through Kratos' admin API.
+3. **The organisation and the administrator's user.** Pixie has no API that creates the first
+   organisation or user without someone signing in, so this one step is a schema adapter: it reads
+   first and inserts only what is missing, as the dedicated `bootstrap` role, against the vendored
+   profile migrations (`TestPixieBootstrapMatchesVendoredSchema` checks every column it writes and
+   that nothing it leaves out is required). The organisation's id is a function of its name.
+4. **Deploy keys, through Pixie's own API**: GraphQL `CreateDeploymentKey`, `deploymentKeys`,
+   `DeleteDeploymentKey` and `clusters`, as the administrator, with a five-minute token the operator
+   signs with the hub's signing key exactly as Pixie's auth service issues one
+   (`TestPixieUserTokenIsWhatPixieAccepts`, `TestPixieAPIDeployKeyLifecycle`). Pixie generates
+   every key; nothing writes Pixie's key tables.
+
+### OpenSearch in place of Elasticsearch, checked against the sources
+
+| Question | Evidence (pinned versions) |
+|---|---|
+| Does Pixie's client accept OpenSearch? | Pixie uses `olivere/elastic` v7.0.12. Its `NewClient` runs a `HEAD /` healthcheck with basic auth and checks neither the product header nor the version. OpenSearch also reports 7.10.2 with `compatibility.override_main_response_version` (present in 2.19.6, `TransportMainAction`). |
+| Does the index definition load? | The mapping uses the camelCase `nGram` tokenizer. OpenSearch 2.19.6 accepts it with a deprecation warning (`CommonAnalysisPlugin`); **OpenSearch 3.x refuses it** for new indices. So the provider's `opensearch` image must be 2.19.x until Pixie's mapping says `ngram`. `custom_token_chars`, `char_group`, `word_delimiter`, `max_ngram_diff` and `index.store.preload` all exist in 2.19. |
+| Does anything call Elastic-only APIs? | Only managed index creation (ILM policies, rollover aliases, `esutils/managed_index.go`), which `PL_MD_MANUAL_INDEX_MANAGEMENT=true` skips. With it the indexer calls only index exists, put mapping, get and put settings, and document writes; the API server only searches. The `scripts` index it names is never queried. |
+| What needs a source change? | The API server's two hard-coded public script-bundle URLs: `hack/pixie-patches/0001-api-script-bundle-urls.patch` for #455's `orama` branch. Nothing in the OpenSearch path needs a patch. |
 
 ### Licences of what is installed
 
@@ -258,8 +289,10 @@ hub or agent writes nothing (`TestPixieCloudBootstrapIssuesAndRevokesPerClusterK
 |---|---|
 | The hub's cluster or the link | Vizier keeps collecting on its nodes (hours, in memory); `ObservabilityHubUnreachable` fires on the agent's cluster. Nothing on the agent's cluster depends on the hub to run. |
 | An agent's cluster | `ObservabilityAgentDisconnected` fires on the hub's cluster. |
-| A deploy key or a Pixie credential deleted | Minted again; the key's row is written again. A Vizier already registered keeps its registration. |
-| The hub's database lost | Everything in it is rebuilt from the resources: the organisation (its id is a function of its name), the administrator, every key; the agents register again with their keys. What is lost is people's saved scripts and settings. No backup is configured for it yet. |
+| A Pixie credential deleted | Minted again. |
+| The hub's database lost | The organisation (its id is a function of its name) and the administrator are created again; every key Pixie no longer lists is issued again and delivered to its cluster, whose Vizier then registers anew. What is lost is people's saved scripts and settings, and the old cluster registrations. No backup is configured for it yet. |
+| A deploy key deleted in Pixie's UI | Issued again on the next pass and delivered to its cluster. |
+| Pixie's API or migrations not ready | The hub stays `Progressing` with the reason; nothing is written. |
 | A certificate near expiry | Reissued 30 days before, which rolls the pods that read it. |
 | Monitoring CRDs missing | See above: dashboards only, `Alerting=False`, nothing else blocked. |
 | A refused hub or agent | Nothing written, or everything withdrawn; the reason on the resource until an edit. |

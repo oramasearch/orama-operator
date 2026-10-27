@@ -32,29 +32,29 @@ import (
 //   - The metrics server is not run: its only job is exporting usage to Google BigQuery.
 
 const (
-	pixieDomainConfig       = "pl-domain-config"
-	pixieServiceConfig      = "pl-service-config"
-	pixieProxyNginxConfig   = "pl-proxy-nginx-config"
-	pixieServerCertsSecret  = "service-tls-server-certs"
-	pixieClientCertsSecret  = "service-tls-client-certs"
-	pixieProxyCertsSecret   = "cloud-proxy-tls-certs"
-	pixieAuthSecret         = "cloud-auth-secrets"
-	pixieSessionSecret      = "cloud-session-secrets"
-	pixieHydraSecret        = "pl-hydra-secrets"
-	pixieOIDCSecret         = "cloud-oidc-secrets"
-	pixieSearchSecret       = "pixie-search"
-	pixieSearchService      = "pixie-search"
-	pixieSearchPort         = 9200
-	pixieScriptsService     = "pixie-scripts"
-	pixieScriptsPort        = 8080
-	pixieScriptsBucket      = "pixie-scripts"
-	pixieMetadataIndex      = "md_entities_9"
-	pixieVzconnService      = "vzconn-service"
-	pixieVzconnPort         = 51600
-	pixieCloudCASecret      = "pixie-cloud-ca"
-	pixieServiceCASecret    = "pixie-service-ca"
-	pixieAdminSecret        = "pixie-admin"
-	pixieDeployKeyPrefix    = "pixie-deploy-key-"
+	pixieDomainConfig      = "pl-domain-config"
+	pixieServiceConfig     = "pl-service-config"
+	pixieProxyNginxConfig  = "pl-proxy-nginx-config"
+	pixieServerCertsSecret = "service-tls-server-certs"
+	pixieClientCertsSecret = "service-tls-client-certs"
+	pixieProxyCertsSecret  = "cloud-proxy-tls-certs"
+	pixieAuthSecret        = "cloud-auth-secrets"
+	pixieSessionSecret     = "cloud-session-secrets"
+	pixieHydraSecret       = "pl-hydra-secrets"
+	pixieOIDCSecret        = "cloud-oidc-secrets"
+	pixieSearchSecret      = "pixie-search"
+	pixieSearchService     = "pixie-search"
+	pixieSearchPort        = 9200
+	pixieScriptsService    = "pixie-scripts"
+	pixieScriptsPort       = 8080
+	pixieScriptsBucket     = "pixie-scripts"
+	pixieMetadataIndex     = "md_entities_9"
+	pixieVzconnService     = "vzconn-service"
+	pixieVzconnPort        = 51600
+	pixieCloudCASecret     = "pixie-cloud-ca"
+	pixieServiceCASecret   = "pixie-service-ca"
+	pixieAdminSecret       = "pixie-admin"
+	pixieDeployKeyPrefix   = "pixie-deploy-key-"
 )
 
 // pixieCloudObjects is exactly the vendored Cloud the operator applies.

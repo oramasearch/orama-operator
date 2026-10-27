@@ -1,0 +1,43 @@
+--- a/src/cloud/api/api_server.go
++++ b/src/cloud/api/api_server.go
+@@ -20,10 +20,12 @@
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"net/http"
+ 	_ "net/http/pprof"
++	"os"
+ 	"strings"
+ 	"time"
+ 
+@@ -242,7 +244,7 @@
+ 	updateBundle := func() {
+ 		// Requiring the bundle manager in the API service is temporary until we
+ 		// start indexing scripts.
+-		br, bundleErr = script.NewBundleManagerWithOrg([]string{defaultBundleFile, ossBundleFile}, "", "")
++		br, bundleErr = script.NewBundleManagerWithOrg(scriptBundleURLs(), "", "")
+ 		if bundleErr != nil {
+ 			log.WithError(bundleErr).Error("Failed to init bundle manager")
+ 			br = nil
+@@ -299,4 +301,18 @@
+ 
+ 	s.Start()
+ 	s.StopOnInterrupt()
++}
++
++// scriptBundleURLs is where the API server reads PxL scripts from: SCRIPT_BUNDLE_URLS (a JSON list,
++// the same value the UI is given through pl-script-bundles-config) when it is set, so a self-hosted,
++// air-gapped Cloud reads its own bundle; otherwise Pixie's public bundles, as before.
++func scriptBundleURLs() []string {
++	if raw := os.Getenv("SCRIPT_BUNDLE_URLS"); raw != "" {
++		var urls []string
++		if err := json.Unmarshal([]byte(raw), &urls); err == nil && len(urls) > 0 {
++			return urls
++		}
++		log.WithField("SCRIPT_BUNDLE_URLS", raw).Error("SCRIPT_BUNDLE_URLS is not a JSON list of URLs; using the default bundles")
++	}
++	return []string{defaultBundleFile, ossBundleFile}
+ }

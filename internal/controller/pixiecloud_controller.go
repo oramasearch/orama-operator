@@ -12,7 +12,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/google/uuid"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -276,6 +275,16 @@ func (r *PixieCloudReconciler) ensureSecrets(ctx context.Context, cloud *oramav1
 		}
 		databases[db] = secret
 	}
+	bootstrapSecret, err := ensureMintedSecret(ctx, r.Client, r.Scheme, cloud, pixieDatabaseSecret(pixieBootstrapRole), corev1.SecretTypeBasicAuth,
+		withLabels(labels, map[string]string{"cnpg.io/reload": "true"}),
+		fixedKey(corev1.BasicAuthUsernameKey, pixieBootstrapRole), randomKey(corev1.BasicAuthPasswordKey, 24))
+	if err != nil {
+		return pixieCloudMaterial{}, err
+	}
+	var auth corev1.Secret
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: pixieAuthSecret}, &auth); err != nil {
+		return pixieCloudMaterial{}, err
+	}
 	var search corev1.Secret
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: pixieSearchSecret}, &search); err != nil {
 		return pixieCloudMaterial{}, err
@@ -286,12 +295,13 @@ func (r *PixieCloudReconciler) ensureSecrets(ctx context.Context, cloud *oramav1
 		serviceCA:      serviceCA.CertPEM,
 		searchSecurity: pixieSearchSecurityConfig(string(search.Data["indexer-hash"]), string(search.Data["api-hash"])),
 		creds: pixieHubCredentials{
-			ProfilePassword:  string(databases["profile"].Data[corev1.BasicAuthPasswordKey]),
-			VzmgrPassword:    string(databases["vzmgr"].Data[corev1.BasicAuthPasswordKey]),
-			VzmgrDatabaseKey: string(databases["vzmgr"].Data["database-key"]),
-			SearchUser:       "pixie-indexer",
-			SearchPassword:   string(search.Data["indexer-password"]),
-			ServiceCA:        serviceCA.CertPEM,
+			ProfilePassword:   string(databases["profile"].Data[corev1.BasicAuthPasswordKey]),
+			BootstrapPassword: string(bootstrapSecret.Data[corev1.BasicAuthPasswordKey]),
+			SearchUser:        "pixie-indexer",
+			SearchPassword:    string(search.Data["indexer-password"]),
+			SigningKey:        string(auth.Data["jwt-signing-key"]),
+			Domain:            cloud.Spec.Domain,
+			ServiceCA:         serviceCA.CertPEM,
 		},
 	}, nil
 }
@@ -328,38 +338,12 @@ func (r *PixieCloudReconciler) databaseStatus(ctx context.Context) (oramav1alpha
 	return component, nil
 }
 
-// bootstrap runs once the hub is Ready, and keeps one deploy key per accepted agent. It returns each
-// agent's state and, while it cannot finish, why.
+// bootstrap runs once the hub is Ready, and keeps one deploy key per accepted agent through
+// Pixie's API. It returns each agent's state and, while it cannot finish, why.
 func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alpha1.PixieCloud, material pixieCloudMaterial, hubReady bool) ([]oramav1alpha1.PixieCloudAgentStatus, string, error) {
-	labels := map[string]string{pixieManagedLabel: pixieManagedCloud}
-	wanted := map[string]oramav1alpha1.PixieCloudAgent{}
-	for _, agent := range cloud.Spec.Agents {
-		wanted[agent.Name] = agent
-	}
-	// Keys of agents the managing cluster no longer lists are revoked: their row, then the Secret.
-	var existing corev1.SecretList
-	if err := r.List(ctx, &existing, client.InNamespace(cloud.Namespace), client.HasLabels{pixieDeployKeyLabel}); err != nil {
-		return nil, "", err
-	}
-	var revoke []corev1.Secret
-	for _, secret := range existing.Items {
-		if _, ok := wanted[secret.Labels[pixieDeployKeyLabel]]; !ok && metav1.IsControlledBy(&secret, cloud) {
-			revoke = append(revoke, secret)
-		}
-	}
-	keys := map[string]string{}
-	for _, agent := range cloud.Spec.Agents {
-		secret, err := ensureMintedSecret(ctx, r.Client, r.Scheme, cloud, pixieDeployKeyPrefix+agent.Name, corev1.SecretTypeOpaque,
-			withLabels(labels, map[string]string{pixieDeployKeyLabel: agent.Name}),
-			pixieSecretKey{Name: "deploy-key", Generate: func(map[string][]byte) (string, error) { return "px-dep-" + uuid.NewString(), nil }})
-		if err != nil {
-			return nil, "", err
-		}
-		keys[agent.Name] = string(secret.Data["deploy-key"])
-	}
 	statuses := make([]oramav1alpha1.PixieCloudAgentStatus, 0, len(cloud.Spec.Agents))
 	for _, agent := range cloud.Spec.Agents {
-		statuses = append(statuses, oramav1alpha1.PixieCloudAgentStatus{Name: agent.Name, DeployKeySecret: pixieDeployKeyPrefix + agent.Name})
+		statuses = append(statuses, oramav1alpha1.PixieCloudAgentStatus{Name: agent.Name})
 	}
 	if !hubReady {
 		return statuses, "", nil
@@ -379,33 +363,84 @@ func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alph
 	if err := r.Get(ctx, client.ObjectKey{Namespace: cloud.Namespace, Name: pixieAdminSecret}, &admin); err != nil {
 		return statuses, "", err
 	}
-	identity, err := backend.EnsureAdmin(ctx, cloud.Spec.AdminEmail, string(admin.Data["password"]))
+	identityID, err := backend.EnsureAdmin(ctx, cloud.Spec.AdminEmail, string(admin.Data["password"]))
 	if err != nil {
 		return statuses, "", err
 	}
-	orgID, userID, err := backend.EnsureOrg(ctx, cloud.Spec.Organization, cloud.Spec.AdminEmail, identity)
+	as, err := backend.EnsureOrg(ctx, cloud.Spec.Organization, cloud.Spec.AdminEmail, identityID)
 	if err != nil {
 		return statuses, "", err
 	}
-	for i := range revoke {
-		if err := backend.DeleteDeployKey(ctx, string(revoke[i].Data["deploy-key"])); err != nil {
+	known, err := backend.DeployKeyIDs(ctx, as)
+	if err != nil {
+		return statuses, "", err
+	}
+	var existing corev1.SecretList
+	if err := r.List(ctx, &existing, client.InNamespace(cloud.Namespace), client.HasLabels{pixieDeployKeyLabel}); err != nil {
+		return statuses, "", err
+	}
+	wanted := map[string]bool{}
+	for _, agent := range cloud.Spec.Agents {
+		wanted[agent.Name] = true
+	}
+	// Agents the managing cluster no longer lists: the key goes from Pixie, then the Secret.
+	for i := range existing.Items {
+		secret := &existing.Items[i]
+		if wanted[secret.Labels[pixieDeployKeyLabel]] || !metav1.IsControlledBy(secret, cloud) {
+			continue
+		}
+		if id := string(secret.Data["id"]); known[id] {
+			if err := backend.DeleteDeployKey(ctx, as, id); err != nil {
+				return statuses, "", err
+			}
+		}
+		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
 			return statuses, "", err
 		}
-		if err := r.Delete(ctx, &revoke[i]); err != nil && !apierrors.IsNotFound(err) {
-			return statuses, "", err
-		}
+	}
+	clusters, err := backend.Clusters(ctx, as)
+	if err != nil {
+		return statuses, "", err
 	}
 	for i, agent := range cloud.Spec.Agents {
-		if err := backend.EnsureDeployKey(ctx, orgID, userID, keys[agent.Name], fmt.Sprintf("orama-operator: agent %s on %s", agent.Name, agent.Cluster)); err != nil {
+		if err := r.ensureDeployKey(ctx, cloud, backend, as, agent.Name, known); err != nil {
 			return statuses, "", err
 		}
-		state, err := backend.AgentState(ctx, orgID, agent.Cluster)
-		if err != nil {
-			return statuses, "", err
-		}
+		statuses[i].DeployKeySecret = pixieDeployKeyPrefix + agent.Name
+		state := clusters[agent.Cluster]
 		statuses[i].Registered, statuses[i].Connected = state.Registered, state.Connected
 	}
 	return statuses, "", nil
+}
+
+// ensureDeployKey keeps an agent's key: the Secret's key is kept while Pixie still knows its id;
+// otherwise (a new agent, or a rebuilt hub) Pixie creates a new one and the Secret takes it. The
+// Secret is written only then.
+func (r *PixieCloudReconciler) ensureDeployKey(ctx context.Context, cloud *oramav1alpha1.PixieCloud, backend pixieHubBackend, as pixieIdentity, agent string, known map[string]bool) error {
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pixieDeployKeyPrefix + agent, Namespace: cloud.Namespace}}
+	found, err := getIfExists(ctx, r.Client, secret.Namespace, secret.Name, secret)
+	if err != nil {
+		return err
+	}
+	if found {
+		if !metav1.IsControlledBy(secret, cloud) {
+			return fmt.Errorf("Secret %s/%s exists and is not this hub's", secret.Namespace, secret.Name)
+		}
+		if known[string(secret.Data["id"])] && len(secret.Data["deploy-key"]) > 0 {
+			return nil
+		}
+	}
+	key, err := backend.CreateDeployKey(ctx, as)
+	if err != nil {
+		return err
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		secret.Labels = map[string]string{pixieManagedLabel: pixieManagedCloud, pixieDeployKeyLabel: agent}
+		secret.Type = corev1.SecretTypeOpaque
+		secret.Data = map[string][]byte{"deploy-key": []byte(key.Key), "id": []byte(key.ID)}
+		return controllerutil.SetControllerReference(cloud, secret, r.Scheme)
+	})
+	return err
 }
 
 // setStatus writes status only when it changed (principle 7).

@@ -50,6 +50,15 @@ render vizier-nats.yaml k8s/vizier_deps/base/nats "Pixie Vizier NATS"
 # CloudNativePG; only the NATS (with JetStream) is kept.
 render cloud.yaml k8s/cloud/public "Self-hosted Pixie Cloud services"
 render cloud-nats.yaml k8s/cloud_deps/public/nats "Self-hosted Pixie Cloud NATS (JetStream)"
+# The metadata index exactly as the indexer defines it (src/cloud/indexer/md/mapping.o.go): the
+# operator creates the index with this body, so the indexer's own migration finds nothing to change
+# and never reindexes (it runs with manual index management; see pixie_cloud_bootstrap.go).
+awk '/^const IndexMapping = `/{f=1;next} f&&/^`/{exit} f' \
+  "${PIXIE_SOURCE}/src/cloud/indexer/md/mapping.o.go" >"${OUT_DIR}/md-index.json"
+# The profile service's migrations, which the organisation and administrator bootstrap writes
+# against (TestPixieBootstrapMatchesVendoredSchema).
+rm -rf "${OUT_DIR}/profile-schema" && mkdir -p "${OUT_DIR}/profile-schema"
+cp "${PIXIE_SOURCE}"/src/cloud/profile/schema/*.up.sql "${OUT_DIR}/profile-schema/"
 cp "${PIXIE_SOURCE}/LICENSE" "${OUT_DIR}/LICENSE"
 echo "${PIXIE_COMMIT}" >"${OUT_DIR}/COMMIT"
 echo ">> vendored Pixie ${PIXIE_COMMIT} into ${OUT_DIR}"

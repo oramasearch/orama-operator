@@ -119,10 +119,10 @@ func pixieCloudSandboxPolicies(ctx context.Context, reader client.Reader, operat
 	if operatorNamespace != "" {
 		operator := map[string]string{"app.kubernetes.io/name": "orama-operator"}
 		policies = append(policies,
-			sandboxAllowance("The operator bootstraps the hub: the administrator in Kratos, the organisation and deploy keys in Postgres, the metadata index in OpenSearch.",
+			sandboxAllowance("The operator bootstraps the hub: the administrator in Kratos, the organisation in Postgres, deploy keys through the API, the metadata index in OpenSearch.",
 				networkPolicy("allow-operator-bootstrap", everyPod, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 					[]networkingv1.NetworkPolicyIngressRule{
-						{From: []networkingv1.NetworkPolicyPeer{namespacePodPeer(operatorNamespace, operator)}, Ports: tcpPorts(4434, 5432, pixieSearchPort)},
+						{From: []networkingv1.NetworkPolicyPeer{namespacePodPeer(operatorNamespace, operator)}, Ports: tcpPorts(4434, 5432, pixieSearchPort, 51200)},
 					}, nil)))
 	}
 	return policies, nil
