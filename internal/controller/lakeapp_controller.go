@@ -1713,7 +1713,7 @@ func (r *LakeAppReconciler) lakeAppDeploymentState(ctx context.Context, app *ora
 	if deployment.Status.ObservedGeneration < deployment.Generation {
 		return oramav1alpha1.LakeAppPhaseProgressing, false, "DeploymentProgressing", "waiting for the Deployment controller to observe the latest change", nil
 	}
-	if deployment.Status.ReadyReplicas >= desired && deployment.Status.UpdatedReplicas >= desired && deployment.Status.AvailableReplicas >= desired {
+	if deploymentRolledOut(deployment, desired) {
 		return oramav1alpha1.LakeAppPhaseReady, true, "DeploymentReady", fmt.Sprintf("all %d replicas ready", desired), nil
 	}
 	message := fmt.Sprintf("%d/%d replicas ready", deployment.Status.ReadyReplicas, desired)
