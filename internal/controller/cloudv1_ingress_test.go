@@ -657,3 +657,26 @@ func TestExtraHostsAdmission(t *testing.T) {
 		}
 	}
 }
+
+// The engine Ingresses admit the engine's own body limits, so nginx never answers 413 below them;
+// the dashboard and docs keep nginx's default, and an annotation the operator no longer sets goes.
+func TestEngineIngressesAdmitTheEngineBodyLimits(t *testing.T) {
+	oc := extraHostsStack(nil, nil, nil, nil)
+	h := newExtraHostsHarness(t, engineKeySecret(), engineMasterSecret())
+	h.publish(oc)
+	for component, want := range map[string]string{"writer": "400m", "reader": "16m", "dashboard": "", "docs": ""} {
+		if got := h.ingress(component).Annotations[annotationNginxProxyBodySize]; got != want {
+			t.Errorf("%s Ingress %s = %q, want %q", component, annotationNginxProxyBodySize, got, want)
+		}
+	}
+
+	dashboard := h.ingress("dashboard")
+	dashboard.Annotations[annotationNginxProxyBodySize] = "1g"
+	if err := h.cl.Update(context.Background(), dashboard); err != nil {
+		t.Fatal(err)
+	}
+	h.publish(oc)
+	if got, ok := h.ingress("dashboard").Annotations[annotationNginxProxyBodySize]; ok {
+		t.Errorf("dashboard Ingress kept %s = %q", annotationNginxProxyBodySize, got)
+	}
+}

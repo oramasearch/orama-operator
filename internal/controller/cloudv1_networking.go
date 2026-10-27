@@ -44,6 +44,20 @@ func readerPublicHost(oc *oramav1alpha1.OramaCloudV1) string {
 	return engine.Reader.Host
 }
 
+// annotationNginxProxyBodySize is ingress-nginx's request body limit for an Ingress. Without it nginx
+// answers 413 above 1m, stricter than the engine behind it (operator#1056).
+const annotationNginxProxyBodySize = "nginx.ingress.kubernetes.io/proxy-body-size"
+
+// The engine Ingresses admit exactly the largest body OramaCore accepts on that side, so the engine,
+// not nginx, decides what is too large. OramaCore's DefaultBodyLimit (LSR-150, oramacore-private
+// 1e0dc346, src/web_server/api/collection/mod.rs; in builds b6ee20fb and 86bc17ea): write routes
+// WRITE_MAX_BODY_SIZE 400 MiB, read routes and the server default READ_MAX_BODY_SIZE 16 MiB (MCP
+// lower, 1 MiB). nginx's "m" is MiB. Change these with the engine's limits.
+const (
+	writerProxyBodySize = "400m"
+	readerProxyBodySize = "16m"
+)
+
 // readerPodPort is the reader pod port behind the reader Service's port 80: Envoy's when it is
 // enabled, OramaCore's otherwise. A NetworkPolicy matches the destination pod port, not the
 // Service port.
@@ -66,9 +80,10 @@ func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, o
 		component, host string
 		extraHosts      []string
 		port            int32
+		bodySize        string
 	}{
-		{"writer", writerPublicHost(oc), engine.Writer.ExtraHosts, oramacorePort},
-		{"reader", readerPublicHost(oc), engine.Reader.ExtraHosts, envoyPort},
+		{"writer", writerPublicHost(oc), engine.Writer.ExtraHosts, oramacorePort, writerProxyBodySize},
+		{"reader", readerPublicHost(oc), engine.Reader.ExtraHosts, envoyPort, readerProxyBodySize},
 	} {
 		name := oc.Name + "-" + endpoint.component
 		// The main Ingress comes first: it is deleted before its companion, so a host never serves
@@ -99,7 +114,7 @@ func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, o
 		if err := r.upsertMetricsBlockIngress(ctx, oc, name, endpoint.component, main); err != nil {
 			return fmt.Errorf("%s metrics ingress: %w", endpoint.component, err)
 		}
-		if err := r.upsertIngress(ctx, oc, name, endpoint.component, main); err != nil {
+		if err := r.upsertIngress(ctx, oc, name, endpoint.component, main, endpoint.bodySize); err != nil {
 			return fmt.Errorf("%s ingress: %w", endpoint.component, err)
 		}
 	}
