@@ -7,6 +7,23 @@ spec:
   - clusterRef: orama-nonprod-cluster-01
     name: dev
     spec:
+      # Merged work runs on dev before v0.7.2 is cut (Steve, 2026-10-26: "deploy them all when ready"): lake
+      # dev-11153627 (lake#1231 App SQL, #1232 auto-fix and Restart, #1233 model choice and prices) and
+      # agent-application ba264e5 (#52); agents on gpt-6.1-sol. Remove these pins when the template names the releases.
+      image: oramasearch/lake:dev-11153627
+      agents:
+        model: gpt-6.1-sol
+        runtimeImage: oramasearch/agent-runtime:v0.2.0
+        library:
+        - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
+        - {key: agent-application, image: oramasearch/agent-application:ba264e5}
+        - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
+        - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
+        - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
+        - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
+        - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.0}
+        - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
+        - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
       args:
       - "--listen"
       - 0.0.0.0:4900
