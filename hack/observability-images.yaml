@@ -5,7 +5,9 @@
 #
 # Checked by: cmd/platform_observability_test.go (the platform charts, rendered offline from
 # hack/charts/, use exactly the `platform` mirrors, each pod with a pull Secret) and
-# internal/controller/pixie_render_test.go (the `pixie` keys are exactly pixieImageKeys).
+# internal/controller/pixie_render_test.go (the `pixie` keys are exactly pixieImageKeys) and
+# internal/controller/observability_metrics_prometheus_test.go (the images the operator runs for
+# the hub's metrics are listed).
 
 charts:
   - chart: kube-prometheus-stack
@@ -52,6 +54,15 @@ platform:
   - mirror: docker.io/oramasearch/platform-k8s-sidecar:2.13.3
     upstream: docker.io/kiwigrid/k8s-sidecar:2.13.3
     licence: MIT
+
+# Platform mirrors the operator runs itself rather than a chart, so the hub's metrics need no Pixie
+# image: the hub Prometheus uses the `platform` Prometheus above, and each leaf's metrics federation
+# proxy this Envoy, the same upstream image Pixie's `envoy` key pins.
+operator:
+  - mirror: docker.io/oramasearch/platform-envoy:v1.34.2
+    upstream: "envoyproxy/envoy:v1.34.2@sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9"
+    licence: Apache-2.0
+    used_by: metrics-federation (internal/controller/observability_metrics.go platformEnvoyImage)
 
 # Pixie: the ObservabilityProvider's release keys, each a private oramasearch/pixie-* repository,
 # by digest. Built (#455) from oramasearch/pixie 4b445e0b7907c79d034bcb4a227bbaede94d370a with

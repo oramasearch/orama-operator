@@ -25,8 +25,8 @@ operator, a `prod-support` cluster, nonprod isolated), [#455](https://github.com
 | Cluster | Platform layer (every cluster) | From resources |
 |---|---|---|
 | Every cluster | kube-prometheus-stack (Prometheus, Alertmanager, kube-state-metrics, node-exporter) and Perses, from `helmfile.yaml` and `config/clusters/*/platform.yaml` | The rules, scrape configuration, routing and dashboards of what runs on it |
-| A cluster with an `ObservabilityAgent` | | `PixieVizier` in namespace `pl`: Pixie's node agents and Vizier services |
-| A cluster with an `ObservabilityHub` | | `PixieCloud` in namespace `plc`: self-hosted Pixie Cloud |
+| A cluster with an `ObservabilityAgent` | | `PixieVizier` in namespace `pl`: Pixie's node agents and Vizier services, and (for a hub on another cluster) the read-only metrics federation proxy |
+| A cluster with an `ObservabilityHub` | | `PixieCloud` in namespace `plc`: self-hosted Pixie Cloud, and the hub Prometheus that keeps every cluster's metrics, its dashboards and the rules that page when a cluster is lost |
 
 | Hub on | Serves agents on |
 |---|---|
@@ -252,6 +252,10 @@ this work runs, with the upstream it is mirrored from and its licence:
   values and fails on any image outside the inventory or any pod without the pull Secret;
   `TestPixieInventoryMatchesReleaseKeys` keeps the Pixie list equal to what the operator renders.
 - **The PxL script bundle** is the `script-bundle` image, served inside the hub.
+- **What the operator runs for the hub's metrics** (`operator`): the hub Prometheus uses the
+  platform's Prometheus mirror, and each leaf's federation proxy `platform-envoy`, a mirror of the
+  Envoy the Pixie `envoy` key pins, so the hub's metrics need no Pixie image.
+  `TestHubPrometheusIsPinnedAndScoped` checks both are inventoried.
 
 The charts themselves are still fetched from their public repositories by `helmfile` and
 `ClusterHelmRelease`, as every platform chart is today; an on-prem install without internet pulls
@@ -297,7 +301,7 @@ What the operator writes:
 |---|---|---|---|
 | Each `OramaCloudV1` | PodMonitors: the writer's and readers' `/metrics` on :8080 (by number: a reader's Envoy also names a port `http`), and the control database's exporter (:9187). The stack's sandbox admits only the platform's Prometheus pods, on those two ports. | A critical component (writer, reader, broker, control database, cache, dashboard) not ready for 10 minutes pages; the rest after 30 minutes as a warning. The engine's or control database's metrics gone for 5 minutes; search p95 over 0.5 s for 15 minutes; replica lag over 5 minutes. | `<stack>-overview` (health, traffic, resources) and one per component, in the namespace's Perses project. |
 | Each `PixieVizier` | | Agents not Ready for 15 minutes; the link to the hub down for 15 minutes (critical). Evaluated on the agent's cluster, so they fire when the hub is unreachable. | |
-| Each `PixieCloud` | | The hub not Ready for 15 minutes; an agent cluster not heartbeating for 10 minutes (critical). A lost cluster cannot page about itself; this is the rule that notices. | |
+| Each `PixieCloud` | Federates every cluster it serves into the hub Prometheus (below). | The hub not Ready for 15 minutes; an agent cluster's Vizier not heartbeating for 10 minutes. The hub-scoped rules of the next section. | The hub's Perses project (next section). |
 
 Not scraped yet: the broker. RabbitMQ's Prometheus plugin is not enabled on the broker, and enabling
 it restarts the broker, so it waits for a planned window; until then the broker is covered by its
@@ -308,9 +312,98 @@ without the monitoring CRDs it writes no monitoring object, dashboard or sandbox
 (`TestOramaCloudV1MonitoringWaitsForThePlatformLayer`). A `PixieCloud` or `PixieVizier` then shows
 `Alerting=False` (`MonitoringCRDsMissing`); every other resource still reconciles.
 
+Writes are all or nothing: `applyMonitoringObjects` looks up every kind first, so a platform layer
+installed in part gets nothing written and the condition says so (`TestMonitoringObjectsAreAllOrNothing`).
+
 Rules on metrics that may be absent have an `absent()` companion, so a missing target is an alert,
 never a silent pass: `OramaEngineTargetsMissing` and `OramaControlDBTargetsMissing` (critical),
 `OramaStackStatusMetricsMissing`, and `ObservabilityAgentStatusMissing` on agents and hubs.
+
+## The hub's metrics: every cluster of its purpose, kept and paged on prod-support
+
+Each cluster keeps its own Prometheus and Alertmanager for its own alerts. That cannot cover the
+cluster itself: a lost leaf takes both with it. So the hub runs one more Prometheus, in `plc`, that
+federates every cluster it serves, keeps the series for `metricsRetention` (default 30 days) on its
+own volume (`storage.metrics`, default 100 Gi), shows them in the hub's dashboards, and pages from the
+hub (`observability_metrics.go`).
+
+**None of it waits for Pixie.** The hub writes its Prometheus, rules and dashboards, and each leaf its
+proxy, before anything of Pixie: no Pixie image, deploy key, registration or heartbeat is needed, so
+a cluster's metrics reach the hub and its loss pages while Pixie is still missing or broken. They need
+the platform layer's monitoring CRDs, the cluster's pull Secret, and two platform mirrors: the
+Prometheus the platform already runs and `platform-envoy`, the Envoy Pixie also pins
+(`hack/observability-images.yaml`, `operator`). The hub's objects carry `orama.cloud/pixie: metrics`,
+so Pixie's own apply and prune never touch them.
+
+**The data path, for a leaf on another cluster:**
+
+```
+leaf: platform Prometheus (monitoring) <- metrics-federation (pl: Envoy, GET /federate only, else 404)
+        <- PeerConnection pl/pixie-hub export metrics.<agent>
+      ======= the agent's PeerLink: zetta-tunnel gateways, mutual TLS 1.3, exact peer identities =======
+hub:  PeerConnection plc/pixie-agent-<agent> import metrics.<agent> = Service peer-metrics-<agent>
+        <- hub Prometheus (plc), job federate-<cluster>, every 60 s -> hub cluster's Alertmanager
+```
+
+- **The same link as Pixie's**: one `PeerLink` per agent carries vzconn one way and the metrics the
+  other. No new endpoint is exposed; nothing but the read-only proxy is exported; the leaf's
+  Prometheus API, admin endpoints and remote write are not reachable from the hub. The hub's own
+  cluster is federated directly from its platform Prometheus.
+- **Only accepted clusters**: the jobs are built from the `PixieCloud`'s `agents`, which only the
+  managing cluster writes after the purpose check, so a production hub never reads nonprod and the
+  reverse (`TestObservabilityAgentsReportOnlyToTheirPurposesHub`).
+- **Narrow**: `match[]` brings health (`up`, `ALERTS`), the operator's status (`orama_*`),
+  readiness, restarts and node conditions, kube-prometheus-stack's per-container CPU and memory
+  recording rules, the engine's latency histograms, control database lag and volume use; not raw
+  cAdvisor series.
+- **Labelled by the hub, not by the cluster**: each series keeps its own job and instance
+  (`honor_labels`), and its `cluster` label is overwritten after federation with the managing
+  cluster's name for the job it came through, so `v1` in EU and `v1` in US are two series and a
+  cluster cannot claim another's name. A federated `up` with a `federate-*` job is dropped, so a
+  cluster cannot forge the hub's reachability series either: `up{job="federate-<cluster>"}` is the
+  hub's own scrape of that cluster, always distinct from that cluster's own `up` series (its
+  Alertmanager's, say), which keep their jobs. `TestHubFederatesEachLeafLive` runs this in real
+  Prometheus with two leaves of identical stacks, one of which forges both.
+
+**What pages from the hub**, evaluated only by the hub Prometheus (rules labelled
+`orama.cloud/metrics-scope: hub`; the platform Prometheus' `ruleSelector` excludes them, on both
+installation paths), delivered by the hub cluster's Alertmanager to the hub's receivers:
+
+| Alert | Fires when |
+|---|---|
+| `ObservabilityClusterUnreachable` | a cluster's federate job has been down for 5 minutes: the cluster, its link, its proxy or its Prometheus is gone |
+| `ObservabilityClusterMetricsMissing` | an expected cluster has no federate job at all for 10 minutes |
+| `ObservabilityClusterAlertingDown` | a reachable cluster's Watchdog has been absent for 15 minutes: its own rules are not running |
+| `ObservabilityClusterAlertmanagerDown`, `…Missing` | a cluster's Alertmanager is down, or reports nothing while the cluster is reachable |
+| `ObservabilityRelayedCriticalAlert` | a cluster's own critical alert is firing while its Alertmanager is down: the hub delivers it instead |
+
+Every rule names only the clusters the hub reads now (`cluster=~"…"`, rendered from the agents).
+Prometheus writes no staleness marker for a job a reload removes, so a removed cluster's last series
+stay queryable for five minutes; scoped this way, they page nothing.
+
+`TestHubMetricsRulesInPrometheus` checks the rendered configuration with `promtool check config` and
+the rules with `promtool test rules` on synthetic series: a lost cluster, a missing job, a cluster
+whose rules or Alertmanager stopped, a relayed alert, and a healthy cluster that fires nothing.
+`TestHubMetricsRulesIgnoreRestartsAndRemovedClusters` covers what must not page: the hub down for
+eight minutes, and a removed cluster whose dead series are still in the lookback; and a leaf that
+loses only its Alertmanager, which pages and has its critical alert relayed.
+
+**Dashboards** (`hub-dashboards` in `plc`, Perses project `observability-hub`, reading the hub
+Prometheus): every cluster on one page (reachability, firing alerts, components not ready, nodes),
+one page per cluster (components, alerts, restarts, CPU and memory by namespace, volumes, search
+latency), and Orama Cloud v1 across clusters, every legend naming the cluster.
+
+**Status and lifecycle**: each agent's `metricsConnected` (on the `PixieCloud`, the hub and the
+agent) is the hub Prometheus' own `up` for that cluster's job, reported while Pixie still waits. A
+hub Prometheus that does not answer reads false for every cluster. Enrolling an agent adds its
+export, import, job and rules; removing it removes all of them, and its series age out of the hub
+with `metricsRetention`. A withdrawn link (credentials gone, `PeerLink` deleted) or a lost import
+Service stops the scrape: the status says false and `ObservabilityClusterUnreachable` pages. A
+restarted hub keeps its data on its volume and resumes. Without the monitoring CRDs nothing of this is
+written, and `Alerting=False`.
+
+**Budget**: the hub Prometheus requests 1 GiB and 0.2 CPU (limits 2 GiB, 2 CPU) and may fill 90% of
+its volume (`retentionSize`); each leaf's proxy requests 64 MiB.
 
 ## Status
 
@@ -327,7 +420,10 @@ hub or agent writes nothing (`TestPixieCloudBootstrapIssuesAndRevokesPerClusterK
 | What fails | What happens |
 |---|---|
 | The hub's cluster or the link | Vizier keeps collecting on its nodes (hours, in memory); `ObservabilityHubUnreachable` fires on the agent's cluster. Nothing on the agent's cluster depends on the hub to run. |
-| An agent's cluster | `ObservabilityAgentDisconnected` fires on the hub's cluster. |
+| An agent's whole cluster | On the hub: `ObservabilityClusterUnreachable` (its federate job down), and `ObservabilityAgentDisconnected` once Pixie runs. Neither needs anything on the lost cluster. |
+| An agent's Alertmanager | On the hub: `ObservabilityClusterAlertmanagerDown`, and each of that cluster's critical alerts relayed (`ObservabilityRelayedCriticalAlert`). |
+| Pixie missing or broken (no release, a key not issued, a cluster not registered) | The hub's metrics, dashboards and cluster-loss paging are unaffected: they are written before anything of Pixie and read only the platform's Prometheus. |
+| An agent removed | Its job and its rules go with it; its last series, still queryable for five minutes, page nothing. |
 | A Pixie credential deleted | Minted again. |
 | The hub's database lost | The organisation (its id is a function of its name) and the administrator are created again; every key Pixie no longer lists is issued again and delivered to its cluster, whose Vizier then registers anew. What is lost is people's saved scripts and settings, and the old cluster registrations. No backup is configured for it yet. |
 | A deploy key deleted in Pixie's UI | Issued again on the next pass and delivered to its cluster. |
@@ -363,9 +459,11 @@ Steve's consent where the cluster rules ask for it:
      `script-bundle` image (`hack/pixie-patches/README.md`, "Building"), each digest recorded.
      Missing: the `ObservabilityProvider` is not Ready and names what is missing; no Pixie pod is
      created.
-   - The platform mirrors: every `platform` image of `hack/observability-images.yaml`. Missing:
-     the chart's pods cannot pull, and the `ClusterHelmRelease` reports each workload that is not
-     rolled out with its pods' pull error.
+   - The platform mirrors: every `platform` and `operator` image of
+     `hack/observability-images.yaml`. Missing: the chart's pods cannot pull, and the
+     `ClusterHelmRelease` reports each workload that is not rolled out with its pods' pull error;
+     without `platform-envoy` a leaf's `metrics-federation` cannot pull and the hub reports that
+     cluster `metricsConnected: false` and pages `ObservabilityClusterUnreachable`.
    - The pull Secrets: the existing per-cluster registry Secrets on the managing cluster, and on the
      managing cluster itself one in `monitoring` ([`install.md`](../install.md)). Missing: the
      release is `Degraded` (`PullSecretUnavailable`).
@@ -397,26 +495,23 @@ releases from both installation paths in one change; the CRDs stay, as always.
 
 ## Verify
 
-Native tests (`go test ./internal/controller -run 'Pixie|Observability|OramaCloudV1Monitoring'`,
-`go test ./cmd`):
+What has been checked, and how strongly. Nothing below has run on a cluster.
 
-- `TestRenderVizier`, `TestRenderPixieCloud`: exact objects, images only from the release, every
-  container budgeted, auto-update off, no updater or certificate Job, no Elastic or BigQuery, one
-  database and role per service, nothing fetched from outside, deterministic output.
-- `TestPixieVizierWaitsForItsOwnCredentials`, `TestPixieVizierReconcileIsDeterministicAndKeepsRegistration`,
-  `TestPixieVizierToleratesMissingMonitoringCRDs`.
-- `TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys`: the bootstrap, a key per cluster, the
-  peer allowance kept, revocation, a steady hub writing nothing.
-- `TestObservabilityAgentsReportOnlyToTheirPurposesHub`, `TestObservabilityHubRefusedOnProduction`,
-  `TestObservabilityProductionCredentialsNeverReachNonprod`, `TestObservabilityPurposeRules`.
-- `TestOramaCloudV1MonitoringScrapesOnlyTheEngineAndControlDB`, `TestOramaCloudV1ScrapeAllowancesAdmitOnlyPrometheus`.
-- `TestObservabilityCRDsRefuseMalformedResources` (envtest).
-- `TestEveryClusterRunsPermissiveMetricsAlertingAndDashboards`, `TestHelmfileAndEveryLeafInstallTheSamePlatform`.
+| Evidence | What it shows | Tests |
+|---|---|---|
+| Controller tests (fake clients) | Rendering, reconciliation, idempotence, purpose isolation, credentials, teardown, status, the all-or-nothing monitoring writes | `TestRenderVizier`, `TestRenderPixieCloud`, `TestPixieVizier*`, `TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys`, `TestObservability*`, `TestOramaCloudV1Monitoring*`, `TestMonitoringObjectsAreAllOrNothing`, `TestHubPrometheusIsPinnedAndScoped`, `TestHubDashboardsReadTheHubAndNameTheCluster`, `TestMetricsFederationProxyIsReadOnly`, `TestClusterHelmReleaseCopiesItsPullSecretUnderTheProductionRule` |
+| envtest (a real API server) | The CRDs install and refuse malformed resources; defaults apply | `TestObservabilityCRDsRefuseMalformedResources` |
+| Offline Helm render of the vendored charts | Only inventoried mirrors render, every pod has the pull Secret, the platform Prometheus excludes hub rules, both paths install the same values | `TestPlatformChartsRenderOfflineWithOnlyMirroredImages`, `TestEveryClusterRunsPermissiveMetricsAlertingAndDashboards`, `TestHelmfileAndEveryLeafInstallTheSamePlatform` |
+| Real Prometheus 3.15 (`PROMETHEUS_BINARY_DIR`) | The hub's rendered configuration loads. The hub rules page on synthetic series for a lost leaf, a lost Alertmanager alone, a missing job and stopped rules, and stay silent through a hub restart and for a removed cluster. Real federation from two leaves with identical stacks keeps them apart by cluster, overrides a forged cluster label, drops a forged reachability series, and brings only the match list. It turns a killed leaf's job to `up=0`, which the operator's status query reads; a restarted hub keeps its data and resumes; a removed cluster stops being scraped on reload | `TestHubMetricsRulesInPrometheus`, `TestHubMetricsRulesIgnoreRestartsAndRemovedClusters`, `TestHubFederatesEachLeafLive` |
+| Go TLS with the issued certificates | A Vizier's dial verifies the hub's CA and name for both allowed addresses | `TestHubCertificateIsVerifiedForTheDialedAddress` |
+| Reading the pinned sources | OpenSearch 2.19 accepts Pixie's mapping and client; the API's GraphQL key calls and token; gRPC's server name; the storage client's emulator reads; the patch applies at the pin | the tables above; `TestPixieBootstrapMatchesVendoredSchema`, `TestPixieUserTokenIsWhatPixieAccepts`, `TestPixieAPI*` against a fake API |
 
-**Not yet qualified on a cluster**, because the images and mirrors do not exist yet (#455): Pixie
-on the AKS node images (Ubuntu 22.04/24.04, Azure Linux 3) and the protocols traced; the bootstrap
-against a live Pixie Cloud (Kratos' admin API, the adapter against the migrated profile database,
-the GraphQL key calls with the operator's token); OpenSearch 2.19 with Pixie's indexer and
-autocomplete at run time; the script bundle through the proxy and the script manager; the
-kube-state-metrics custom-resource metrics; the PodMonitors and alerts against live targets; and the
-platform charts installing from the mirrors. Each is step 4 of the rollout.
+**Not run anywhere yet**, because the images and mirrors do not exist (#455) and the prod-support
+cluster is not provisioned: Pixie on the AKS node images (Ubuntu 22.04/24.04, Azure Linux 3) and the
+protocols traced; the bootstrap against a live Pixie Cloud (Kratos' admin API, the adapter against the
+migrated profile database, the GraphQL key calls); OpenSearch 2.19 with Pixie's indexer and
+autocomplete; the script bundle through the proxy and the script manager; the Envoy federation proxy
+(the `platform-envoy` mirror) and the metrics crossing a real peer link; the hub Prometheus under
+prometheus-operator and its sandbox allowances; the kube-state-metrics custom-resource metrics; the
+PodMonitors and alerts against live targets; and the platform charts installing from the mirrors.
+Each is step 4 of the rollout, on nonprod first.

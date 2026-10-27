@@ -208,6 +208,10 @@ spec:
                 type: string
               message:
                 type: string
+              metricsConnected:
+                description: MetricsConnected is true while the hub's Prometheus reads
+                  the cluster's metrics.
+                type: boolean
               observedGeneration:
                 format: int64
                 type: integer

@@ -99,6 +99,22 @@ production cluster, and default `storage` and `nodeMemory`. The setup-envtest of
 0.18 fetches from a bucket that now answers 401; `setup-envtest@release-0.21 use 1.30.0` fetches
 the same binaries from GitHub.
 
+### The hub's metrics in real Prometheus
+
+`TestHubMetricsRulesInPrometheus` and `TestHubMetricsRulesIgnoreRestartsAndRemovedClusters` (promtool
+`check config` and `test rules`) and `TestHubFederatesEachLeafLive` (a hub and two leaf Prometheus
+servers, really federating, with a forging leaf, a lost leaf, a hub restart and a removal) run the
+hub's rendered configuration and rules in Prometheus 3.15, the version of the platform mirror. They
+need the release tarball's `prometheus` and `promtool`, checked against its `sha256sums.txt`:
+
+```sh
+curl -LO https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.<os>-<arch>.tar.gz
+export PROMETHEUS_BINARY_DIR=$PWD/prometheus-3.15.0.<os>-<arch>
+go test ./internal/controller -run 'HubMetrics|HubFederates'
+```
+
+Without it they are skipped, as the envtests are without `KUBEBUILDER_ASSETS`.
+
 ### Re-vendoring Pixie
 
 The operator embeds the kustomize output of one commit of `oramasearch/pixie`

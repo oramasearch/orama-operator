@@ -38,8 +38,13 @@ type persesRow struct {
 	Panels []persesPanel
 }
 
-// persesDashboard is a Perses Dashboard resource.
+// persesDashboard is a Perses Dashboard resource on the cluster's platform Prometheus.
 func persesDashboard(project, name, title string, rows []persesRow) map[string]any {
+	return persesDashboardOn(platformPrometheusURL, project, name, title, rows)
+}
+
+// persesDashboardOn is a Perses Dashboard resource whose datasource is the Prometheus at url.
+func persesDashboardOn(url, project, name, title string, rows []persesRow) map[string]any {
 	panels := map[string]any{}
 	layouts := []any{}
 	index := 0
@@ -87,7 +92,7 @@ func persesDashboard(project, name, title string, rows []persesRow) map[string]a
 			"datasources": map[string]any{"prometheus": map[string]any{
 				"default": true,
 				"plugin": map[string]any{"kind": "PrometheusDatasource", "spec": map[string]any{
-					"proxy": map[string]any{"kind": "HTTPProxy", "spec": map[string]any{"url": platformPrometheusURL}},
+					"proxy": map[string]any{"kind": "HTTPProxy", "spec": map[string]any{"url": url}},
 				}},
 			}},
 			"panels":  panels,

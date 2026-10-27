@@ -115,6 +115,8 @@ spec:
     postgres: 50Gi
     search: 50Gi
     messaging: 20Gi
+    metrics: 200Gi        # the hub Prometheus: every production cluster's federated metrics
+  metricsRetention: 90d
   alerting:
     receivers:
       - name: production-oncall

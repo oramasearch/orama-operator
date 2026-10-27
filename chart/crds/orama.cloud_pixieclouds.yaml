@@ -123,12 +123,21 @@ spec:
                   - severities
                   type: object
                 type: array
+              cluster:
+                description: 'Cluster is the hub''s own KubernetesCluster: the cluster
+                  label of its own metrics.'
+                type: string
               domain:
                 minLength: 1
                 type: string
               hub:
                 description: Hub is the ObservabilityHub this was written for.
                 minLength: 1
+                type: string
+              metricsRetention:
+                description: MetricsRetention is how long the hub Prometheus keeps
+                  federated metrics.
+                pattern: ^[0-9]+(h|d|w|y)$
                 type: string
               organization:
                 minLength: 1
@@ -199,6 +208,16 @@ spec:
                     description: Messaging is the NATS JetStream store.
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
+                  metrics:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 100Gi
+                    description: |-
+                      Metrics is the hub Prometheus' volume, which keeps every agent cluster's federated metrics
+                      for metricsRetention.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                   postgres:
                     anyOf:
                     - type: integer
@@ -245,6 +264,10 @@ spec:
                       description: DeployKeySecret is the Secret in this namespace
                         that holds the cluster's deploy key.
                       type: string
+                    metricsConnected:
+                      description: MetricsConnected is true while the hub Prometheus
+                        reads the cluster's metrics.
+                      type: boolean
                     name:
                       type: string
                     registered:
@@ -253,6 +276,7 @@ spec:
                       type: boolean
                   required:
                   - connected
+                  - metricsConnected
                   - name
                   - registered
                   type: object

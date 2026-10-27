@@ -103,8 +103,23 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 	if alertingErr != nil && !errors.Is(alertingErr, errMonitoringCRDsMissing) {
 		return oramav1alpha1.PixieVizierStatus{}, nil, alertingErr
 	}
+	localHub := !isPeerImportAddress(vz.Spec.CloudAddress)
+	// The sandbox first, so no pod here runs without it.
+	policies, cilium, err := vizierSandboxPolicies(ctx, r.reader(), vz, localHub)
+	if err != nil {
+		return oramav1alpha1.PixieVizierStatus{}, nil, err
+	}
+	if err := reconcilePixieSandbox(ctx, r.Client, r.Scheme, vz, policies, cilium); err != nil {
+		return oramav1alpha1.PixieVizierStatus{}, nil, err
+	}
+	// Then the hub's window onto this cluster's metrics, which like the alerting needs nothing of
+	// Pixie: the hub reads a cluster whose agents cannot run yet.
+	federation, err := r.reconcileMetricsFederation(ctx, vz, localHub)
+	if err != nil {
+		return oramav1alpha1.PixieVizierStatus{}, nil, err
+	}
 	if vz.Spec.Release == nil {
-		return pixieVizierStatus(oramav1alpha1.ObservabilityPhasePending, "waiting for an installable provider release (#455); alert routing is written"), alertingErr, nil
+		return pixieVizierStatus(oramav1alpha1.ObservabilityPhasePending, "waiting for an installable provider release (#455); alert routing and metrics federation are written"), alertingErr, nil
 	}
 	if problems := pixieReleaseProblems(vz.Spec.Release); len(problems) > 0 {
 		return pixieVizierStatus(oramav1alpha1.ObservabilityPhaseDegraded, problems[0]), alertingErr, nil
@@ -132,19 +147,10 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 	if err != nil {
 		return pixieVizierStatus(oramav1alpha1.ObservabilityPhaseDegraded, err.Error()), alertingErr, nil
 	}
-	// The sandbox first, so no Vizier pod runs without it.
-	localHub := !isPeerImportAddress(vz.Spec.CloudAddress)
-	policies, cilium, err := vizierSandboxPolicies(ctx, r.reader(), vz, localHub)
-	if err != nil {
-		return oramav1alpha1.PixieVizierStatus{}, nil, err
-	}
-	if err := reconcilePixieSandbox(ctx, r.Client, r.Scheme, vz, policies, cilium); err != nil {
-		return oramav1alpha1.PixieVizierStatus{}, nil, err
-	}
 	if err := applyPixieObjects(ctx, r.Client, r.Scheme, vz, pixieManagedVizier, objects); err != nil {
 		return oramav1alpha1.PixieVizierStatus{}, nil, err
 	}
-	components, err := pixieWorkloadStatus(ctx, r.Client, r.reader(), vz.Namespace, objects)
+	components, err := pixieWorkloadStatus(ctx, r.Client, r.reader(), vz.Namespace, append(objects, federation...))
 	if err != nil {
 		return oramav1alpha1.PixieVizierStatus{}, nil, err
 	}
@@ -157,6 +163,29 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 		status.ClusterID = string(cluster.Data["cluster-id"])
 	}
 	return status, alertingErr, nil
+}
+
+// reconcileMetricsFederation keeps the read-only proxy a hub on another cluster federates this
+// cluster's metrics through (observability_metrics.go), once the pull Secret its image needs is
+// here, and removes it when the hub is on this cluster, which reads the Prometheus directly.
+func (r *PixieVizierReconciler) reconcileMetricsFederation(ctx context.Context, vz *oramav1alpha1.PixieVizier, localHub bool) ([]client.Object, error) {
+	var objects []client.Object
+	if !localHub {
+		var pull corev1.Secret
+		found, err := getIfExists(ctx, r.Client, vz.Namespace, vz.Spec.PullSecretName, &pull)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			if objects, err = metricsFederationObjects(); err != nil {
+				return nil, err
+			}
+			for _, object := range objects {
+				stampPixieObject(object, pixieManagedMetrics, vz.Namespace, vz.Spec.PullSecretName)
+			}
+		}
+	}
+	return objects, applyPixieObjects(ctx, r.Client, r.Scheme, vz, pixieManagedMetrics, objects)
 }
 
 // ensureSecrets mints Vizier's CA and service certificates and its signing key, and returns the

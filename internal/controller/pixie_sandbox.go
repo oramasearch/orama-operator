@@ -77,6 +77,17 @@ func vizierSandboxPolicies(ctx context.Context, reader client.Reader, vz *oramav
 				}}),
 		))
 	}
+	if !localHub {
+		policies = append(policies, sandboxAllowance(
+			"The federation proxy reads this cluster's platform Prometheus for the hub, which reaches the proxy only through the agent's PeerConnection.",
+			networkPolicy("allow-metrics-federation-egress", podSelector(map[string]string{pixieComponentLabel: metricsFederationName}),
+				[]networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil,
+				[]networkingv1.NetworkPolicyEgressRule{{
+					To:    []networkingv1.NetworkPolicyPeer{namespacePodPeer(pixieMonitoringNamespace, map[string]string{prometheusPodsLabel: prometheusPodsValue})},
+					Ports: tcpPorts(hubPrometheusPort),
+				}}),
+		))
+	}
 	hostSpec, err := json.Marshal(map[string]any{
 		"endpointSelector": map[string]any{},
 		"ingress":          []any{map[string]any{"fromEntities": []string{"host", "remote-node"}}},
@@ -116,13 +127,28 @@ func pixieCloudSandboxPolicies(ctx context.Context, reader client.Reader, operat
 				map[string]string{pixieComponentLabel: "vizier-cloud-connector"},
 				podSelector(map[string]string{pixieComponentLabel: "vzconn-server"}), pixieVzconnPort)),
 	}
+	hubPrometheus := podSelector(map[string]string{pixieComponentLabel: hubPrometheusComponent})
+	policies = append(policies,
+		sandboxAllowance("The hub Prometheus federates this cluster's platform Prometheus and sends its alerts to this cluster's Alertmanager; other clusters arrive through their PeerConnection imports.",
+			networkPolicy("allow-hub-metrics-egress", hubPrometheus, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil,
+				[]networkingv1.NetworkPolicyEgressRule{
+					{To: []networkingv1.NetworkPolicyPeer{namespacePodPeer(pixieMonitoringNamespace, map[string]string{prometheusPodsLabel: prometheusPodsValue})}, Ports: tcpPorts(hubPrometheusPort)},
+					{To: []networkingv1.NetworkPolicyPeer{namespacePodPeer(pixieMonitoringNamespace, map[string]string{prometheusPodsLabel: "alertmanager"})}, Ports: tcpPorts(9093)},
+				})),
+		sandboxAllowance("Perses on this cluster shows the hub's dashboards from the hub Prometheus.",
+			networkPolicy("allow-hub-metrics-ingress", hubPrometheus, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				[]networkingv1.NetworkPolicyIngressRule{{
+					From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer(pixieMonitoringNamespace, map[string]string{prometheusPodsLabel: "perses"})},
+					Ports: tcpPorts(hubPrometheusPort),
+				}}, nil)),
+	)
 	if operatorNamespace != "" {
 		operator := map[string]string{"app.kubernetes.io/name": "orama-operator"}
 		policies = append(policies,
-			sandboxAllowance("The operator bootstraps the hub: the administrator in Kratos, the organisation in Postgres, deploy keys through the API, the metadata index in OpenSearch.",
+			sandboxAllowance("The operator bootstraps the hub: the administrator in Kratos, the organisation in Postgres, deploy keys through the API, the metadata index in OpenSearch; it reads the hub Prometheus for each cluster's metrics status.",
 				networkPolicy("allow-operator-bootstrap", everyPod, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 					[]networkingv1.NetworkPolicyIngressRule{
-						{From: []networkingv1.NetworkPolicyPeer{namespacePodPeer(operatorNamespace, operator)}, Ports: tcpPorts(4434, 5432, pixieSearchPort, 51200)},
+						{From: []networkingv1.NetworkPolicyPeer{namespacePodPeer(operatorNamespace, operator)}, Ports: tcpPorts(4434, 5432, pixieSearchPort, 51200, hubPrometheusPort)},
 					}, nil)))
 	}
 	return policies, nil

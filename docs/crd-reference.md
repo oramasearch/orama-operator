@@ -1586,11 +1586,12 @@ cluster. A hub runs only on a cluster tagged `purpose: prod-support` (serving pr
 | `spec.domain` | The host name people reach the UI under (and `work.<domain>`). No DNS record or public exposure is created. |
 | `spec.organization` / `.adminEmail` | The one organisation every agent's cluster is registered under, and its administrator. The password is generated into Secret `plc/pixie-admin` on the hub's cluster. |
 | `spec.imagePullSecretRef` | Registry credentials on the managing cluster, copied as `plc/pixie-pull` under the production-credential rules. |
-| `spec.storage` | `storageClassName`, `postgres` (default 20Gi), `search` (20Gi), `messaging` (10Gi). |
+| `spec.storage` | `storageClassName`, `postgres` (default 20Gi), `search` (20Gi), `messaging` (10Gi), `metrics` (100Gi, the hub Prometheus). |
+| `spec.metricsRetention` | How long the hub Prometheus keeps the metrics it federates from every cluster it serves (default `30d`). |
 | `spec.alerting.receivers[]` | `{name, severities?, slack: {urlSecretRef, channel?} \| webhook: {urlSecretRef}}`: where every alert of the hub's cluster and of every agent's cluster goes. |
 | `status.phase` | `Pending \| Progressing \| Ready \| Degraded \| Refused`, from the `PixieCloud`. |
 | `status.purpose` / `.concreteRef` / `.ready` / `.components[]` | The hub cluster's purpose, the concrete resource, `n/total` and one entry per component. |
-| `status.agents[]` | `{name, cluster, connected}` for each accepted agent. |
+| `status.agents[]` | `{name, cluster, connected, metricsConnected}` for each accepted agent: Pixie's heartbeat, and the hub Prometheus reading the cluster's metrics. |
 
 ## `ObservabilityAgent` (separate CRD, cluster-scoped) — one cluster's agents
 
@@ -1608,7 +1609,7 @@ the hub issued for that cluster alone. An agent whose cluster's purpose may not 
 | `spec.nodeMemory` | Each node agent's memory (default 2Gi, at least 1Gi); its data store is 60% of it. |
 | `status.phase` | `Pending \| Progressing \| Ready \| Degraded \| Refused`. `Ready` needs the agents ready and the hub seeing the cluster heartbeat. |
 | `status.purpose` / `.hubPurpose` / `.link` | Both clusters' purposes, and `local` or the `PeerLink` that carries the link. |
-| `status.ready` / `.components[]` / `.connected` | From the `PixieVizier` and the hub. |
+| `status.ready` / `.components[]` / `.connected` / `.metricsConnected` | From the `PixieVizier` and the hub. |
 
 ## `PixieCloud` (separate CRD, namespaced) — self-hosted Pixie Cloud
 
@@ -1617,10 +1618,12 @@ nobody writes it by hand. The cluster's own operator runs Pixie Cloud from the v
 with OpenSearch instead of Elastic's, a CloudNativePG database with one role per service, the PxL
 script server, minted certificates and keys, a default-deny sandbox, and the bootstrap
 (administrator, organisation, one deploy key per agent). `spec` mirrors the hub (`release`, `hub`,
-`purpose`, `domain`, `organization`, `adminEmail`, `pullSecretName`, `storage`), plus
+`purpose`, `cluster`, `metricsRetention`, `domain`, `organization`, `adminEmail`, `pullSecretName`,
+`storage`), plus
 `agents[] {name, cluster}` (only agents the managing cluster accepted) and `alertRoutes[]`.
-`status` has `phase`, `ready`, `components[]`, `agents[] {name, deployKeySecret, registered,
-connected}`, `caCertificate` (the hub's public trust root) and the `Ready` and `Alerting` conditions.
+It also runs the hub Prometheus (federating every cluster it serves over their peer links), its
+hub-scoped rules and dashboards. `status` has `phase`, `ready`, `components[]`, `agents[] {name,
+deployKeySecret, registered, connected, metricsConnected}`, `caCertificate` (the hub's public trust root) and the `Ready` and `Alerting` conditions.
 
 ## `PixieVizier` (separate CRD, namespaced) — Pixie's agents on a cluster
 

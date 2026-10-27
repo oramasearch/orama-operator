@@ -247,6 +247,7 @@ rules:
   resources:
   - alertmanagerconfigs
   - podmonitors
+  - prometheuses
   - prometheusrules
   verbs:
   - create

@@ -197,6 +197,13 @@ spec:
                 - name
                 - namespace
                 type: object
+              metricsRetention:
+                default: 30d
+                description: |-
+                  MetricsRetention is how long the hub keeps the metrics it federates from its clusters
+                  (Prometheus duration: 30d, 12w).
+                pattern: ^[0-9]+(h|d|w|y)$
+                type: string
               organization:
                 description: |-
                   Organization is the one organisation every agent's cluster is registered under, and which
@@ -218,6 +225,16 @@ spec:
                     - type: string
                     default: 10Gi
                     description: Messaging is the NATS JetStream store.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  metrics:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 100Gi
+                    description: |-
+                      Metrics is the hub Prometheus' volume, which keeps every agent cluster's federated metrics
+                      for metricsRetention.
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
                   postgres:
@@ -265,12 +282,17 @@ spec:
                       description: Connected is true while the agent's cluster is
                         registered and heartbeating.
                       type: boolean
+                    metricsConnected:
+                      description: MetricsConnected is true while the hub's Prometheus
+                        reads the cluster's metrics.
+                      type: boolean
                     name:
                       description: Name is the ObservabilityAgent's name.
                       type: string
                   required:
                   - cluster
                   - connected
+                  - metricsConnected
                   - name
                   type: object
                 type: array

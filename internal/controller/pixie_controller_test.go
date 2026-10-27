@@ -86,7 +86,20 @@ func newPixieTestClient(t *testing.T, scheme *runtime.Scheme, funcs interceptor.
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(kubernetesAPIObjects(), objects...)...).
 		WithStatusSubresource(&oramav1alpha1.PixieCloud{}, &oramav1alpha1.PixieVizier{}, &oramav1alpha1.NetworkSandbox{}).
+		WithRESTMapper(monitoringRESTMapper()).
 		WithInterceptorFuncs(funcs).Build()
+}
+
+// monitoringRESTMapper is the fake client's default (empty) mapper with the platform layer's
+// monitoring kinds, as a cluster with kube-prometheus-stack serves them.
+func monitoringRESTMapper() apimeta.RESTMapper {
+	mapper := apimeta.NewDefaultRESTMapper(nil)
+	for _, gvk := range []schema.GroupVersionKind{podMonitorGVK, prometheusRuleGVK, alertmanagerConfigGVK, prometheusGVK} {
+		mapper.Add(gvk, apimeta.RESTScopeNamespace)
+	}
+	mapper.Add(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, apimeta.RESTScopeNamespace)
+	mapper.Add(schema.GroupVersionKind{Version: "v1", Kind: "Secret"}, apimeta.RESTScopeNamespace)
+	return mapper
 }
 
 func reconcileTwice(t *testing.T, r interface {
@@ -109,24 +122,39 @@ func vizierSecrets() []client.Object {
 	}
 }
 
-// Without its deploy key and the hub's CA, Vizier waits and runs nothing.
+// Without its deploy key and the hub's CA, or without any release, Vizier waits and runs nothing;
+// the hub's window onto the cluster's metrics runs regardless, from the platform's Envoy.
 func TestPixieVizierWaitsForItsOwnCredentials(t *testing.T) {
-	scheme := newPixieScheme(t)
-	vz := testPixieVizier()
-	vz.Name = pixieConcreteName
-	kube := newPixieTestClient(t, scheme, interceptor.Funcs{}, vz, vizierSecrets()[0])
-	r := &PixieVizierReconciler{Client: kube, Scheme: scheme}
-	reconcileTwice(t, r, "pl", pixieConcreteName)
-	var got oramav1alpha1.PixieVizier
-	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(vz), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Status.Phase != oramav1alpha1.ObservabilityPhasePending || !strings.Contains(got.Status.Message, "deploy key") {
-		t.Fatalf("status %+v", got.Status)
-	}
-	var daemonSets appsv1.DaemonSetList
-	if err := kube.List(context.Background(), &daemonSets); err != nil || len(daemonSets.Items) != 0 {
-		t.Fatalf("Vizier ran before its credentials arrived: %v", daemonSets.Items)
+	for name, release := range map[string]bool{"no deploy key": true, "no release": false} {
+		t.Run(name, func(t *testing.T) {
+			scheme := newPixieScheme(t)
+			vz := testPixieVizier()
+			vz.Name = pixieConcreteName
+			if !release {
+				vz.Spec.Release = nil
+			}
+			kube := newPixieTestClient(t, scheme, interceptor.Funcs{}, vz, vizierSecrets()[0])
+			r := &PixieVizierReconciler{Client: kube, Scheme: scheme}
+			reconcileTwice(t, r, "pl", pixieConcreteName)
+			var got oramav1alpha1.PixieVizier
+			if err := kube.Get(context.Background(), client.ObjectKeyFromObject(vz), &got); err != nil {
+				t.Fatal(err)
+			}
+			if want := map[bool]string{true: "deploy key", false: "release"}[release]; got.Status.Phase != oramav1alpha1.ObservabilityPhasePending || !strings.Contains(got.Status.Message, want) {
+				t.Fatalf("status %+v", got.Status)
+			}
+			var daemonSets appsv1.DaemonSetList
+			if err := kube.List(context.Background(), &daemonSets); err != nil || len(daemonSets.Items) != 0 {
+				t.Fatalf("Vizier ran before its credentials arrived: %v", daemonSets.Items)
+			}
+			var proxy appsv1.Deployment
+			if err := kube.Get(context.Background(), client.ObjectKey{Namespace: "pl", Name: metricsFederationName}, &proxy); err != nil {
+				t.Fatalf("the metrics federation proxy waited for Pixie: %v", err)
+			}
+			if image := proxy.Spec.Template.Spec.Containers[0].Image; image != platformEnvoyImage {
+				t.Fatalf("the federation proxy runs %s, not the platform's Envoy", image)
+			}
+		})
 	}
 }
 
@@ -162,10 +190,18 @@ func TestPixieVizierReconcileIsDeterministicAndKeepsRegistration(t *testing.T) {
 	if len(sandbox.Spec.CiliumPolicies) != 1 || sandbox.Spec.CiliumPolicies[0].Name != "allow-node-agents" {
 		t.Errorf("the host-network node agents have no allowance: %+v", sandbox.Spec.CiliumPolicies)
 	}
+	federationEgress := false
 	for _, policy := range sandbox.Spec.Policies {
 		if policy.Name == "allow-hub-egress" {
 			t.Error("a Vizier reaching its hub through a PeerConnection also has a direct path to a hub")
 		}
+		federationEgress = federationEgress || policy.Name == "allow-metrics-federation-egress"
+	}
+	// The hub is on another cluster: the read-only federation proxy runs, and may reach only the
+	// platform Prometheus.
+	var proxy appsv1.Deployment
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "pl", Name: metricsFederationName}, &proxy); err != nil || !federationEgress {
+		t.Fatalf("no federation proxy or its egress allowance: %v", err)
 	}
 
 	// The cloud connector registers and writes the cluster's id back; the operator keeps it.
@@ -272,7 +308,9 @@ func TestPixieVizierToleratesMissingMonitoringCRDs(t *testing.T) {
 			return c.Delete(ctx, obj, opts...)
 		},
 	}
-	kube := newPixieTestClient(t, scheme, noMonitoring, append(vizierSecrets(), vz)...)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(kubernetesAPIObjects(), append(vizierSecrets(), vz)...)...).
+		WithStatusSubresource(&oramav1alpha1.PixieVizier{}, &oramav1alpha1.NetworkSandbox{}).
+		WithInterceptorFuncs(interceptor.Funcs{Patch: applyAsUpsert.Patch, Get: noMonitoring.Get, Create: noMonitoring.Create, Delete: noMonitoring.Delete}).Build()
 	reconcileTwice(t, &PixieVizierReconciler{Client: kube, Scheme: scheme}, "pl", pixieConcreteName)
 	var got oramav1alpha1.PixieVizier
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(vz), &got); err != nil {
@@ -345,6 +383,12 @@ func (f *fakeHubBackend) Close() {}
 func markPixieWorkloadsReady(t *testing.T, kube client.Client, namespace string) {
 	t.Helper()
 	ctx := context.Background()
+	// prometheus-operator makes the hub Prometheus' StatefulSet; stand in for it.
+	hub := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: hubPrometheusComponent, Namespace: namespace},
+		Spec: appsv1.StatefulSetSpec{Replicas: int32Ptr(1)}}
+	if err := kube.Create(ctx, hub); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatal(err)
+	}
 	var deployments appsv1.DeploymentList
 	if err := kube.List(ctx, &deployments, client.InNamespace(namespace)); err != nil {
 		t.Fatal(err)
@@ -404,12 +448,24 @@ func TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys(t *testing.T) {
 	)
 	backend := &fakeHubBackend{keys: map[string]string{}, connected: map[string]bool{"orama-production-cluster-02": true}}
 	r := &PixieCloudReconciler{Client: kube, Scheme: scheme, OperatorNamespace: "orama-system",
-		Backend: func(pixieHubCredentials) (pixieHubBackend, error) { return backend, nil }}
+		Backend: func(pixieHubCredentials) (pixieHubBackend, error) { return backend, nil },
+		// The hub Prometheus reads prod2's metrics and not prod3's.
+		MetricsUp: func(context.Context) (map[string]bool, error) {
+			return map[string]bool{federationJob("orama-production-cluster-02"): true, federationJob("orama-production-cluster-03"): false}, nil
+		}}
 	reconcileTwice(t, r, "plc", pixieConcreteName)
 
 	// Before the hub is ready, keys are minted but not registered.
 	if backend.index != "" || len(backend.keys) != 0 {
 		t.Fatal("the bootstrap ran before the hub was ready")
+	}
+	// The metrics are Pixie's no concern: they are reported before Pixie runs.
+	var early oramav1alpha1.PixieCloud
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(cloud), &early); err != nil {
+		t.Fatal(err)
+	}
+	if len(early.Status.Agents) != 2 || !early.Status.Agents[0].MetricsConnected || early.Status.Agents[0].Connected {
+		t.Fatalf("before Pixie runs, agents %+v", early.Status.Agents)
 	}
 	var sandbox oramav1alpha1.NetworkSandbox
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: networkSandboxName}, &sandbox); err != nil {
@@ -457,6 +513,15 @@ func TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys(t *testing.T) {
 	}
 	if got.Status.Phase != oramav1alpha1.ObservabilityPhaseReady || got.Status.CACertificate == "" || !got.Status.Agents[0].Connected || got.Status.Agents[1].Connected {
 		t.Fatalf("status %+v", got.Status)
+	}
+	// The hub Prometheus reads prod2's metrics and not prod3's.
+	if !got.Status.Agents[0].MetricsConnected || got.Status.Agents[1].MetricsConnected {
+		t.Fatalf("metrics status %+v", got.Status.Agents)
+	}
+	hubPrometheus := &unstructured.Unstructured{}
+	hubPrometheus.SetGroupVersionKind(prometheusGVK)
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: hubPrometheusName}, hubPrometheus); err != nil {
+		t.Fatalf("no hub Prometheus: %v", err)
 	}
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: networkSandboxName}, &sandbox); err != nil {
 		t.Fatal(err)

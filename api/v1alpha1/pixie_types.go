@@ -60,6 +60,13 @@ type PixieCloudSpec struct {
 	// Purpose is the hub cluster's purpose tag, as the managing cluster read it.
 	// +kubebuilder:validation:Enum=nonprod;prod-support
 	Purpose string `json:"purpose"`
+	// Cluster is the hub's own KubernetesCluster: the cluster label of its own metrics.
+	// +optional
+	Cluster string `json:"cluster,omitempty"`
+	// MetricsRetention is how long the hub Prometheus keeps federated metrics.
+	// +kubebuilder:validation:Pattern=`^[0-9]+(h|d|w|y)$`
+	// +optional
+	MetricsRetention string `json:"metricsRetention,omitempty"`
 	// +kubebuilder:validation:MinLength=1
 	Domain string `json:"domain"`
 	// +kubebuilder:validation:MinLength=1
@@ -92,6 +99,8 @@ type PixieCloudAgentStatus struct {
 	Registered bool `json:"registered"`
 	// Connected is true while that Vizier heartbeats.
 	Connected bool `json:"connected"`
+	// MetricsConnected is true while the hub Prometheus reads the cluster's metrics.
+	MetricsConnected bool `json:"metricsConnected"`
 }
 
 // PixieCloudStatus is the hub's readiness, per component.

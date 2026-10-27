@@ -434,16 +434,18 @@ func (r *ObservabilityHubReconciler) reconcile(ctx context.Context, hub *oramav1
 		TypeMeta:   metav1.TypeMeta{APIVersion: oramav1alpha1.GroupVersion.String(), Kind: "PixieCloud"},
 		ObjectMeta: metav1.ObjectMeta{Name: pixieConcreteName, Namespace: oramav1alpha1.PixieCloudNamespace},
 		Spec: oramav1alpha1.PixieCloudSpec{
-			Release:        *release,
-			Hub:            hub.Name,
-			Purpose:        purpose,
-			Domain:         hub.Spec.Domain,
-			Organization:   hub.Spec.Organization,
-			AdminEmail:     hub.Spec.AdminEmail,
-			PullSecretName: pixiePullSecret,
-			Storage:        hub.Spec.Storage,
-			Agents:         agents,
-			AlertRoutes:    routes,
+			Release:          *release,
+			Hub:              hub.Name,
+			Purpose:          purpose,
+			Cluster:          hub.Spec.ClusterRef,
+			MetricsRetention: hub.Spec.MetricsRetention,
+			Domain:           hub.Spec.Domain,
+			Organization:     hub.Spec.Organization,
+			AdminEmail:       hub.Spec.AdminEmail,
+			PullSecretName:   pixiePullSecret,
+			Storage:          hub.Spec.Storage,
+			Agents:           agents,
+			AlertRoutes:      routes,
 		},
 	}
 	if err := applyConcrete(ctx, target, cloud, observabilityHubLabel, hub.Name); err != nil {
@@ -459,12 +461,14 @@ func (r *ObservabilityHubReconciler) reconcile(ctx context.Context, hub *oramav1
 	if live.Status.ObservedGeneration < live.Generation && status.Phase == oramav1alpha1.ObservabilityPhaseReady {
 		status.Phase, status.Message = oramav1alpha1.ObservabilityPhaseProgressing, "the hub's cluster has not reconciled the latest spec yet"
 	}
-	connected := map[string]bool{}
+	reported := map[string]oramav1alpha1.PixieCloudAgentStatus{}
 	for _, agent := range live.Status.Agents {
-		connected[agent.Name] = agent.Connected
+		reported[agent.Name] = agent
 	}
 	for _, agent := range agents {
-		status.Agents = append(status.Agents, oramav1alpha1.ObservabilityHubAgentStatus{Name: agent.Name, Cluster: agent.Cluster, Connected: connected[agent.Name]})
+		status.Agents = append(status.Agents, oramav1alpha1.ObservabilityHubAgentStatus{
+			Name: agent.Name, Cluster: agent.Cluster, Connected: reported[agent.Name].Connected, MetricsConnected: reported[agent.Name].MetricsConnected,
+		})
 	}
 	return status, nil
 }
@@ -729,14 +733,15 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 	}
 	status.Phase = firstNonEmpty(live.Status.Phase, oramav1alpha1.ObservabilityPhasePending)
 	status.Ready, status.Components, status.Message = live.Status.Ready, live.Status.Components, live.Status.Message
-	if len(waitingFor) > 0 {
-		status.Phase, status.Message = oramav1alpha1.ObservabilityPhasePending, "waiting for "+strings.TrimPrefix(waitingFor[0], "waiting for ")+"; alert routing is written"
-		return status, nil
-	}
+	// The hub reads this cluster's metrics independently of Pixie, so this holds while Vizier waits.
 	for _, a := range cloud.Status.Agents {
 		if a.Name == agent.Name {
-			status.Connected = a.Connected
+			status.Connected, status.MetricsConnected = a.Connected, a.MetricsConnected
 		}
+	}
+	if len(waitingFor) > 0 {
+		status.Phase, status.Message = oramav1alpha1.ObservabilityPhasePending, "waiting for "+strings.TrimPrefix(waitingFor[0], "waiting for ")+"; alert routing and metrics federation are written"
+		return status, nil
 	}
 	if status.Phase == oramav1alpha1.ObservabilityPhaseReady && !status.Connected {
 		status.Phase, status.Message = oramav1alpha1.ObservabilityPhaseProgressing, "the agents run; the hub has not seen the cluster heartbeat yet"
@@ -790,8 +795,10 @@ func (r *ObservabilityAgentReconciler) reconcileLink(ctx context.Context, agent 
 		TypeMeta:   metav1.TypeMeta{APIVersion: oramav1alpha1.GroupVersion.String(), Kind: "PeerConnection"},
 		ObjectMeta: metav1.ObjectMeta{Name: pixieAgentPeer(agent.Name), Namespace: oramav1alpha1.PixieCloudNamespace},
 		Spec: oramav1alpha1.PeerConnectionSpec{
-			PeerID:         peerID,
-			Exports:        []oramav1alpha1.PeerExport{{Name: pixieAgentImport, TargetKind: oramav1alpha1.PeerTargetKubernetesService, ServiceName: pixieVzconnService, Port: pixieVzconnPort}},
+			PeerID:  peerID,
+			Exports: []oramav1alpha1.PeerExport{{Name: pixieAgentImport, TargetKind: oramav1alpha1.PeerTargetKubernetesService, ServiceName: pixieVzconnService, Port: pixieVzconnPort}},
+			// The agent cluster's metrics, which the hub Prometheus federates (observability_metrics.go).
+			Imports:        []oramav1alpha1.PeerImport{{Name: agentMetricsImport(agent.Name), Port: metricsFederationPort}},
 			PullSecretName: pixiePullSecret,
 			Desired:        oramav1alpha1.ConnectionDesiredPresent,
 			Generation:     1,
@@ -801,8 +808,10 @@ func (r *ObservabilityAgentReconciler) reconcileLink(ctx context.Context, agent 
 		TypeMeta:   metav1.TypeMeta{APIVersion: oramav1alpha1.GroupVersion.String(), Kind: "PeerConnection"},
 		ObjectMeta: metav1.ObjectMeta{Name: pixieHubPeer, Namespace: oramav1alpha1.PixieVizierNamespace},
 		Spec: oramav1alpha1.PeerConnectionSpec{
-			PeerID:         peerID,
-			Imports:        []oramav1alpha1.PeerImport{{Name: pixieAgentImport, Port: pixieVzconnPort}},
+			PeerID:  peerID,
+			Imports: []oramav1alpha1.PeerImport{{Name: pixieAgentImport, Port: pixieVzconnPort}},
+			// Only the read-only federation proxy, never the Prometheus itself.
+			Exports:        []oramav1alpha1.PeerExport{{Name: agentMetricsImport(agent.Name), TargetKind: oramav1alpha1.PeerTargetKubernetesService, ServiceName: metricsFederationName, Port: metricsFederationPort}},
 			PullSecretName: pixiePullSecret,
 			Desired:        oramav1alpha1.ConnectionDesiredPresent,
 			Generation:     1,

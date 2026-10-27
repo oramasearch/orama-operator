@@ -231,9 +231,34 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 	if err := prod2.Get(ctx, client.ObjectKey{Namespace: "pl", Name: pixieHubPeer}, &agentEnd); err != nil {
 		t.Fatal(err)
 	}
-	if len(hubEnd.Spec.Exports) != 1 || hubEnd.Spec.Exports[0].ServiceName != pixieVzconnService || len(hubEnd.Spec.Imports) != 0 ||
-		len(agentEnd.Spec.Imports) != 1 || len(agentEnd.Spec.Exports) != 0 || hubEnd.Spec.PeerID != agentEnd.Spec.PeerID {
+	// One link, two directions, each exactly one service: the hub exports only vzconn and imports
+	// only the agent's metrics; the agent exports only its read-only federation proxy.
+	if len(hubEnd.Spec.Exports) != 1 || hubEnd.Spec.Exports[0].ServiceName != pixieVzconnService ||
+		len(hubEnd.Spec.Imports) != 1 || hubEnd.Spec.Imports[0].Name != agentMetricsImport("prod2") ||
+		len(agentEnd.Spec.Imports) != 1 || agentEnd.Spec.Imports[0].Name != pixieAgentImport ||
+		len(agentEnd.Spec.Exports) != 1 || agentEnd.Spec.Exports[0].ServiceName != metricsFederationName ||
+		agentEnd.Spec.Exports[0].Name != hubEnd.Spec.Imports[0].Name || hubEnd.Spec.PeerID != agentEnd.Spec.PeerID {
 		t.Fatalf("link ends: hub %+v agent %+v", hubEnd.Spec, agentEnd.Spec)
+	}
+	// The hub Prometheus scrapes exactly the Service the hub end's import creates.
+	if err := support.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.Spec.Cluster != "support" {
+		t.Fatalf("PixieCloud cluster %q, want the hub's cluster", cloud.Spec.Cluster)
+	}
+	wantTarget := peerImportServiceName(hubEnd.Spec.Imports[0].Name) + ".plc.svc.cluster.local:9090"
+	found := false
+	for _, federated := range hubFederatedClusters(&cloud) {
+		found = found || (federated.Name == "prod2" && federated.Target == wantTarget)
+	}
+	if !found {
+		t.Fatalf("the hub does not federate prod2 at %s: %+v", wantTarget, hubFederatedClusters(&cloud))
+	}
+	for _, federated := range hubFederatedClusters(&cloud) {
+		if federated.Name == "np" {
+			t.Fatal("the production hub federates the nonprod cluster's metrics")
+		}
 	}
 	var link oramav1alpha1.PeerLink
 	if err := f.management.Get(ctx, types.NamespacedName{Name: "pixie-prod2"}, &link); err != nil {

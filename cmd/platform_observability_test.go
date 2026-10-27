@@ -141,6 +141,9 @@ func TestPlatformChartsRenderOfflineWithOnlyMirroredImages(t *testing.T) {
 				if image, _ := spec["image"].(string); image != "" {
 					seen[image] = true
 				}
+				if kind == "Prometheus" && !excludesHubRules(spec) {
+					t.Errorf("the platform Prometheus %s would evaluate the hub's rules, which read series it does not have", name)
+				}
 			default:
 				continue
 			}
@@ -177,4 +180,19 @@ func TestPlatformChartsRenderOfflineWithOnlyMirroredImages(t *testing.T) {
 			t.Errorf("the inventory lists %s, which nothing renders", image)
 		}
 	}
+}
+
+// excludesHubRules reports whether a Prometheus' ruleSelector leaves out rules labelled
+// orama.cloud/metrics-scope=hub (internal/controller/observability_metrics.go).
+func excludesHubRules(spec map[string]any) bool {
+	selector, _ := spec["ruleSelector"].(map[string]any)
+	expressions, _ := selector["matchExpressions"].([]any)
+	for _, e := range expressions {
+		expression, _ := e.(map[string]any)
+		values, _ := expression["values"].([]any)
+		if expression["key"] == "orama.cloud/metrics-scope" && expression["operator"] == "NotIn" && len(values) == 1 && values[0] == "hub" {
+			return true
+		}
+	}
+	return false
 }

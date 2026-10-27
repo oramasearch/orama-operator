@@ -54,9 +54,12 @@ var pixieAssets embed.FS
 const pixieManifestCommit = "4b445e0b7907c79d034bcb4a227bbaede94d370a"
 
 const (
-	pixieManagedLabel   = "orama.cloud/pixie"
-	pixieManagedVizier  = "vizier"
-	pixieManagedCloud   = "cloud"
+	pixieManagedLabel  = "orama.cloud/pixie"
+	pixieManagedVizier = "vizier"
+	pixieManagedCloud  = "cloud"
+	// pixieManagedMetrics marks the metrics objects (the hub Prometheus, a leaf's federation proxy),
+	// applied apart from Pixie so its prune never touches them.
+	pixieManagedMetrics = "metrics"
 	pixieFieldOwner     = "orama-operator-pixie"
 	pixieComponentLabel = "orama.cloud/pixie-component"
 )

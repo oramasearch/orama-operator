@@ -208,6 +208,11 @@ type ObservabilityHubStorage struct {
 	// +kubebuilder:default="10Gi"
 	// +optional
 	Messaging *resource.Quantity `json:"messaging,omitempty"`
+	// Metrics is the hub Prometheus' volume, which keeps every agent cluster's federated metrics
+	// for metricsRetention.
+	// +kubebuilder:default="100Gi"
+	// +optional
+	Metrics *resource.Quantity `json:"metrics,omitempty"`
 }
 
 // ObservabilityHubSpec is where one purpose's observability lives.
@@ -252,6 +257,13 @@ type ObservabilityHubSpec struct {
 	// Alerting routes the alerts of the hub's cluster and of every agent's cluster.
 	// +optional
 	Alerting *ObservabilityAlerting `json:"alerting,omitempty"`
+
+	// MetricsRetention is how long the hub keeps the metrics it federates from its clusters
+	// (Prometheus duration: 30d, 12w).
+	// +kubebuilder:validation:Pattern=`^[0-9]+(h|d|w|y)$`
+	// +kubebuilder:default="30d"
+	// +optional
+	MetricsRetention string `json:"metricsRetention,omitempty"`
 }
 
 // ObservabilityComponentStatus is one deployable component's readiness.
@@ -272,6 +284,8 @@ type ObservabilityHubAgentStatus struct {
 	Cluster string `json:"cluster"`
 	// Connected is true while the agent's cluster is registered and heartbeating.
 	Connected bool `json:"connected"`
+	// MetricsConnected is true while the hub's Prometheus reads the cluster's metrics.
+	MetricsConnected bool `json:"metricsConnected"`
 }
 
 // ObservabilityHubStatus is what the managing cluster last read from the hub's cluster.
@@ -380,6 +394,9 @@ type ObservabilityAgentStatus struct {
 	// Connected is true once the hub reports the cluster registered and heartbeating.
 	// +optional
 	Connected bool `json:"connected,omitempty"`
+	// MetricsConnected is true while the hub's Prometheus reads the cluster's metrics.
+	// +optional
+	MetricsConnected bool `json:"metricsConnected,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`
 	// +optional

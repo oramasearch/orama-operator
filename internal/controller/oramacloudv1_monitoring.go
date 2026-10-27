@@ -13,7 +13,6 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -42,11 +41,7 @@ const (
 
 // monitoringInstalled reports whether the platform layer's monitoring CRDs are on the cluster.
 func monitoringInstalled(c client.Client) bool {
-	if c.RESTMapper() == nil {
-		return false
-	}
-	_, err := c.RESTMapper().RESTMapping(podMonitorGVK.GroupKind(), podMonitorGVK.Version)
-	return err == nil
+	return kindsInstalled(c, podMonitorGVK, prometheusRuleGVK)
 }
 
 // v1MonitoredComponents are the components that get a dashboard; the critical ones page when they
@@ -264,15 +259,7 @@ func v1Dashboards(oc *oramav1alpha1.OramaCloudV1) (*unstructured.Unstructured, e
 	if err != nil {
 		return nil, err
 	}
-	data, err := runtime.DefaultUnstructuredConverter.ToUnstructured(configMap)
-	if err != nil {
-		return nil, err
-	}
-	object := &unstructured.Unstructured{Object: data}
-	object.SetAPIVersion("v1")
-	object.SetKind("ConfigMap")
-	unstructured.RemoveNestedField(object.Object, "metadata", "creationTimestamp")
-	return object, nil
+	return configMapToUnstructured(configMap)
 }
 
 // reconcileMonitoring writes the stack's scrape configuration, rules and dashboards. Without the

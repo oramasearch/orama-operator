@@ -321,6 +321,13 @@ releases:
             serviceMonitorSelectorNilUsesHelmValues: false
             podMonitorSelectorNilUsesHelmValues: false
             ruleSelectorNilUsesHelmValues: false
+            # The hub Prometheus' rules read federated series this one does not have
+            # (internal/controller/observability_metrics.go); it alone evaluates them.
+            ruleSelector:
+              matchExpressions:
+                - key: orama.cloud/metrics-scope
+                  operator: NotIn
+                  values: ["hub"]
             probeSelectorNilUsesHelmValues: false
             scrapeConfigSelectorNilUsesHelmValues: false
             storageSpec:

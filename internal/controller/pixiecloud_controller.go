@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"time"
 
@@ -52,14 +53,16 @@ type PixieCloudReconciler struct {
 	OperatorNamespace string
 	// Backend is injected for tests; nil connects to the hub's services.
 	Backend func(pixieHubCredentials) (pixieHubBackend, error)
-	Now     func() time.Time
+	// MetricsUp is injected for tests; nil asks the hub Prometheus (queryFederationUp).
+	MetricsUp func(context.Context) (map[string]bool, error)
+	Now       func() time.Time
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=pixieclouds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=pixieclouds/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=pixieclouds/finalizers,verbs=update
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=databases,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=prometheusrules;podmonitors;alertmanagerconfigs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=prometheusrules;podmonitors;alertmanagerconfigs;prometheuses,verbs=get;list;watch;create;update;patch;delete
 // Pixie's own RBAC from the vendored bundles, scoped to its names (TestChartKarpenterRBACMatchesBundle).
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=create;update;patch;delete;bind;escalate,resourceNames={"pl-cloud-connector-role","pl-node-view","pl-vizier-metadata","plc:nats-server"}
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=create;update;patch;delete,resourceNames={"pl-cloud-connector-cluster-binding","pl-node-view-cluster-binding","pl-vizier-metadata-cluster-binding","pl-vizier-metadata-node-view-cluster-binding","plc:nats-server-binding"}
@@ -117,20 +120,35 @@ func (r *PixieCloudReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 func (r *PixieCloudReconciler) reconcile(ctx context.Context, cloud *oramav1alpha1.PixieCloud) (oramav1alpha1.PixieCloudStatus, error, error) {
-	refuse := func(phase, message string) (oramav1alpha1.PixieCloudStatus, error, error) {
-		return oramav1alpha1.PixieCloudStatus{Phase: phase, Message: message}, nil, nil
-	}
 	if cloud.Namespace != oramav1alpha1.PixieCloudNamespace {
-		return refuse(oramav1alpha1.ObservabilityPhaseRefused, "a PixieCloud runs in namespace "+oramav1alpha1.PixieCloudNamespace)
+		return oramav1alpha1.PixieCloudStatus{Phase: oramav1alpha1.ObservabilityPhaseRefused, Message: "a PixieCloud runs in namespace " + oramav1alpha1.PixieCloudNamespace}, nil, nil
+	}
+	// The sandbox first, so no pod here runs without it.
+	policies, err := pixieCloudSandboxPolicies(ctx, r.reader(), r.OperatorNamespace)
+	if err != nil {
+		return oramav1alpha1.PixieCloudStatus{}, nil, err
+	}
+	if err := reconcilePixieSandbox(ctx, r.Client, r.Scheme, cloud, policies, nil); err != nil {
+		return oramav1alpha1.PixieCloudStatus{}, nil, err
+	}
+	// Then the hub's paging and metrics, which need nothing of Pixie: the hub reads and pages about
+	// every cluster before any Pixie image exists or Pixie has seen a cluster.
+	alertingErr, err := r.reconcileHubMonitoring(ctx, cloud)
+	if err != nil {
+		return oramav1alpha1.PixieCloudStatus{}, nil, err
+	}
+	agents := r.agentStatuses(ctx, cloud)
+	waiting := func(phase, message string) (oramav1alpha1.PixieCloudStatus, error, error) {
+		return oramav1alpha1.PixieCloudStatus{Phase: phase, Message: message, Agents: agents}, alertingErr, nil
 	}
 	if problems := pixieReleaseProblems(&cloud.Spec.Release); len(problems) > 0 {
-		return refuse(oramav1alpha1.ObservabilityPhaseDegraded, problems[0])
+		return waiting(oramav1alpha1.ObservabilityPhaseDegraded, problems[0])
 	}
 	var pull corev1.Secret
 	if found, err := getIfExists(ctx, r.Client, cloud.Namespace, cloud.Spec.PullSecretName, &pull); err != nil {
 		return oramav1alpha1.PixieCloudStatus{}, nil, err
 	} else if !found {
-		return refuse(oramav1alpha1.ObservabilityPhasePending, "waiting for the registry credentials (Secret "+cloud.Spec.PullSecretName+"), which the managing cluster writes")
+		return waiting(oramav1alpha1.ObservabilityPhasePending, "waiting for the registry credentials (Secret "+cloud.Spec.PullSecretName+"), which the managing cluster writes")
 	}
 	material, err := r.ensureSecrets(ctx, cloud)
 	if err != nil {
@@ -138,14 +156,7 @@ func (r *PixieCloudReconciler) reconcile(ctx context.Context, cloud *oramav1alph
 	}
 	vendored, err := renderPixieCloud(pixieCloudRender{Cloud: cloud, CertsHash: material.certsHash, DatabaseHost: pixieDBHost()})
 	if err != nil {
-		return refuse(oramav1alpha1.ObservabilityPhaseDegraded, err.Error())
-	}
-	policies, err := pixieCloudSandboxPolicies(ctx, r.reader(), r.OperatorNamespace)
-	if err != nil {
-		return oramav1alpha1.PixieCloudStatus{}, nil, err
-	}
-	if err := reconcilePixieSandbox(ctx, r.Client, r.Scheme, cloud, policies, nil); err != nil {
-		return oramav1alpha1.PixieCloudStatus{}, nil, err
+		return waiting(oramav1alpha1.ObservabilityPhaseDegraded, err.Error())
 	}
 	// The stores before the services that need them.
 	own := []client.Object{pixieDBClusterObject(cloud)}
@@ -162,13 +173,12 @@ func (r *PixieCloudReconciler) reconcile(ctx context.Context, cloud *oramav1alph
 	if err := applyPixieObjects(ctx, r.Client, r.Scheme, cloud, pixieManagedCloud, append(own, vendored...)); err != nil {
 		return oramav1alpha1.PixieCloudStatus{}, nil, err
 	}
-	alertingErr := reconcileObservabilityAlerting(ctx, r.Client, r.Scheme, cloud, cloud.Spec.Hub, cloud.Spec.AlertRoutes, pixieCloudAlertRules(cloud))
-	if alertingErr != nil && !errors.Is(alertingErr, errMonitoringCRDsMissing) {
-		return oramav1alpha1.PixieCloudStatus{}, nil, alertingErr
-	}
 
 	workloads := append(append([]client.Object{}, search...), scripts...)
 	workloads = append(workloads, vendored...)
+	if alertingErr == nil {
+		workloads = append(workloads, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: hubPrometheusComponent}})
+	}
 	components, err := pixieWorkloadStatus(ctx, r.Client, r.reader(), cloud.Namespace, workloads)
 	if err != nil {
 		return oramav1alpha1.PixieCloudStatus{}, nil, err
@@ -182,7 +192,7 @@ func (r *PixieCloudReconciler) reconcile(ctx context.Context, cloud *oramav1alph
 	phase, ready, message := summarizeComponents(components)
 	status := oramav1alpha1.PixieCloudStatus{Phase: phase, Ready: ready, Components: components, Message: message, CACertificate: string(material.cloudCA)}
 
-	agents, bootstrapMessage, err := r.bootstrap(ctx, cloud, material, phase == oramav1alpha1.ObservabilityPhaseReady)
+	bootstrapMessage, err := r.bootstrap(ctx, cloud, material, phase == oramav1alpha1.ObservabilityPhaseReady, agents)
 	if err != nil {
 		return oramav1alpha1.PixieCloudStatus{}, nil, err
 	}
@@ -191,6 +201,50 @@ func (r *PixieCloudReconciler) reconcile(ctx context.Context, cloud *oramav1alph
 		status.Phase, status.Message = oramav1alpha1.ObservabilityPhaseProgressing, bootstrapMessage
 	}
 	return status, alertingErr, nil
+}
+
+// reconcileHubMonitoring writes the hub's alert routing and rules, then its Prometheus, its cluster
+// rules and its dashboards (observability_metrics.go). Without the platform layer's monitoring CRDs
+// none of them is written, and the first return says so: the Alerting condition.
+func (r *PixieCloudReconciler) reconcileHubMonitoring(ctx context.Context, cloud *oramav1alpha1.PixieCloud) (error, error) {
+	alertingErr := reconcileObservabilityAlerting(ctx, r.Client, r.Scheme, cloud, cloud.Spec.Hub, cloud.Spec.AlertRoutes, pixieCloudAlertRules(cloud))
+	if alertingErr != nil && !errors.Is(alertingErr, errMonitoringCRDsMissing) {
+		return nil, alertingErr
+	}
+	hubMetrics, err := hubMetricsObjects(cloud)
+	if err != nil {
+		return nil, err
+	}
+	metricsErr := applyMonitoringObjects(ctx, r.Client, r.Scheme, cloud, hubMetrics)
+	if metricsErr != nil && !errors.Is(metricsErr, errMonitoringCRDsMissing) {
+		return nil, metricsErr
+	}
+	if alertingErr != nil {
+		return alertingErr, nil
+	}
+	return metricsErr, nil
+}
+
+// agentStatuses is each accepted agent and whether the hub Prometheus reads its cluster, which
+// needs nothing of Pixie; the bootstrap adds Pixie's side. A hub Prometheus that does not answer
+// (no monitoring CRDs, or starting) reads false for every cluster.
+func (r *PixieCloudReconciler) agentStatuses(ctx context.Context, cloud *oramav1alpha1.PixieCloud) []oramav1alpha1.PixieCloudAgentStatus {
+	metricsUp := r.MetricsUp
+	if metricsUp == nil {
+		metricsUp = func(ctx context.Context) (map[string]bool, error) {
+			return queryFederationUp(ctx, &http.Client{Timeout: 10 * time.Second},
+				fmt.Sprintf("http://%s.%s.svc:%d", hubPrometheusService, cloud.Namespace, hubPrometheusPort))
+		}
+	}
+	up, err := metricsUp(ctx)
+	if err != nil {
+		up = nil
+	}
+	statuses := make([]oramav1alpha1.PixieCloudAgentStatus, 0, len(cloud.Spec.Agents))
+	for _, agent := range cloud.Spec.Agents {
+		statuses = append(statuses, oramav1alpha1.PixieCloudAgentStatus{Name: agent.Name, MetricsConnected: up[federationJob(agent.Cluster)]})
+	}
+	return statuses
 }
 
 // pixieCloudMaterial is what ensureSecrets minted and the rest of the pass needs.
@@ -339,45 +393,42 @@ func (r *PixieCloudReconciler) databaseStatus(ctx context.Context) (oramav1alpha
 }
 
 // bootstrap runs once the hub is Ready, and keeps one deploy key per accepted agent through
-// Pixie's API. It returns each agent's state and, while it cannot finish, why.
-func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alpha1.PixieCloud, material pixieCloudMaterial, hubReady bool) ([]oramav1alpha1.PixieCloudAgentStatus, string, error) {
-	statuses := make([]oramav1alpha1.PixieCloudAgentStatus, 0, len(cloud.Spec.Agents))
-	for _, agent := range cloud.Spec.Agents {
-		statuses = append(statuses, oramav1alpha1.PixieCloudAgentStatus{Name: agent.Name})
-	}
+// Pixie's API. It fills in Pixie's side of statuses (one per agent, in order) and says, while it
+// cannot finish, why.
+func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alpha1.PixieCloud, material pixieCloudMaterial, hubReady bool, statuses []oramav1alpha1.PixieCloudAgentStatus) (string, error) {
 	if !hubReady {
-		return statuses, "", nil
+		return "", nil
 	}
 	backend, err := r.backend(material.creds)
 	if err != nil {
-		return statuses, "", err
+		return "", err
 	}
 	defer backend.Close()
 	if ok, why, err := backend.Ready(ctx); err != nil || !ok {
-		return statuses, firstNonEmpty(why, "waiting for Pixie's databases"), err
+		return firstNonEmpty(why, "waiting for Pixie's databases"), err
 	}
 	if err := backend.EnsureIndex(ctx, pixieMetadataIndex); err != nil {
-		return statuses, "", err
+		return "", err
 	}
 	var admin corev1.Secret
 	if err := r.Get(ctx, client.ObjectKey{Namespace: cloud.Namespace, Name: pixieAdminSecret}, &admin); err != nil {
-		return statuses, "", err
+		return "", err
 	}
 	identityID, err := backend.EnsureAdmin(ctx, cloud.Spec.AdminEmail, string(admin.Data["password"]))
 	if err != nil {
-		return statuses, "", err
+		return "", err
 	}
 	as, err := backend.EnsureOrg(ctx, cloud.Spec.Organization, cloud.Spec.AdminEmail, identityID)
 	if err != nil {
-		return statuses, "", err
+		return "", err
 	}
 	known, err := backend.DeployKeyIDs(ctx, as)
 	if err != nil {
-		return statuses, "", err
+		return "", err
 	}
 	var existing corev1.SecretList
 	if err := r.List(ctx, &existing, client.InNamespace(cloud.Namespace), client.HasLabels{pixieDeployKeyLabel}); err != nil {
-		return statuses, "", err
+		return "", err
 	}
 	wanted := map[string]bool{}
 	for _, agent := range cloud.Spec.Agents {
@@ -391,26 +442,26 @@ func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alph
 		}
 		if id := string(secret.Data["id"]); known[id] {
 			if err := backend.DeleteDeployKey(ctx, as, id); err != nil {
-				return statuses, "", err
+				return "", err
 			}
 		}
 		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
-			return statuses, "", err
+			return "", err
 		}
 	}
 	clusters, err := backend.Clusters(ctx, as)
 	if err != nil {
-		return statuses, "", err
+		return "", err
 	}
 	for i, agent := range cloud.Spec.Agents {
 		if err := r.ensureDeployKey(ctx, cloud, backend, as, agent.Name, known); err != nil {
-			return statuses, "", err
+			return "", err
 		}
 		statuses[i].DeployKeySecret = pixieDeployKeyPrefix + agent.Name
 		state := clusters[agent.Cluster]
 		statuses[i].Registered, statuses[i].Connected = state.Registered, state.Connected
 	}
-	return statuses, "", nil
+	return "", nil
 }
 
 // ensureDeployKey keeps an agent's key: the Secret's key is kept while Pixie still knows its id;

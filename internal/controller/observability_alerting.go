@@ -149,6 +149,9 @@ func reconcileObservabilityAlerting(
 	routes []oramav1alpha1.PixieAlertRoute,
 	rules []alertRule,
 ) error {
+	if !kindsInstalled(c, prometheusRuleGVK, alertmanagerConfigGVK) {
+		return errMonitoringCRDsMissing
+	}
 	objects := []*unstructured.Unstructured{
 		prometheusRuleObject(owner.GetNamespace(), observabilityRules, map[string]string{alertingLabel: "true"}, "orama.observability", rules),
 	}
@@ -161,8 +164,16 @@ func reconcileObservabilityAlerting(
 }
 
 // applyMonitoringObjects creates or updates monitoring objects controlled by owner, writing only
-// when an object differs from what is wanted.
+// when an object differs from what is wanted. Every kind is looked up first: if one is missing (the
+// platform layer not installed, or installed in part), nothing is written.
 func applyMonitoringObjects(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, objects []*unstructured.Unstructured) error {
+	kinds := make([]schema.GroupVersionKind, 0, len(objects))
+	for _, object := range objects {
+		kinds = append(kinds, object.GroupVersionKind())
+	}
+	if !kindsInstalled(c, kinds...) {
+		return errMonitoringCRDsMissing
+	}
 	for _, desired := range objects {
 		live := &unstructured.Unstructured{}
 		live.SetGroupVersionKind(desired.GroupVersionKind())
@@ -195,6 +206,20 @@ func applyMonitoringObjects(ctx context.Context, c client.Client, scheme *runtim
 		}
 	}
 	return nil
+}
+
+// kindsInstalled reports whether the cluster serves every kind.
+func kindsInstalled(c client.Client, kinds ...schema.GroupVersionKind) bool {
+	mapper := c.RESTMapper()
+	if mapper == nil {
+		return false
+	}
+	for _, kind := range kinds {
+		if _, err := mapper.RESTMapping(kind.GroupKind(), kind.Version); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func deleteMonitoringObject(ctx context.Context, c client.Client, gvk schema.GroupVersionKind, namespace, name string) error {
