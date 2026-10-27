@@ -501,49 +501,6 @@ spec:
   # orama.cloud/purpose=production, from ~/.config/orama-migration/prod2/secrets.json and the isolation
   # receipt bound to v1-eu (run eu-2), observed 2026-10-25T19:50:40Z and valid for 48 hours.
   migrations:
-  - name: team-4e01bc49
-    member: v1-eu
-    secrets:                                # copied into v1-eu first, deleted once the migration is gone
-    - name: v1-prod-prod1-db-ro             # url: the SELECT-only PlanetScale URL
-      namespace: orama-system
-    - name: v1-prod-prod1-master-key        # key: Prod 1's engine master key
-      namespace: orama-system
-    - name: v1-prod-prod1-settings-ssm      # access_key_id, secret_access_key: the SSM document's IAM key
-      namespace: orama-system
-    - name: team-4e01bc49-eu-evidence       # isolation.json: the reviewed isolation receipt
-      namespace: orama-system
-    spec:                                   # an OramaCloudV1Migration's spec, without targetRef
-      teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
-      projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
-      runID: eu-2
-      step: catchUp                         # seed reconciled 2026-10-25 20:09Z (attempt 2): 330 documents
-      apply: true                           # writes v1-eu
-      # Attempt 1 failed when the target's reader refused system prompts, which OramaCore's LSR-235 fix
-      # serves only from the writer; dev-c5739f43 reads them there (oramacore-aws#131).
-      attempt: 2
-      removeOnDelete: true                  # recovery: removing the entry removes its copy (decisions 25 October, 14)
-      evidenceSecretRef: {name: team-4e01bc49-eu-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:a121fdf1d494177e59636ade4c48087e4070a1a1902428c5eaeab7bdd5ea41c0  # dev-a6a6ad0f
-      pullSecretName: oramasearch-dockerhub
-      # removeOnDelete unset: removing this entry keeps the team's copy on v1-eu, because deleting
-      # production data needs its own approval. The cutover's final catch-up updates this copy.
-      # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
-      # names: Prod 1's writer build and its control DB catalog. Every team's entry uses this source.
-      # Its own copy of the Prod 1 source; the anchor &prod1-source is on the next entry (team-2136daa8).
-      source:
-        databaseSecretRef: {name: v1-prod-prod1-db-ro, key: url}
-        databaseHost: aws-us-east-2-1.pg.psdb.cloud
-        writerURL: https://writer.bovista.cluster.oramacore.com
-        readerURL: https://collections.orama.com
-        masterKeySecretRef: {name: v1-prod-prod1-master-key, key: key}
-        deploymentRevision: oramacore@1.2.39+890a7e9761dfec61ea8567dcab92b4df737318a2
-        schemaRevision: pg17.11-drizzle-push-catalog-sha256:d995b5cb539d
-        settings:
-          region: us-east-2
-          instanceID: i-0b9478719a8f91e2b
-          document: OramaMigrationReadIndexInfo
-          dataDir: /opt/oramacore/.data/writer
-          credentialsSecretRef: {name: v1-prod-prod1-settings-ssm}
   # The other active-cohort teams (decisions 25 October, 3), generated with the bridge's
   # docs/projects/orama-cloud-v1/cohort-copy/cohort_copy.py from read-only observations. Each team has its own
   # isolation receipt in orama-system/<entry>-eu-evidence. Added in batches; each starts at step plan.
