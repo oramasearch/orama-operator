@@ -589,6 +589,8 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		internetErr = errors.Join(internetErr, preserveErr)
 	}
 
+	allowances = append(allowances, oramaCloudScrapeAllowances(engine, cnpgPods)...)
+
 	labels := labelsFor(oc, "network-sandbox")
 	_, reconcileErr := reconcileOwnedNetworkSandbox(
 		ctx,
