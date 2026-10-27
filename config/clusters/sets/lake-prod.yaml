@@ -109,9 +109,9 @@ spec:
     dnsSecretRef:
       name: cloudflare-api-token-lake-live
     image: oramasearch/lake:v0.7.2
-    # app-runtime v0.1.1 (2026-10-26): Streamlit apps load behind their public host (#17); identity only behind Lake auth (#14).
+    # app-runtime v0.1.2 (2026-10-26): Streamlit behind the public host (#17), identity only behind Lake auth (#14), exact file bytes (#22).
     apps:
-      runtimeImage: oramasearch/app-runtime:v0.1.1
+      runtimeImage: oramasearch/app-runtime:v0.1.2
     # The agents' releases (2026-10-25), after nonprod and eu.lake.live ran them.
     # lake v0.7.2, agent-application v0.2.3 and agents on gpt-6.1-sol (Steve, 2026-10-26: "deploy the fixes as patch
     # releases (to all envs)", "default to sol"); people choose per workspace.
