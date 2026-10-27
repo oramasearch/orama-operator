@@ -209,6 +209,37 @@ func TestPixieVizierReconcileIsDeterministicAndKeepsRegistration(t *testing.T) {
 	}
 }
 
+// Before the provider's release exists (#455), the cluster's alert routing and rules are written.
+func TestPixieVizierWritesAlertRoutingBeforeItsRelease(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPixieScheme(t)
+	vz := testPixieVizier()
+	vz.Name = pixieConcreteName
+	vz.Spec.Release = nil
+	vz.Spec.AlertRoutes = []oramav1alpha1.PixieAlertRoute{{Name: "oncall", Kind: "slack", Severities: []string{"critical"}, SecretName: "alert-oncall"}}
+	kube := newPixieTestClient(t, scheme, interceptor.Funcs{}, vz)
+	reconcileTwice(t, &PixieVizierReconciler{Client: kube, Scheme: scheme}, "pl", pixieConcreteName)
+	routing := &unstructured.Unstructured{}
+	routing.SetGroupVersionKind(alertmanagerConfigGVK)
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "pl", Name: observabilityRouting}, routing); err != nil {
+		t.Fatalf("no alert routing before the release: %v", err)
+	}
+	if routing.GetLabels()[alertingLabel] != "true" {
+		t.Error("the routing is not selected by the platform's Alertmanager")
+	}
+	var got oramav1alpha1.PixieVizier
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(vz), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != oramav1alpha1.ObservabilityPhasePending || !strings.Contains(got.Status.Message, "#455") {
+		t.Fatalf("status %+v", got.Status)
+	}
+	var daemonSets appsv1.DaemonSetList
+	if err := kube.List(ctx, &daemonSets); err != nil || len(daemonSets.Items) != 0 {
+		t.Fatal("Vizier ran without a release")
+	}
+}
+
 // Without the platform layer's monitoring CRDs, Vizier still runs, and says alerting is not set up.
 func TestPixieVizierToleratesMissingMonitoringCRDs(t *testing.T) {
 	scheme := newPixieScheme(t)

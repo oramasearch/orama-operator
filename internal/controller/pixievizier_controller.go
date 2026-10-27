@@ -97,8 +97,17 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 	if vz.Namespace != oramav1alpha1.PixieVizierNamespace {
 		return pixieVizierStatus(oramav1alpha1.ObservabilityPhaseRefused, "a PixieVizier runs in namespace "+oramav1alpha1.PixieVizierNamespace), nil, nil
 	}
-	if problems := pixieReleaseProblems(&vz.Spec.Release); len(problems) > 0 {
-		return pixieVizierStatus(oramav1alpha1.ObservabilityPhaseDegraded, problems[0]), nil, nil
+	// The cluster's alert routing and rules first: they need nothing of Pixie, so a cluster pages
+	// before its agents can run (the release, its key or the hub may still be missing).
+	alertingErr := reconcileObservabilityAlerting(ctx, r.Client, r.Scheme, vz, vz.Spec.ClusterName, vz.Spec.AlertRoutes, vizierAlertRules(vz))
+	if alertingErr != nil && !errors.Is(alertingErr, errMonitoringCRDsMissing) {
+		return oramav1alpha1.PixieVizierStatus{}, nil, alertingErr
+	}
+	if vz.Spec.Release == nil {
+		return pixieVizierStatus(oramav1alpha1.ObservabilityPhasePending, "waiting for an installable provider release (#455); alert routing is written"), alertingErr, nil
+	}
+	if problems := pixieReleaseProblems(vz.Spec.Release); len(problems) > 0 {
+		return pixieVizierStatus(oramav1alpha1.ObservabilityPhaseDegraded, problems[0]), alertingErr, nil
 	}
 	for _, need := range []struct{ name, key, what string }{
 		{vz.Spec.PullSecretName, corev1.DockerConfigJsonKey, "the registry credentials"},
@@ -112,7 +121,7 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 		}
 		if !found || len(secret.Data[need.key]) == 0 {
 			return pixieVizierStatus(oramav1alpha1.ObservabilityPhasePending,
-				fmt.Sprintf("waiting for %s (Secret %s key %s), which the managing cluster writes", need.what, need.name, need.key)), nil, nil
+				fmt.Sprintf("waiting for %s (Secret %s key %s), which the managing cluster writes", need.what, need.name, need.key)), alertingErr, nil
 		}
 	}
 	certsHash, err := r.ensureSecrets(ctx, vz)
@@ -121,7 +130,7 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 	}
 	objects, err := renderVizier(vizierRender{Vizier: vz, CertsHash: certsHash})
 	if err != nil {
-		return pixieVizierStatus(oramav1alpha1.ObservabilityPhaseDegraded, err.Error()), nil, nil
+		return pixieVizierStatus(oramav1alpha1.ObservabilityPhaseDegraded, err.Error()), alertingErr, nil
 	}
 	// The sandbox first, so no Vizier pod runs without it.
 	localHub := !isPeerImportAddress(vz.Spec.CloudAddress)
@@ -134,10 +143,6 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 	}
 	if err := applyPixieObjects(ctx, r.Client, r.Scheme, vz, pixieManagedVizier, objects); err != nil {
 		return oramav1alpha1.PixieVizierStatus{}, nil, err
-	}
-	alertingErr := reconcileObservabilityAlerting(ctx, r.Client, r.Scheme, vz, vz.Spec.ClusterName, vz.Spec.AlertRoutes, vizierAlertRules(vz))
-	if alertingErr != nil && !errors.Is(alertingErr, errMonitoringCRDsMissing) {
-		return oramav1alpha1.PixieVizierStatus{}, nil, alertingErr
 	}
 	components, err := pixieWorkloadStatus(ctx, r.Client, vz.Namespace, objects)
 	if err != nil {

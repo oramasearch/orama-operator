@@ -33,11 +33,13 @@ func testPixieRelease() oramav1alpha1.PixieRelease {
 	return oramav1alpha1.PixieRelease{Commit: pixieManifestCommit, VizierVersion: "0.14.16-orama.1", CLIVersion: "0.8.9-orama.1", Images: images}
 }
 
+func pixieReleasePtr(release oramav1alpha1.PixieRelease) *oramav1alpha1.PixieRelease { return &release }
+
 func testPixieVizier() *oramav1alpha1.PixieVizier {
 	return &oramav1alpha1.PixieVizier{
 		ObjectMeta: metav1.ObjectMeta{Name: "vizier", Namespace: oramav1alpha1.PixieVizierNamespace},
 		Spec: oramav1alpha1.PixieVizierSpec{
-			Release:             testPixieRelease(),
+			Release:             pixieReleasePtr(testPixieRelease()),
 			Agent:               "prod2",
 			Purpose:             "production",
 			ClusterName:         "orama-production-cluster-02",
@@ -180,7 +182,7 @@ func TestRenderVizier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertPixiePods(t, objects, vz.Spec.Release)
+	assertPixiePods(t, objects, *vz.Spec.Release)
 	byKey := map[pixieObjectKey]client.Object{}
 	for _, object := range objects {
 		byKey[keyOf(object)] = object

@@ -204,7 +204,9 @@ Every cluster runs kube-prometheus-stack and Perses from the platform layer:
 - **Alertmanager** routes through one `AlertmanagerConfig` per cluster, labelled
   `orama.cloud/alerting`, which the operator writes in `pl` (or `plc` on a hub cluster with no
   agent): every alert of the cluster, of the severities a receiver takes, to that receiver, titled
-  with the cluster's name.
+  with the cluster's name. It does not wait for Pixie: the agent controller writes the
+  `PixieVizier`, with the routes, as soon as the purposes match, and the cluster's operator writes
+  the routing first; Vizier itself waits for the release, its key and the hub's CA.
 - **Perses** (read-only) shows every ConfigMap labelled `perses.dev/resource: "true"`.
 - kube-state-metrics turns the operator's own status into metrics, so an alert says what the
   resource says: `orama_oramacloudv1_phase` and `orama_oramacloudv1_component_ready`,
@@ -271,8 +273,9 @@ Nothing here creates infrastructure or changes a live cluster by itself. In orde
 consent where the cluster rules ask for it:
 
 1. **Images (#455).** Build every key above from `4b445e0b7907` into private `oramasearch/pixie-*`
-   repositories and record the digests. Until then no provider is Ready and nothing Pixie is
-   installed anywhere.
+   repositories and record the digests. Until then no provider is Ready and nothing Pixie runs
+   anywhere; steps 2, 3 and the hubs' and agents' resources can go first, and give every cluster
+   its alert routing (paging for `v1-eu` and `v1-us`) before Pixie exists.
 2. **Platform layer on the leaves.** Apply the new `ClusterHelmRelease`s in each
    `config/clusters/*/platform.yaml` (kube-prometheus-stack, then Perses). On the managing cluster it
    is a `helmfile apply` of the merged file, with consent. kube-prometheus-stack adds the monitoring

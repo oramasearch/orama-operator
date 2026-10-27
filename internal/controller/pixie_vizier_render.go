@@ -137,7 +137,7 @@ type vizierRender struct {
 // workloads last.
 func renderVizier(input vizierRender) ([]client.Object, error) {
 	vz := input.Vizier
-	if problems := pixieReleaseProblems(&vz.Spec.Release); len(problems) > 0 {
+	if problems := pixieReleaseProblems(vz.Spec.Release); len(problems) > 0 {
 		return nil, fmt.Errorf("%s", problems[0])
 	}
 	if vz.Spec.NodeMemory.Value() < 1<<30 {

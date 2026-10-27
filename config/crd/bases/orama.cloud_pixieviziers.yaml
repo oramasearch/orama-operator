@@ -141,7 +141,10 @@ spec:
                 - prod-support
                 type: string
               release:
-                description: Release is the provider's release, copied from the ObservabilityProvider.
+                description: |-
+                  Release is the provider's release, copied from the ObservabilityProvider. Empty while the
+                  provider is not installable: the cluster's alert routing and rules are written anyway, and
+                  Vizier waits.
                 properties:
                   cliVersion:
                     description: CLIVersion is the px CLI version the hub's artifact
@@ -192,7 +195,6 @@ spec:
             - nodeMemory
             - pullSecretName
             - purpose
-            - release
             type: object
           status:
             description: PixieVizierStatus is Vizier's readiness, per component.

@@ -146,8 +146,11 @@ type PixieCloudList struct {
 
 // PixieVizierSpec is Vizier on one cluster.
 type PixieVizierSpec struct {
-	// Release is the provider's release, copied from the ObservabilityProvider.
-	Release PixieRelease `json:"release"`
+	// Release is the provider's release, copied from the ObservabilityProvider. Empty while the
+	// provider is not installable: the cluster's alert routing and rules are written anyway, and
+	// Vizier waits.
+	// +optional
+	Release *PixieRelease `json:"release,omitempty"`
 	// Agent is the ObservabilityAgent this was written for.
 	// +kubebuilder:validation:MinLength=1
 	Agent string `json:"agent"`

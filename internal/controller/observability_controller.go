@@ -627,31 +627,12 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 	if refusal := agentPurposeRefusal(agent.Spec.ClusterRef, purpose, hub.Spec.ClusterRef, hubPurpose); refusal != "" {
 		return status, &setError{"Purpose", refusal}
 	}
-	release, err := providerRelease(ctx, r.Client, hub.Spec.ProviderRef)
-	if err != nil {
-		return status, err
-	}
-	hubCluster, waiting, err := view.clusters().ClientFor(ctx, hub.Spec.ClusterRef, oramav1alpha1.PixieCloudNamespace)
-	if err != nil {
-		return status, err
-	}
-	if waiting != "" {
-		return status, &setError{"Pending", "the hub's cluster: " + waiting}
-	}
 	agentCluster, waiting, err := view.clusters().ClientFor(ctx, agent.Spec.ClusterRef, oramav1alpha1.PixieVizierNamespace)
 	if err != nil {
 		return status, err
 	}
 	if waiting != "" {
 		return status, &setError{"Pending", waiting}
-	}
-	// The hub issues this cluster's key once it lists the agent; nothing else holds it.
-	var cloud oramav1alpha1.PixieCloud
-	if err := hubCluster.Get(ctx, client.ObjectKey{Namespace: oramav1alpha1.PixieCloudNamespace, Name: pixieConcreteName}, &cloud); err != nil {
-		if apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err) {
-			return status, &setError{"Pending", "waiting for the hub's PixieCloud on " + hub.Spec.ClusterRef}
-		}
-		return status, err
 	}
 	labels := map[string]string{observabilityAgentLbl: agent.Name}
 	if err := ensurePixieNamespace(ctx, agentCluster, oramav1alpha1.PixieVizierNamespace, "privileged"); err != nil {
@@ -660,46 +641,56 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 	if err := view.copySecret(ctx, agentCluster, agent.Spec.ClusterRef, agent.Spec.ImagePullSecretRef, oramav1alpha1.PixieVizierNamespace, pixiePullSecret, labels, nil); err != nil {
 		return status, err
 	}
-	cloudAddress := fmt.Sprintf("%s.%s.svc:%d", pixieVzconnService, oramav1alpha1.PixieCloudNamespace, pixieVzconnPort)
-	status.Link = "local"
-	if agent.Spec.ClusterRef != hub.Spec.ClusterRef {
-		cloudAddress = fmt.Sprintf("%s.%s.svc:%d", pixieAgentImportService, oramav1alpha1.PixieVizierNamespace, pixieVzconnPort)
-		link, err := r.reconcileLink(ctx, agent, &hub, hubCluster, agentCluster)
-		if err != nil {
-			return status, err
-		}
-		status.Link = "PeerLink " + link
-	}
-	var deployKey corev1.Secret
-	if err := hubCluster.Get(ctx, client.ObjectKey{Namespace: oramav1alpha1.PixieCloudNamespace, Name: pixieDeployKeyPrefix + agent.Name}, &deployKey); err != nil {
-		if apierrors.IsNotFound(err) {
-			return status, &setError{"Pending", "waiting for the hub to issue this cluster's deploy key"}
-		}
-		return status, err
-	}
-	if cloud.Status.CACertificate == "" {
-		return status, &setError{"Pending", "waiting for the hub's CA"}
-	}
-	for _, secret := range []*corev1.Secret{
-		{ObjectMeta: metav1.ObjectMeta{Name: vizierDeploySecret}, Data: map[string][]byte{"deploy-key": deployKey.Data["deploy-key"]}},
-		{ObjectMeta: metav1.ObjectMeta{Name: pixieCloudCACopy}, Data: map[string][]byte{"ca.crt": []byte(cloud.Status.CACertificate)}},
-	} {
-		secret.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}
-		secret.Namespace, secret.Labels, secret.Type = oramav1alpha1.PixieVizierNamespace, labels, corev1.SecretTypeOpaque
-		if err := agentCluster.Patch(ctx, secret, client.Apply, client.FieldOwner(pixieFieldOwner), client.ForceOwnership); err != nil {
-			return status, fmt.Errorf("the cluster refused Secret %s: %w", secret.Name, err)
-		}
-	}
+	// The cluster's alert routing goes with the PixieVizier, which is written as soon as the
+	// purposes match: a cluster pages before Pixie's release, its key or its hub exist.
 	routes, err := view.alertRoutesOn(ctx, agentCluster, &hub, agent.Spec.ClusterRef, oramav1alpha1.PixieVizierNamespace, labels)
 	if err != nil {
 		return status, err
 	}
-	nodeMemory := quantityOr(agent.Spec.NodeMemory, "2Gi")
+	// What Vizier still waits for, in order; the first is the agent's message until it runs.
+	var waitingFor []string
+	var release *oramav1alpha1.PixieRelease
+	if release, err = providerRelease(ctx, r.Client, hub.Spec.ProviderRef); err != nil {
+		var refusal *setError
+		if !errors.As(err, &refusal) {
+			return status, err
+		}
+		release, waitingFor = nil, append(waitingFor, refusal.message)
+	}
+	cloudAddress := fmt.Sprintf("%s.%s.svc:%d", pixieVzconnService, oramav1alpha1.PixieCloudNamespace, pixieVzconnPort)
+	status.Link = "local"
+	if agent.Spec.ClusterRef != hub.Spec.ClusterRef {
+		cloudAddress = fmt.Sprintf("%s.%s.svc:%d", pixieAgentImportService, oramav1alpha1.PixieVizierNamespace, pixieVzconnPort)
+	}
+	var cloud oramav1alpha1.PixieCloud
+	hubCluster, hubWaiting, err := view.clusters().ClientFor(ctx, hub.Spec.ClusterRef, oramav1alpha1.PixieCloudNamespace)
+	switch {
+	case err != nil:
+		return status, err
+	case hubWaiting != "":
+		waitingFor = append(waitingFor, "the hub's cluster: "+hubWaiting)
+	default:
+		if agent.Spec.ClusterRef != hub.Spec.ClusterRef {
+			link, err := r.reconcileLink(ctx, agent, &hub, hubCluster, agentCluster)
+			if err != nil {
+				return status, err
+			}
+			status.Link = "PeerLink " + link
+		}
+		// The hub issues this cluster's key once it lists the agent; nothing else holds it.
+		message, err := r.deliverHubCredentials(ctx, agent, hubCluster, agentCluster, labels, &cloud)
+		if err != nil {
+			return status, err
+		}
+		if message != "" {
+			waitingFor = append(waitingFor, message)
+		}
+	}
 	vizier := &oramav1alpha1.PixieVizier{
 		TypeMeta:   metav1.TypeMeta{APIVersion: oramav1alpha1.GroupVersion.String(), Kind: "PixieVizier"},
 		ObjectMeta: metav1.ObjectMeta{Name: pixieConcreteName, Namespace: oramav1alpha1.PixieVizierNamespace},
 		Spec: oramav1alpha1.PixieVizierSpec{
-			Release:             *release,
+			Release:             release,
 			Agent:               agent.Name,
 			Purpose:             purpose,
 			ClusterName:         agent.Spec.ClusterRef,
@@ -707,7 +698,7 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 			CloudCASecretName:   pixieCloudCACopy,
 			DeployKeySecretName: vizierDeploySecret,
 			PullSecretName:      pixiePullSecret,
-			NodeMemory:          nodeMemory,
+			NodeMemory:          quantityOr(agent.Spec.NodeMemory, "2Gi"),
 			AlertRoutes:         routes,
 		},
 	}
@@ -721,6 +712,10 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 	}
 	status.Phase = firstNonEmpty(live.Status.Phase, oramav1alpha1.ObservabilityPhasePending)
 	status.Ready, status.Components, status.Message = live.Status.Ready, live.Status.Components, live.Status.Message
+	if len(waitingFor) > 0 {
+		status.Phase, status.Message = oramav1alpha1.ObservabilityPhasePending, "waiting for "+strings.TrimPrefix(waitingFor[0], "waiting for ")+"; alert routing is written"
+		return status, nil
+	}
 	for _, a := range cloud.Status.Agents {
 		if a.Name == agent.Name {
 			status.Connected = a.Connected
@@ -730,6 +725,44 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 		status.Phase, status.Message = oramav1alpha1.ObservabilityPhaseProgressing, "the agents run; the hub has not seen the cluster heartbeat yet"
 	}
 	return status, nil
+}
+
+// deliverHubCredentials copies, from the hub's cluster to the agent's, the deploy key the hub
+// issued for this cluster and the hub's public CA. It says what is not there yet.
+func (r *ObservabilityAgentReconciler) deliverHubCredentials(
+	ctx context.Context,
+	agent *oramav1alpha1.ObservabilityAgent,
+	hubCluster, agentCluster client.Client,
+	labels map[string]string,
+	cloud *oramav1alpha1.PixieCloud,
+) (string, error) {
+	if err := hubCluster.Get(ctx, client.ObjectKey{Namespace: oramav1alpha1.PixieCloudNamespace, Name: pixieConcreteName}, cloud); err != nil {
+		if apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err) {
+			return "the hub's PixieCloud", nil
+		}
+		return "", err
+	}
+	var deployKey corev1.Secret
+	if err := hubCluster.Get(ctx, client.ObjectKey{Namespace: oramav1alpha1.PixieCloudNamespace, Name: pixieDeployKeyPrefix + agent.Name}, &deployKey); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "the hub to issue this cluster's deploy key", nil
+		}
+		return "", err
+	}
+	if cloud.Status.CACertificate == "" {
+		return "the hub's CA", nil
+	}
+	for _, secret := range []*corev1.Secret{
+		{ObjectMeta: metav1.ObjectMeta{Name: vizierDeploySecret}, Data: map[string][]byte{"deploy-key": deployKey.Data["deploy-key"]}},
+		{ObjectMeta: metav1.ObjectMeta{Name: pixieCloudCACopy}, Data: map[string][]byte{"ca.crt": []byte(cloud.Status.CACertificate)}},
+	} {
+		secret.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}
+		secret.Namespace, secret.Labels, secret.Type = oramav1alpha1.PixieVizierNamespace, labels, corev1.SecretTypeOpaque
+		if err := agentCluster.Patch(ctx, secret, client.Apply, client.FieldOwner(pixieFieldOwner), client.ForceOwnership); err != nil {
+			return "", fmt.Errorf("the cluster refused Secret %s: %w", secret.Name, err)
+		}
+	}
+	return "", nil
 }
 
 // reconcileLink makes the agent's PeerConnection pair and the PeerLink that gives both ends their

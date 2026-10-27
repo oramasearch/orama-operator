@@ -1627,7 +1627,8 @@ connected}`, `caCertificate` (the hub's public trust root) and the `Ready` and `
 Short name `pxvizier`. Written by an `ObservabilityAgent` into namespace `pl` of the agent's cluster.
 The cluster's own operator runs Vizier (node agents, Kelvin, query broker, metadata, cloud connector,
 NATS) with auto-update off and no updater, its own CA and signing key, and a default-deny sandbox.
-`spec`: `release`, `agent`, `purpose`, `clusterName`, `cloudAddress` (the hub's vzconn, never under
+`spec`: `release` (empty while the provider is not installable: the alert routing and rules are
+written anyway and Vizier waits), `agent`, `purpose`, `clusterName`, `cloudAddress` (the hub's vzconn, never under
 `.svc.cluster.local`), `cloudCASecretName`, `deployKeySecretName`, `pullSecretName`, `nodeMemory`,
 `alertRoutes[]`. `status`: `phase`, `ready`, `components[]`, `clusterID` (what the hub registered),
 and the `Ready` and `Alerting` conditions.

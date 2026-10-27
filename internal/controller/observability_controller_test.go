@@ -183,6 +183,18 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 	if agent.Status.Phase != oramav1alpha1.ObservabilityPhasePending || !strings.Contains(agent.Status.Message, "deploy key") {
 		t.Fatalf("agent before its key: %+v", agent.Status)
 	}
+	// The cluster's alert routing is already there: paging does not wait for Pixie.
+	var early oramav1alpha1.PixieVizier
+	if err := f.cluster("prod2").Get(ctx, client.ObjectKey{Namespace: "pl", Name: pixieConcreteName}, &early); err != nil {
+		t.Fatalf("no PixieVizier before the key: %v", err)
+	}
+	if len(early.Spec.AlertRoutes) != 1 || early.Spec.AlertRoutes[0].SecretName != "alert-oncall" {
+		t.Fatalf("alert routes before the key: %+v", early.Spec.AlertRoutes)
+	}
+	var receiver corev1.Secret
+	if err := f.cluster("prod2").Get(ctx, client.ObjectKey{Namespace: "pl", Name: "alert-oncall"}, &receiver); err != nil || len(receiver.Data[alertRouteSecretKey]) == 0 {
+		t.Fatalf("the production receiver did not reach the production cluster: %v", err)
+	}
 	// The hub's operator issues the key and publishes its CA.
 	key := "px-dep-11111111-2222-3333-4444-555555555555"
 	if err := support.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pixieDeployKeyPrefix + "prod2", Namespace: "plc"},
