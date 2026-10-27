@@ -99,8 +99,12 @@ The gateways speak mutual TLS 1.3 and admit only the other end's exact identity
 hub, verified: Pixie's cloud connector checks the hub's certificate against the system roots and has
 no option for a private CA, and it skips verification entirely for an address under
 `.svc.cluster.local`. So the operator gives it the hub's CA as Go's root file (`SSL_CERT_FILE`),
-issues the hub's proxy certificate for `peer-pixie-cloud.pl.svc` (and the hub's own names), and
-never uses a `.svc.cluster.local` address (`TestRenderVizier`).
+issues the hub's proxy certificate for `peer-pixie-cloud.pl.svc` and `vzconn-service.plc.svc`, and
+renders no other address (`checkVizierCloudAddress`). Pixie dials gRPC, and gRPC v1.43.0 (the version
+Pixie's `go.mod` replaces in) sets the TLS server name to the dial address's host
+(`credentials/tls.go`), so Go checks both the hub's CA and that the certificate names that host.
+`TestHubCertificateIsVerifiedForTheDialedAddress` runs that handshake with the issued certificates:
+it succeeds for the two addresses and fails for another name or another CA.
 
 ## Credentials, one set per cluster
 
@@ -114,7 +118,10 @@ never uses a `.svc.cluster.local` address (`TestRenderVizier`).
 | The administrator's password | the hub's operator | `plc/pixie-admin`. Upstream creates `admin@default.com` with password `admin`; that container is removed. |
 | Registry credentials and alert receiver URLs | people, on the managing cluster | Copied to each cluster under the production-credential rules. Give each cluster its own pull Secret. |
 
-Generated values are minted once and never rewritten. Certificates live 90 days and are reissued 30
+Copies on other clusters carry the hub's or agent's label, never an owner reference across
+clusters; they are re-applied every pass (a deleted copy comes back) and all of them are deleted
+when the hub or agent is (`deleteLabelledSecrets`). Generated values are minted once and never
+rewritten. Certificates live 90 days and are reissued 30
 days before they expire; each pod template carries a hash of what it reads, so a reissue rolls the
 pods that use it (Pixie's services read certificates only at start).
 
@@ -139,6 +146,7 @@ from `pl-cloud-config`). `PL_DISABLE_AUTO_UPDATE` is `true`.
 | Elasticsearch 7 through Elastic's ECK operator, and Kibana (`k8s/cloud_deps`) | Elastic License / SSPL / AGPL depending on version and build | **OpenSearch 2.19** (Apache-2.0), a single node run by the operator, with its security plugin on (TLS on both layers, two least-privilege users). The indexer runs with manual index management, so it never calls Elastic's ILM API, and the operator creates its index. OpenSearch reports Elasticsearch 7.10.2 to Pixie's client. |
 | One Postgres Deployment shared by every service | PostgreSQL | CloudNativePG, two instances, one database and role per service. |
 | The metrics server | Apache-2.0 | Not run: it only exports usage to Google BigQuery. |
+| The plugin loader Job | Apache-2.0 | Not run: it downloads plugin definitions from GitHub (`pixie-io/pixie-plugin`) at run time. Export plugins (the ClickHouse retention path) wait for a mirrored plugin artifact from #455. |
 | Sentry, Segment, LaunchDarkly, announcements, contact, support access | outside services | Off; the keys exist, empty. |
 | The artifact tracker's public manifest and Google Cloud Storage | outside services | Versions pinned to the release (`vizierVersion`, `cliVersion`), so it never polls; no credentials mounted. |
 | PxL scripts from `artifacts.px.dev` and a GCS bucket | outside services | Served inside the cluster by `pixie-scripts` (image `script-bundle`): to the UI through the proxy at `/pxl_scripts/`, and to the script manager as a storage emulator (`STORAGE_EMULATOR_HOST`). |
@@ -171,7 +179,7 @@ exactly these keys, or the provider is not Ready:
 | Keys | Built from |
 |---|---|
 | `vizier-pem`, `vizier-kelvin`, `vizier-metadata`, `vizier-query-broker`, `vizier-cloud-connector` | `//k8s/vizier:vizier_images_push` (the cert provisioner and updater are not needed) |
-| `cloud-api`, `cloud-artifact-tracker`, `cloud-auth`, `cloud-config-manager`, `cloud-cron-script`, `cloud-indexer`, `cloud-plugin`, `cloud-plugin-load-db`, `cloud-profile`, `cloud-project-manager`, `cloud-proxy`, `cloud-scriptmgr`, `cloud-vzconn`, `cloud-vzmgr` | `//k8s/cloud:cloud_images_push` (the metrics server is not needed) |
+| `cloud-api`, `cloud-artifact-tracker`, `cloud-auth`, `cloud-config-manager`, `cloud-cron-script`, `cloud-indexer`, `cloud-plugin`, `cloud-profile`, `cloud-project-manager`, `cloud-proxy`, `cloud-scriptmgr`, `cloud-vzconn`, `cloud-vzmgr` | `//k8s/cloud:cloud_images_push` (the metrics server and plugin loader are not needed) |
 | `nats`, `curl`, `postgres` | mirrors of the images Pixie's manifests name (`ghcr.io/pixie-io/...`); `postgres` is a CloudNativePG operand image |
 | `envoy`, `hydra`, `hydra-cli`, `kratos` | mirrors of `envoyproxy/envoy`, `oryd/hydra` (`-sqlite` and `-alpine`), `oryd/kratos` at the versions the manifests pin |
 | `opensearch` | a mirror of `opensearchproject/opensearch` 2.19 |
@@ -225,9 +233,14 @@ Not scraped yet: the broker. RabbitMQ's Prometheus plugin is not enabled on the 
 it restarts the broker, so it waits for a planned window; until then the broker is covered by its
 readiness and the writer's enqueue latency.
 
-Without the monitoring CRDs (the platform layer not installed yet), the operator writes the
-dashboards and nothing else, and every other resource still reconciles. A `PixieCloud` or
-`PixieVizier` then shows `Alerting=False` (`MonitoringCRDsMissing`).
+Rolling the operator out changes nothing on a Cloud v1 stack until the platform layer is applied:
+without the monitoring CRDs it writes no monitoring object, dashboard or sandbox allowance
+(`TestOramaCloudV1MonitoringWaitsForThePlatformLayer`). A `PixieCloud` or `PixieVizier` then shows
+`Alerting=False` (`MonitoringCRDsMissing`); every other resource still reconciles.
+
+Rules on metrics that may be absent have an `absent()` companion, so a missing target is an alert,
+never a silent pass: `OramaEngineTargetsMissing` and `OramaControlDBTargetsMissing` (critical),
+`OramaStackStatusMetricsMissing`, and `ObservabilityAgentStatusMissing` on agents and hubs.
 
 ## Status
 

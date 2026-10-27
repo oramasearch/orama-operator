@@ -226,6 +226,20 @@ func deleteRemote(ctx context.Context, target client.Client, object client.Objec
 	return client.IgnoreNotFound(target.Delete(ctx, object))
 }
 
+// deleteLabelledSecrets deletes the Secrets the managing cluster copied into a namespace for one
+// hub or agent, found by its label.
+func deleteLabelledSecrets(ctx context.Context, target client.Client, namespace, label, owner string) error {
+	var secrets corev1.SecretList
+	if err := target.List(ctx, &secrets, client.InNamespace(namespace), client.MatchingLabels{label: owner}); err != nil {
+		return err
+	}
+	var errs []error
+	for i := range secrets.Items {
+		errs = append(errs, client.IgnoreNotFound(target.Delete(ctx, &secrets.Items[i])))
+	}
+	return errors.Join(errs...)
+}
+
 // observabilityStatusConditions sets the Ready condition from a phase.
 func observabilityConditions(existing []metav1.Condition, phase, message string, generation int64) []metav1.Condition {
 	conditions := append([]metav1.Condition(nil), existing...)
@@ -347,6 +361,9 @@ func (r *ObservabilityHubReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if waiting == "" {
 			cloud := &oramav1alpha1.PixieCloud{ObjectMeta: metav1.ObjectMeta{Name: pixieConcreteName, Namespace: oramav1alpha1.PixieCloudNamespace}}
 			if err := deleteRemote(ctx, target, cloud, observabilityHubLabel, hub.Name); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := deleteLabelledSecrets(ctx, target, oramav1alpha1.PixieCloudNamespace, observabilityHubLabel, hub.Name); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -824,10 +841,12 @@ func (r *ObservabilityAgentReconciler) teardown(ctx context.Context, agent *oram
 		for _, object := range []client.Object{
 			&oramav1alpha1.PixieVizier{ObjectMeta: metav1.ObjectMeta{Name: pixieConcreteName, Namespace: oramav1alpha1.PixieVizierNamespace}},
 			&oramav1alpha1.PeerConnection{ObjectMeta: metav1.ObjectMeta{Name: pixieHubPeer, Namespace: oramav1alpha1.PixieVizierNamespace}},
-			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: vizierDeploySecret, Namespace: oramav1alpha1.PixieVizierNamespace}},
 		} {
 			errs = append(errs, deleteRemote(ctx, agentCluster, object, observabilityAgentLbl, agent.Name))
 		}
+		// Every credential copied there: the deploy key, the hub's CA, the pull Secret and the
+		// receivers. Copies carry the agent's label, never an owner on another cluster.
+		errs = append(errs, deleteLabelledSecrets(ctx, agentCluster, oramav1alpha1.PixieVizierNamespace, observabilityAgentLbl, agent.Name))
 	}
 	var hub oramav1alpha1.ObservabilityHub
 	if err := r.Get(ctx, types.NamespacedName{Name: agent.Spec.HubRef}, &hub); err == nil {

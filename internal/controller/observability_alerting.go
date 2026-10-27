@@ -212,6 +212,12 @@ func deleteMonitoringObject(ctx context.Context, c client.Client, gvk schema.Gro
 // evaluated on the agent's own cluster, so they fire even when the hub cannot be reached.
 func vizierAlertRules(vz *oramav1alpha1.PixieVizier) []alertRule {
 	rules := []alertRule{{
+		Alert:    "ObservabilityAgentStatusMissing",
+		Expr:     fmt.Sprintf(`absent(orama_pixievizier_phase{namespace=%q})`, vz.Namespace),
+		For:      "15m",
+		Severity: "warning",
+		Summary:  "kube-state-metrics reports no status for this cluster's observability agents: their alerts cannot fire.",
+	}, {
 		Alert:    "ObservabilityAgentNotReady",
 		Expr:     fmt.Sprintf(`orama_pixievizier_phase{namespace=%q,phase="Ready"} == 0`, vz.Namespace),
 		For:      "15m",
@@ -233,7 +239,7 @@ func vizierAlertRules(vz *oramav1alpha1.PixieVizier) []alertRule {
 // pixieCloudAlertRules page when the hub is not Ready or an agent cluster stops reporting. A whole
 // agent cluster lost cannot page from itself, so this is the rule that notices.
 func pixieCloudAlertRules(cloud *oramav1alpha1.PixieCloud) []alertRule {
-	return []alertRule{
+	rules := []alertRule{
 		{
 			Alert:    "ObservabilityHubNotReady",
 			Expr:     fmt.Sprintf(`orama_pixiecloud_phase{namespace=%q,phase="Ready"} == 0`, cloud.Namespace),
@@ -249,4 +255,15 @@ func pixieCloudAlertRules(cloud *oramav1alpha1.PixieCloud) []alertRule {
 			Summary:  "An agent cluster ({{ $labels.agent }}) has not reported to the observability hub for 10 minutes: the cluster or its link may be down.",
 		},
 	}
+	if len(cloud.Spec.Agents) > 0 {
+		// With agents listed, no metric at all means the rule above cannot fire.
+		rules = append(rules, alertRule{
+			Alert:    "ObservabilityAgentStatusMissing",
+			Expr:     fmt.Sprintf(`absent(orama_pixiecloud_agent_connected{namespace=%q})`, cloud.Namespace),
+			For:      "15m",
+			Severity: "warning",
+			Summary:  "kube-state-metrics reports no agent status for the observability hub: lost clusters cannot page.",
+		})
+	}
+	return rules
 }

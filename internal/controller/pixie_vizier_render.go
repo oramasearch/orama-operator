@@ -7,6 +7,7 @@ package controller
 
 import (
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -139,6 +140,9 @@ func renderVizier(input vizierRender) ([]client.Object, error) {
 	vz := input.Vizier
 	if problems := pixieReleaseProblems(vz.Spec.Release); len(problems) > 0 {
 		return nil, fmt.Errorf("%s", problems[0])
+	}
+	if err := checkVizierCloudAddress(vz.Spec.CloudAddress); err != nil {
+		return nil, err
 	}
 	if vz.Spec.NodeMemory.Value() < 1<<30 {
 		return nil, fmt.Errorf("nodeMemory %s is below 1Gi, which leaves the node agent no room for data", vz.Spec.NodeMemory.String())
@@ -280,4 +284,25 @@ func pruneUnmountedVolumes(spec *corev1.PodSpec) {
 		}
 	}
 	spec.Volumes = kept
+}
+
+// vizierCloudAddresses are the only hub addresses a Vizier dials: the hub's vzconn on its own
+// cluster, or the PeerConnection import in Vizier's namespace. Both are names on the hub's proxy
+// certificate (pixieProxyDNSNames). Pixie's cloud connector dials gRPC, which sets the TLS server
+// name to the address's host (grpc v1.43.0 credentials/tls.go), and verifies it against Go's root
+// file, which the operator sets to the hub's CA; it skips verification for any address containing
+// .svc.cluster.local, so no such address is ever rendered.
+var vizierCloudAddresses = map[string]bool{
+	fmt.Sprintf("%s.%s.svc:%d", pixieVzconnService, oramav1alpha1.PixieCloudNamespace, pixieVzconnPort):       true,
+	fmt.Sprintf("%s.%s.svc:%d", pixieAgentImportService, oramav1alpha1.PixieVizierNamespace, pixieVzconnPort): true,
+}
+
+func checkVizierCloudAddress(address string) error {
+	if strings.Contains(address, ".svc.cluster.local") {
+		return fmt.Errorf("cloudAddress %q is under .svc.cluster.local, for which Pixie skips certificate verification", address)
+	}
+	if !vizierCloudAddresses[address] {
+		return fmt.Errorf("cloudAddress %q is not one of the hub addresses on its certificate", address)
+	}
+	return nil
 }

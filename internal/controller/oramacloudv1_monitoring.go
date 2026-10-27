@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -38,6 +39,15 @@ const (
 	prometheusPodsValue = "prometheus"
 	cnpgMetricsPort     = 9187
 )
+
+// monitoringInstalled reports whether the platform layer's monitoring CRDs are on the cluster.
+func monitoringInstalled(c client.Client) bool {
+	if c.RESTMapper() == nil {
+		return false
+	}
+	_, err := c.RESTMapper().RESTMapping(podMonitorGVK.GroupKind(), podMonitorGVK.Version)
+	return err == nil
+}
 
 // v1MonitoredComponents are the components that get a dashboard; the critical ones page when they
 // are not ready.
@@ -148,6 +158,28 @@ func v1MonitoringObjects(oc *oramav1alpha1.OramaCloudV1) ([]*unstructured.Unstru
 			Summary:  "The control database instance {{ $labels.pod }} has not answered its exporter for 5 minutes.",
 		},
 		{
+			// The component rules above cannot fire without the stack's status metrics.
+			Alert:    "OramaStackStatusMetricsMissing",
+			Expr:     fmt.Sprintf(`absent(orama_oramacloudv1_component_ready{%s})`, stack),
+			For:      "15m",
+			Severity: "warning",
+			Summary:  "kube-state-metrics reports no component status for Orama Cloud v1 " + oc.Name + ": its component alerts cannot fire.",
+		},
+		{
+			Alert:    "OramaEngineTargetsMissing",
+			Expr:     fmt.Sprintf(`absent(up{namespace=%q, job=%q})`, ns, ns+"/"+v1EngineMonitorName(oc)),
+			For:      "10m",
+			Severity: "critical",
+			Summary:  "Prometheus has no OramaCore target for " + oc.Name + ": the engine is gone or cannot be scraped.",
+		},
+		{
+			Alert:    "OramaControlDBTargetsMissing",
+			Expr:     fmt.Sprintf(`absent(up{namespace=%q, job=%q})`, ns, ns+"/"+v1ControlDBMonitorName(oc)),
+			For:      "10m",
+			Severity: "critical",
+			Summary:  "Prometheus has no control database target for " + oc.Name + ": the database is gone or cannot be scraped.",
+		},
+		{
 			Alert:    "OramaControlDBReplicationLag",
 			Expr:     fmt.Sprintf(`max(cnpg_pg_replication_lag{namespace=%q, pod=~%q}) > 300`, ns, oc.Name+"-controldb-.*"),
 			For:      "15m",
@@ -247,6 +279,11 @@ func v1Dashboards(oc *oramav1alpha1.OramaCloudV1) (*unstructured.Unstructured, e
 // platform layer's monitoring CRDs it writes nothing and says so in the log; the next pass after
 // they are installed writes them.
 func (r *OramaCloudV1Reconciler) reconcileMonitoring(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	if !monitoringInstalled(r.Client) {
+		// Staged rollout: nothing of monitoring reaches a stack, not even its sandbox allowances,
+		// until the platform layer is applied to the cluster.
+		return nil
+	}
 	objects, err := v1MonitoringObjects(oc)
 	if err != nil {
 		return err

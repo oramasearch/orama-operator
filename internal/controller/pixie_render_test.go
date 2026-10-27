@@ -7,11 +7,15 @@ package controller
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -105,7 +109,7 @@ func TestPixieBundlesUseOnlyMappedImages(t *testing.T) {
 		}
 	}
 	// The release keys the operator adds itself, beyond the vendored manifests.
-	for _, own := range []string{"opensearch", "script-bundle"} {
+	for _, own := range []string{"opensearch", "script-bundle", "postgres"} {
 		used[own] = true
 	}
 	for _, key := range pixieImageKeys {
@@ -329,9 +333,10 @@ func TestRenderPixieCloud(t *testing.T) {
 	if !strings.Contains(natsConf, "max_file_store: 9663676416") || !strings.Contains(natsConf, "max_memory_store: 134217728") {
 		t.Errorf("JetStream is not capped below its volume and memory limit:\n%s", natsConf)
 	}
-	job := byKey[pixieObjectKey{"Job", pixiePluginLoaderPrefix + pixieManifestCommit[:12]}]
-	if job == nil {
-		t.Errorf("the plugin loader Job is not named for the release")
+	for _, object := range objects {
+		if _, isJob := object.(*batchv1.Job); isJob {
+			t.Errorf("the hub renders Job %s; the plugin loader needs GitHub", object.GetName())
+		}
 	}
 	// Rendering twice gives the same objects: reconciliation is deterministic.
 	again, err := renderPixieCloud(pixieCloudRender{Cloud: cloud, CertsHash: "abc", DatabaseHost: pixieDBHost()})
@@ -342,5 +347,72 @@ func TestRenderPixieCloud(t *testing.T) {
 	second, _ := json.Marshal(again)
 	if string(first) != string(second) {
 		t.Error("two renders of the same PixieCloud differ")
+	}
+}
+
+// The hub's proxy certificate is what a Vizier verifies: issued by the hub's CA, for exactly the
+// addresses a Vizier may dial. A TLS handshake with the same settings Pixie's cloud connector ends
+// up with (Go's root file set to the hub CA, the server name taken from the dial address) succeeds
+// for those addresses and fails for any other name or any other CA.
+func TestHubCertificateIsVerifiedForTheDialedAddress(t *testing.T) {
+	now := time.Now()
+	hubCA, err := newTunnelCA("Pixie Cloud CA test", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCA, err := newTunnelCA("another CA", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, keyPEM, err := issueTunnelLeaf(hubCA, tunnelLeafRequest{CommonName: "pixie.example", DNSNames: pixieProxyDNSNames("pixie.example"), Server: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{serverCert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _ = conn.(*tls.Conn).Handshake(); _ = conn.Close() }()
+		}
+	}()
+	dial := func(serverName string, ca tunnelCA) error {
+		pool := x509.NewCertPool()
+		pool.AppendCertsFromPEM(ca.CertPEM)
+		conn, err := tls.Dial("tcp", listener.Addr().String(), &tls.Config{RootCAs: pool, ServerName: serverName, MinVersion: tls.VersionTLS12})
+		if err == nil {
+			_ = conn.Close()
+		}
+		return err
+	}
+	for address := range vizierCloudAddresses {
+		host, _, _ := net.SplitHostPort(address)
+		if err := dial(host, hubCA); err != nil {
+			t.Errorf("a Vizier dialing %s does not verify the hub: %v", address, err)
+		}
+		if err := dial(host, otherCA); err == nil {
+			t.Errorf("a certificate from another CA is accepted for %s", address)
+		}
+		if err := checkVizierCloudAddress(address); err != nil {
+			t.Errorf("rendering refuses %s: %v", address, err)
+		}
+	}
+	if err := dial("vzconn-service.other.svc", hubCA); err == nil {
+		t.Error("the hub's certificate is accepted for a name it was not issued for")
+	}
+	for _, refused := range []string{"vzconn-service.plc.svc.cluster.local:51600", "pixie.example:51600", "peer-pixie-cloud.pl.svc:443"} {
+		if err := checkVizierCloudAddress(refused); err == nil {
+			t.Errorf("cloudAddress %s is rendered", refused)
+		}
 	}
 }

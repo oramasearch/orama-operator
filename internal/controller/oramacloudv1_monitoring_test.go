@@ -6,12 +6,18 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -94,5 +100,45 @@ func TestOramaCloudV1ScrapeAllowancesAdmitOnlyPrometheus(t *testing.T) {
 		if len(rule.Ports) != 1 {
 			t.Errorf("%s opens %d ports", allowance.Name, len(rule.Ports))
 		}
+	}
+}
+
+// Rolling the operator out changes nothing on a stack until the platform layer is applied: without
+// the monitoring CRDs no monitoring object is written; with them, every one is.
+func TestOramaCloudV1MonitoringWaitsForThePlatformLayer(t *testing.T) {
+	scheme := newLakeScheme(t)
+	oc := &oramav1alpha1.OramaCloudV1{ObjectMeta: metav1.ObjectMeta{Name: "v1-eu", Namespace: "v1-eu", UID: "uid-1"}}
+	count := func(c client.Client) int {
+		var configMaps corev1.ConfigMapList
+		if err := c.List(context.Background(), &configMaps, client.InNamespace("v1-eu")); err != nil {
+			t.Fatal(err)
+		}
+		return len(configMaps.Items)
+	}
+	without := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oc).Build()
+	if monitoringInstalled(without) {
+		t.Fatal("the fake cluster reports monitoring CRDs")
+	}
+	if err := (&OramaCloudV1Reconciler{Client: without, Scheme: scheme}).reconcileMonitoring(context.Background(), oc); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(without); n != 0 {
+		t.Fatalf("%d monitoring objects written before the platform layer", n)
+	}
+	mapper := apimeta.NewDefaultRESTMapper(nil)
+	for _, gvk := range []schema.GroupVersionKind{podMonitorGVK, prometheusRuleGVK, {Version: "v1", Kind: "ConfigMap"}} {
+		mapper.Add(gvk, apimeta.RESTScopeNamespace)
+	}
+	with := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oc).WithRESTMapper(mapper).Build()
+	if err := (&OramaCloudV1Reconciler{Client: with, Scheme: scheme}).reconcileMonitoring(context.Background(), oc); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(with); n != 1 {
+		t.Fatalf("dashboards ConfigMaps written: %d, want 1", n)
+	}
+	monitor := &unstructured.Unstructured{}
+	monitor.SetGroupVersionKind(podMonitorGVK)
+	if err := with.Get(context.Background(), client.ObjectKey{Namespace: "v1-eu", Name: "v1-eu-engine"}, monitor); err != nil {
+		t.Fatalf("no engine PodMonitor once the CRDs exist: %v", err)
 	}
 }

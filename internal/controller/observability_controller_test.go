@@ -282,6 +282,10 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 	if err := f.management.Get(ctx, types.NamespacedName{Name: "pixie-prod2"}, &link); !apierrors.IsNotFound(err) {
 		t.Error("the PeerLink outlived the agent")
 	}
+	var leftover corev1.SecretList
+	if err := prod2.List(ctx, &leftover, client.InNamespace("pl"), client.MatchingLabels{observabilityAgentLbl: "prod2"}); err != nil || len(leftover.Items) != 0 {
+		t.Errorf("credentials copied for the agent remain on its cluster: %d", len(leftover.Items))
+	}
 	f.reconcileHub(t)
 	if err := support.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
 		t.Fatal(err)

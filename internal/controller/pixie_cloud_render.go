@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,7 +55,6 @@ const (
 	pixieServiceCASecret    = "pixie-service-ca"
 	pixieAdminSecret        = "pixie-admin"
 	pixieDeployKeyPrefix    = "pixie-deploy-key-"
-	pixiePluginLoaderPrefix = "plugin-db-updater-"
 )
 
 // pixieCloudObjects is exactly the vendored Cloud the operator applies.
@@ -109,7 +107,6 @@ var pixieCloudObjects = []pixieObjectKey{
 	{"Deployment", "scriptmgr-server"},
 	{"Deployment", "vzconn-server"},
 	{"Deployment", "vzmgr-server"},
-	{"Job", "plugin-db-updater-job"},
 	{"ServiceAccount", "nats"},
 	{"ServiceAccount", "nats-server"},
 	{"ClusterRole", "plc:nats-server"},
@@ -126,6 +123,9 @@ var pixieCloudDropped = []pixieObjectKey{
 	// Exports usage to Google BigQuery.
 	{"Deployment", "metrics-server"},
 	{"ConfigMap", "pl-bq-config"},
+	// Downloads plugin definitions from GitHub (pixie-io/pixie-plugin) at run time, which an
+	// air-gapped hub cannot do. Export plugins wait for a mirrored plugin artifact (#455).
+	{"Job", "plugin-db-updater-job"},
 }
 
 // pixieDatabaseServices are the services that keep data in Postgres, each with its own database
@@ -137,7 +137,6 @@ var pixieDatabaseServices = map[string]string{
 	"hydra":                  "hydra",
 	"kratos":                 "kratos",
 	"plugin-server":          "plugin",
-	"plugin-db-updater-job":  "plugin",
 	"profile-server":         "profile",
 	"project-manager-server": "projectmanager",
 	"vzmgr-server":           "vzmgr",
@@ -167,8 +166,6 @@ var pixieCloudBudgets = map[string]pixieBudget{
 	"scriptmgr-server/scriptmgr-server":               pixieGoBudget,
 	"vzconn-server/vzconn-server":                     {CPURequest: "100m", CPULimit: "1", MemoryRequest: "256Mi", MemoryLimit: "512Mi", GoRuntime: true},
 	"vzmgr-server/vzmgr-server":                       {CPURequest: "100m", CPULimit: "1", MemoryRequest: "256Mi", MemoryLimit: "512Mi", GoRuntime: true},
-	"plugin-db-updater-job/postgres-wait":             pixieWaitBudget,
-	"plugin-db-updater-job/updater":                   pixieGoBudget,
 	"pl-nats/pl-nats":                                 {CPURequest: "100m", CPULimit: "1", MemoryRequest: "256Mi", MemoryLimit: "512Mi", GoRuntime: true},
 }
 
@@ -245,21 +242,12 @@ func transformPixieCloudObject(object client.Object, input pixieCloudRender) err
 			claim.Resources.Requests = corev1.ResourceList{corev1.ResourceStorage: quantityOr(cloud.Spec.Storage.Messaging, "10Gi")}
 			claim.StorageClassName = storageClassOrNil(cloud.Spec.Storage.StorageClassName)
 		}
-	case *batchv1.Job:
-		// The plugin loader runs once per release: its name carries the commit, so a new release
-		// runs it again and an unchanged one never does (a Job's template cannot change).
-		o.Name = pixiePluginLoaderPrefix + cloud.Spec.Release.Commit[:12]
-		o.Spec.TTLSecondsAfterFinished = nil
-		o.Spec.BackoffLimit = int32Ptr(6)
 	}
 	spec, _ := podSpecOf(object)
 	if spec == nil {
 		return nil
 	}
 	name := object.GetName()
-	if _, ok := object.(*batchv1.Job); ok {
-		name = "plugin-db-updater-job"
-	}
 	podTemplateAnnotations(object)[pixieCertsAnnotation] = input.CertsHash
 	for _, containers := range [][]corev1.Container{spec.InitContainers, spec.Containers} {
 		for i := range containers {
