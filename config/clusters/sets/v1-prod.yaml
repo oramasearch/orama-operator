@@ -239,6 +239,9 @@ spec:
           writer:
             gpu: false
             host: writer.orama.ing
+            # Legacy production alias; DNS remains externally managed (bridge#246).
+            extraHosts:
+              - writer.bovista.cluster.oramacore.com
             # The medium profile's 4Gi limit OOM-killed the writer during the cutover's first copy batch
             # (2026-10-26 02:38Z), and 12Gi did again with four copies at once (03:06Z): the writer computes
             # every copied document's embeddings. The copy then runs one team at a time. A 2-CPU limit throttled
@@ -264,6 +267,9 @@ spec:
               - https://writer.orama.ing
           reader:
             host: collections.orama.ing
+            # Legacy production alias; DNS remains externally managed (bridge#246).
+            extraHosts:
+              - bovista.cluster.oramacore.com
             replicas: 2
             # The medium profile's 2Gi limit is near each reader's use with one team copied; every cohort team's
             # documents and embeddings land in each reader.
