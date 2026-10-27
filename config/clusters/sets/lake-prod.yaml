@@ -108,7 +108,7 @@ spec:
     # lake.live hosts: the token scoped to the lake.live zone only (decision 64).
     dnsSecretRef:
       name: cloudflare-api-token-lake-live
-    image: oramasearch/lake:v0.7.3
+    image: oramasearch/lake:v0.8.0
     # app-runtime v0.1.2 (2026-10-26): Streamlit behind the public host (#17), identity only behind Lake auth (#14), exact file bytes (#22).
     apps:
       runtimeImage: oramasearch/app-runtime:v0.1.2
@@ -116,11 +116,11 @@ spec:
     # lake v0.7.3 (hotfix, lake#1245): agents on gpt-5.5, because gpt-6.x refuses tools with reasoning_effort on Chat
     # Completions; gpt-6.1-sol is the default again once the gateway uses the Responses API (v0.8.0). People choose per workspace.
     agents:
-      model: gpt-5.5
+      model: gpt-6.1-sol
       runtimeImage: oramasearch/agent-runtime:v0.2.0
       library:
       - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-      - {key: agent-application, image: oramasearch/agent-application:v0.2.3}
+      - {key: agent-application, image: oramasearch/agent-application:v0.2.4}
       - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
       - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
       - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
