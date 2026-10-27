@@ -107,15 +107,15 @@ spec:
       secretRef: {name: lake-prod-stripe}
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:v0.7.2
+    image: oramasearch/lake:v0.7.3
     # app-runtime v0.1.2 (2026-10-26): Streamlit behind the public host (#17), identity only behind Lake auth (#14), exact file bytes (#22).
     apps:
       runtimeImage: oramasearch/app-runtime:v0.1.2
     # The agents' releases (2026-10-25), after dev and testing ran them.
-    # lake v0.7.2, agent-application v0.2.3 and agents on gpt-6.1-sol (Steve, 2026-10-26: "deploy the fixes as patch
-    # releases (to all envs)", "default to sol"); people choose per workspace.
+    # lake v0.7.3 (hotfix, lake#1245): agents on gpt-5.5, because gpt-6.x refuses tools with reasoning_effort on Chat
+    # Completions; gpt-6.1-sol is the default again once the gateway uses the Responses API (v0.8.0). People choose per workspace.
     agents:
-      model: gpt-6.1-sol
+      model: gpt-5.5
       runtimeImage: oramasearch/agent-runtime:v0.2.0
       library:
       - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
