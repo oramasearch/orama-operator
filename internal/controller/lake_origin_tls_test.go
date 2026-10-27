@@ -373,6 +373,17 @@ func TestLakeAppIngressGetsOriginTLS(t *testing.T) {
 		t.Error("the app's Lake auth annotations were lost")
 	}
 
+	// The app's Secret pass keeps the Ingress's certificate copy and edge client CA. Deleting them
+	// there made each pass delete and recreate them, and the edge answered 526 in between.
+	if err := r.deleteStaleLakeAppSecrets(ctx, app, ns, map[string]bool{}); err != nil {
+		t.Fatalf("delete stale app secrets: %v", err)
+	}
+	for _, name := range []string{copyName, workload + "-edge-client-ca"} {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &corev1.Secret{}); err != nil {
+			t.Errorf("the app's Secret pass deleted %s: %v", name, err)
+		}
+	}
+
 	// Its own host: a Certificate in the Lake namespace, owned by the app; the wildcard copy goes.
 	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.example.com"); err != nil {
 		t.Fatalf("reconcile app ingress: %v", err)
