@@ -91,6 +91,29 @@ and check its CEL rule and field validation in the API server: the issue's examp
 changing the target, team, projects, run or source is refused, and step, apply, attempt and the
 order of `projectIDs` may change.
 
+The same assets run `TestObservabilityCRDsRefuseMalformedResources` (operator#15): the observability
+CRDs install on a real API server (a CEL rule over the provider's image map exceeded the API
+server's cost budget and was replaced by a bounded value pattern), refuse an image by tag, a
+receiver that is both Slack and a webhook, a hub moved to another cluster and a `PixieCloud` for a
+production cluster, and default `storage` and `nodeMemory`. The setup-envtest of controller-runtime
+0.18 fetches from a bucket that now answers 401; `setup-envtest@release-0.21 use 1.30.0` fetches
+the same binaries from GitHub.
+
+### Re-vendoring Pixie
+
+The operator embeds the kustomize output of one commit of `oramasearch/pixie`
+(`internal/controller/assets/pixie/`). To move it, check that commit out (the umbrella bridge's
+`modules/pixie`), then:
+
+```sh
+PIXIE_COMMIT=<sha> ./hack/fetch-pixie-manifests.sh   # refuses another HEAD or local changes
+# update pixieManifestCommit in internal/controller/pixie_render.go
+go test ./internal/controller -run 'Pixie|RenderVizier'
+```
+
+The tests name every new object, image or unbudgeted container. The provider's images must then be
+built from the same commit (#455); [`observability.md`](infrastructure/observability.md#upgrading-pixie).
+
 The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgainstAPIServer`
 (operator#268) checks that every workspace NetworkPolicy passes API validation, that the
 Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and
