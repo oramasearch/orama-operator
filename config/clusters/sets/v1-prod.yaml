@@ -600,7 +600,8 @@ spec:
       projectIDs: [cc4cee66-8ce0-40f2-9869-304adec4febd]
       runID: eu-1
       step: catchUp                         # the window's final catch-up
-      apply: false                          # a dry run: changes nothing
+      apply: true                           # writes v1-eu
+      attempt: 1                            # the final catch-up
       evidenceSecretRef: {name: team-43ba6c6c-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:2edfbc6731bad091c6f62ad4cdebd204816a7dfc5e4ed018d0d308ae9f9fb05a  # dev-00581138
       pullSecretName: oramasearch-dockerhub
