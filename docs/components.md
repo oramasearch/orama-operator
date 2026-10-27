@@ -2130,6 +2130,22 @@ What remains from that work is correctness, not quiet: `settle` never returns a 
 with an error, and the KV namespace and R2 bucket controllers write a failure to status only when
 it changes instead of on every retry.
 
+## Observability (`observability_controller.go`, `pixiecloud_controller.go`, `pixievizier_controller.go`, `oramacloudv1_monitoring.go`, [#15](https://github.com/oramasearch/orama-operator/issues/15)) — 🟡 implemented and tested locally; not run on a cluster (Pixie's images, #455, are not built yet)
+
+The design, licences, rollout and failure behaviour are in
+[`infrastructure/observability.md`](infrastructure/observability.md). What each reconciler creates:
+
+| Reconciler | Creates | Maps to prod |
+|---|---|---|
+| `ObservabilityHub` (managing cluster) | namespace `plc` (Pod Security `baseline`), `plc/pixie-pull`, the alert receivers' Secrets, `PixieCloud plc/pixie` on the hub's cluster | Grafana Cloud's hosted UI, replaced by self-hosted Pixie Cloud |
+| `ObservabilityAgent` (managing cluster) | namespace `pl` (Pod Security `privileged`, for the eBPF node agents), `pl/pixie-pull`, `pl/pl-deploy-secrets`, `pl/pixie-cloud-ca`, receiver Secrets, `PixieVizier pl/pixie`; for another cluster, `PeerConnection`s at both ends and a `PeerLink` | Grafana Alloy on each cluster, replaced by Vizier |
+| `PixieCloud` (hub's cluster) | minted CAs, certificates and keys; CloudNativePG `pixie-db` with a `Database` and role per service; OpenSearch `pixie-search`; `pixie-scripts`; the vendored services, Ory and NATS; the `plugin-db-updater-<commit>` Job; `NetworkSandbox`; `PrometheusRule orama-observability`; the bootstrap and a deploy key per agent | — (new) |
+| `PixieVizier` (agent's cluster) | its CA, `service-tls-certs`, `pl-cluster-secrets`; `pl-cloud-config` and `pl-cluster-config` (auto-update off); the vendored Vizier and NATS; `NetworkSandbox` with a Cilium rule for the host-network node agents; `PrometheusRule orama-observability`; `AlertmanagerConfig orama-alert-routing` | — (new) |
+| `OramaCloudV1` monitoring step | `PodMonitor <stack>-engine` (:8080 `/metrics`), `PodMonitor <stack>-controldb` (:9187), `PrometheusRule <stack>-alerts`, `ConfigMap <stack>-dashboards` (Perses project, overview, one dashboard per component); two scrape allowances in the stack's `NetworkSandbox` | Grafana Cloud dashboards and alerts on Prod 1 |
+
+The platform layer (kube-prometheus-stack, Perses) is in `helmfile.yaml` and every
+`config/clusters/*/platform.yaml`.
+
 ## Cluster management (`kubernetescluster_controller.go`, `akscluster_controller.go`, `azure_resource_manager.go`, `clusterhelmrelease_controller.go`, `oramaoperator_controller.go`, `leaf_operator_installer.go`) — ✅ live on `orama-nonprod-cluster-01` (2026-10-12)
 
 Managing other clusters ([`infrastructure/README.md`](infrastructure/README.md),

@@ -413,6 +413,11 @@ func (r *managedSetReconciler) resolve(ctx context.Context, spec *oramav1alpha1.
 			if p == "" {
 				return nil, "", &setError{"NoPurpose", fmt.Sprintf("KubernetesCluster %s has no %q tag, so it is not known whether it is nonprod or production: nothing is applied", cluster.Name, clusterPurposeTag)}
 			}
+			if p == prodSupportPurpose {
+				// operator#456: a prod-support cluster runs support services for production
+				// (observability) and no customer or test workload.
+				return nil, "", &setError{"SupportCluster", fmt.Sprintf("KubernetesCluster %s is prod-support, which runs no customer or test workload: nothing is applied", cluster.Name)}
+			}
 			purposes[p] = append(purposes[p], cluster.Name)
 			purpose = p
 		case !apierrors.IsNotFound(err):

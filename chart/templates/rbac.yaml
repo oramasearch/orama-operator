@@ -69,6 +69,11 @@ rules:
       - stripewebhookendpoints
       - paymentcatalogs
       - stripecatalogs
+      - observabilityproviders
+      - observabilityhubs
+      - observabilityagents
+      - pixieclouds
+      - pixieviziers
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -108,6 +113,15 @@ rules:
       - cloudflaretunnels/finalizers
       - peerconnections/finalizers
       - peerlinks/finalizers
+      - observabilityproviders/status
+      - observabilityhubs/status
+      - observabilityhubs/finalizers
+      - observabilityagents/status
+      - observabilityagents/finalizers
+      - pixieclouds/status
+      - pixieclouds/finalizers
+      - pixieviziers/status
+      - pixieviziers/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers
@@ -190,7 +204,7 @@ rules:
     resources: ["namespaces"]
     verbs: ["get", "create", "update", "patch", "delete"]
   - apiGroups: ["postgresql.cnpg.io"]
-    resources: ["clusters", "scheduledbackups", "backups"]
+    resources: ["clusters", "scheduledbackups", "backups", "databases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters/status"]
@@ -328,6 +342,31 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings"]
     resourceNames: ["karpenter", "karpenter-dns"]
+    verbs: ["create", "update", "patch", "delete"]
+  # Observability (operator#15): each cluster's alert rules and routing, and the scrape
+  # configuration of what the operator runs, for the platform's kube-prometheus-stack. The CRDs may
+  # be absent until the platform layer is installed; the reconcilers tolerate that.
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheusrules", "podmonitors", "alertmanagerconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pixie's own RBAC, applied from the vendored Vizier and Cloud manifests (pixie_vizier_render.go
+  # vizierObjects, pixie_cloud_render.go pixieCloudObjects). As for Karpenter, every write, bind and
+  # escalate is scoped to exactly those names; TestChartPixieRBACMatchesBundle checks the lists.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["pl-cloud-connector-role", "pl-node-view", "pl-vizier-metadata", "plc:nats-server"]
+    verbs: ["create", "update", "patch", "delete", "bind", "escalate"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    resourceNames: ["pl-cloud-connector-cluster-binding", "pl-node-view-cluster-binding", "pl-vizier-metadata-cluster-binding", "pl-vizier-metadata-node-view-cluster-binding", "plc:nats-server-binding"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    resourceNames: ["pl-cloud-connector-ns-role", "pl-kuberesolver-role", "pl-vizier-metadata-role", "pl-vizier-query-broker-role"]
+    verbs: ["create", "update", "patch", "delete", "bind", "escalate"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    resourceNames: ["pl-cloud-connector-binding", "pl-kuberesolver-role-binding", "pl-vizier-metadata-binding", "pl-vizier-query-broker-binding"]
     verbs: ["create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
