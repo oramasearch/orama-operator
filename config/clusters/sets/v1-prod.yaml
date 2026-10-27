@@ -1358,7 +1358,8 @@ spec:
         # then develop b6ee20fb (oramacore-private#18-#20): CPU BGE in batches of 32, configured embedding threads,
         # ordered collection deletion and replay recovery (orama-bridge#262). Juan waived the remaining nonprod
         # rehearsal and chose to deploy EU during the copy (2026-10-27).
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-b6ee20fb@sha256:b34b18676a7a050829a354291f32681a524c11d13e86c4ad7370aeb6e5f30b48
+        # engine develop 86bc17ea: keeps each index's persisted locale on load (oramacore-private#21; decisions 25 October, 18)
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-86bc17ea@sha256:a45c691bd2f91286761584bdc7bcc1aced923495cd94b676c9218f9d9f3e8820
         # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
         hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
         # Services from each repository's dev tip with the security fixes, recorded in
