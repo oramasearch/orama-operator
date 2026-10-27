@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.10.4](v0.10.4.md) — 2026-10-26. A patch: agents default to `gpt-6.1-sol` (#1030), and a Lake restart replaces
+  the App's pods through `LakeApp.spec.sync.restartGeneration` (#1033, lake#1228). `LakeApp` gains one optional field;
+  no App restarts on the roll.
 - [v0.10.3](v0.10.3.md) — 2026-10-25. A patch: the Cloud v1 writer embeds 64 texts per batch, not 50,000, so a
   CPU writer's memory stays bounded during a copy (#1023, orama-bridge#257). Each Cloud v1 stack's writer and readers
   roll once.
