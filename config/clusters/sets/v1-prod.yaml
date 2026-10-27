@@ -521,6 +521,7 @@ spec:
       # Attempt 1 failed when the target's reader refused system prompts, which OramaCore's LSR-235 fix
       # serves only from the writer; dev-c5739f43 reads them there (oramacore-aws#131).
       attempt: 2
+      removeOnDelete: true                  # recovery: removing the entry removes its copy (decisions 25 October, 14)
       evidenceSecretRef: {name: team-4e01bc49-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:a121fdf1d494177e59636ade4c48087e4070a1a1902428c5eaeab7bdd5ea41c0  # dev-a6a6ad0f
       pullSecretName: oramasearch-dockerhub
