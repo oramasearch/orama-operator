@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1432,6 +1433,24 @@ func lakeAppPodSpec(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secret
 	return pod
 }
 
+// lakeAppRestartAnnotation carries Lake's restart_generation on the pod template (lake#1228).
+const lakeAppRestartAnnotation = "orama.cloud/lake-app-restart"
+
+// lakeAppPodAnnotations is the app pod template's annotations. A restart (Lake's restart_app,
+// lake#1228) changes only restart_generation, so it is written here: a new value is a new template
+// and the Deployment replaces its pods. An app never restarted carries no restart annotation, so
+// upgrading the operator rolls nothing.
+func lakeAppPodAnnotations(app *oramav1alpha1.LakeApp, secrets lakeAppSecrets) map[string]string {
+	annotations := map[string]string{
+		lakeAppOwnerAnnotation:          lakeAppOwner(app),
+		lakeAppCredentialHashAnnotation: secrets.Digest,
+	}
+	if app.Spec.Sync != nil && app.Spec.Sync.RestartGeneration > 0 {
+		annotations[lakeAppRestartAnnotation] = strconv.FormatInt(app.Spec.Sync.RestartGeneration, 10)
+	}
+	return annotations
+}
+
 func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, namespace string, secrets lakeAppSecrets) error {
 	labels := lakeAppLabels(app)
 	replicas := int32(1)
@@ -1448,10 +1467,7 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 		deployment.Spec.RevisionHistoryLimit = &revisionHistoryLimit
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Template.Labels = labels
-		deployment.Spec.Template.Annotations = map[string]string{
-			lakeAppOwnerAnnotation:          lakeAppOwner(app),
-			lakeAppCredentialHashAnnotation: secrets.Digest,
-		}
+		deployment.Spec.Template.Annotations = lakeAppPodAnnotations(app, secrets)
 		deployment.Spec.Template.Spec = lakeAppPodSpec(lake, app, secrets)
 		return nil
 	}); err != nil {

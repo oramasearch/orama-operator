@@ -695,7 +695,7 @@ type LakeAgentsSpec struct {
 	// +optional
 	OpenAISecretName string `json:"openaiSecretName,omitempty"`
 	// Model is the frontier model agents default to.
-	// +kubebuilder:default=gpt-5.5
+	// +kubebuilder:default=gpt-6.1-sol
 	// +optional
 	Model string `json:"model,omitempty"`
 	// JobDeadlineSeconds bounds one job launch.

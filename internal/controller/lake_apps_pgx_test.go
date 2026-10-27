@@ -72,6 +72,19 @@ func TestLakeAppsPgxStoreAgainstPostgres(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].SourceEntrypoint != "" || rows[0].TokenHashes != nil || rows[0].Port != 8080 || rows[0].Replicas != 1 || rows[0].SecretEnvRefs != "{}" {
 		t.Fatalf("nullable row decoding failed: %v", err)
 	}
+	if rows[0].RestartGeneration != 0 {
+		t.Fatalf("a schema before 0104_app_restarts must read restart_generation as 0, got %d", rows[0].RestartGeneration)
+	}
+	// lake#1228: once Lake's schema has the column, a restart's generation is read.
+	if _, err := tx.Exec(ctx, `ALTER TABLE pg_temp.apps ADD COLUMN restart_generation bigint NOT NULL DEFAULT 0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE apps SET restart_generation = 1 WHERE id = $1`, testAppRowID); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err = store.ListApps(ctx); err != nil || len(rows) != 1 || rows[0].RestartGeneration != 1 {
+		t.Fatalf("restart_generation was not read: %v", err)
+	}
 	row := &rows[0]
 	hashes := &oramav1alpha1.LakeAppTokenHashes{
 		Source: credentialDigest("source"),

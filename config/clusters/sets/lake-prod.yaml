@@ -109,12 +109,15 @@ spec:
     dnsSecretRef:
       name: cloudflare-api-token-lake-live
     image: oramasearch/lake:v0.7.1
+    # app-runtime v0.1.1 (2026-10-26): Streamlit apps load behind their public host (#17); identity only behind Lake auth (#14).
+    apps:
+      runtimeImage: oramasearch/app-runtime:v0.1.1
     # The agents' releases (2026-10-25), after nonprod and eu.lake.live ran them.
     agents:
       runtimeImage: oramasearch/agent-runtime:v0.2.0
       library:
       - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
-      - {key: agent-application, image: oramasearch/agent-application:v0.2.1}
+      - {key: agent-application, image: oramasearch/agent-application:v0.2.2}
       - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
       - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
       - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}

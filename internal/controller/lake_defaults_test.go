@@ -86,7 +86,7 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 		"LAKE_METHODOLOGY_RUNTIME_IMAGE": "oramasearch/methodology-runtime:ac58062",
 		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892",
 		"LAKE_APPS_WILDCARD":             "lake-dev.oramadev.net",
-		"LAKE_AGENT_MODEL":               "gpt-5.5",
+		"LAKE_AGENT_MODEL":               "gpt-6.1-sol",
 		"LAKE_SERVICE_DIR":               lakeServicesMountPath,
 		"LAKE_AGENT_BUS_DIR":             lakeAgentBusMountPath,
 	} {
