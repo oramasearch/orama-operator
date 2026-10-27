@@ -300,10 +300,10 @@ spec:
           stripeSecretKeySecretRef:
             name: v1-prod-dashboard-stripe
             key: STRIPE_SECRET_KEY
-          # Prod 1's Vercel crons as CronJobs; the cutover sets suspend: false in this file.
+          # Prod 1's Vercel crons as CronJobs; resumed by the cutover's step 9 after traffic moved (2026-10-27).
           crons:
             enabled: true
-            suspend: true
+            suspend: false
         docs:
           enabled: true
           host: docs.orama.ing
@@ -359,10 +359,10 @@ spec:
             approveDataDeletion: false
         analyticsProcessor:
           enabled: true
-          # The cutover sets suspend: false in this file.
+          # Resumed by the cutover's step 9 after traffic moved (2026-10-27).
           import:
             enabled: true
-            suspend: true
+            suspend: false
         cache:
           enabled: true
           mode: in-cluster
