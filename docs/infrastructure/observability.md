@@ -69,6 +69,19 @@ leaf split in [`README.md`](README.md#who-owns-what)). Field reference: [`crd-re
 Pixie is a vendor's software, so it gets a provider kind; Prometheus, Alertmanager and Perses are
 the platform layer and are the same whichever tracing provider is used.
 
+Why each kind exists, and why none is a copy of another:
+
+| Kind | The need it owns that nothing existing does |
+|---|---|
+| `ObservabilityProvider` | One pinned release (commit and digests) shared by every hub and agent, so all clusters run the same build and a commit mismatch with the vendored manifests is refused in one place. Existing provider kinds hold an account's credentials; this holds a release. |
+| `ObservabilityHub`, `ObservabilityAgent` | Decisions that need more than one cluster: the purpose check from two `KubernetesCluster`s, the link (a `PeerLink` and two `PeerConnection`s), and copying a key minted on one cluster to another. They live where the kubeconfigs are. |
+| `PixieCloud`, `PixieVizier` | What a cluster's own operator reconciles there: Deployments, minted secrets, the bootstrap, status from the cluster's workloads. A managing cluster cannot reconcile pods on a leaf; this is the `KubernetesCluster` → `AksCluster` split across clusters. |
+
+The concrete spec is not a second copy to edit: only the managing cluster writes it, whole, from the
+abstract resource on every pass (server-side apply), so a change made to it on the cluster is undone.
+Nothing owns anything across a cluster boundary: copies and concrete resources carry the hub's or
+agent's label, and the managing cluster deletes them itself when the hub or agent goes.
+
 ## Purpose isolation
 
 `KubernetesCluster` already carries a `purpose` tag. #456 adds a third value, **`prod-support`**: a
