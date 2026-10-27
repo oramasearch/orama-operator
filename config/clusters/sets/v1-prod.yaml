@@ -528,7 +528,8 @@ spec:
       # production data needs its own approval. The cutover's final catch-up updates this copy.
       # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
       # names: Prod 1's writer build and its control DB catalog. Every team's entry uses this source.
-      source: &prod1-source
+      # Its own copy of the Prod 1 source; the anchor &prod1-source is on the next entry (team-2136daa8).
+      source:
         databaseSecretRef: {name: v1-prod-prod1-db-ro, key: url}
         databaseHost: aws-us-east-2-1.pg.psdb.cloud
         writerURL: https://writer.bovista.cluster.oramacore.com
@@ -566,7 +567,21 @@ spec:
       evidenceSecretRef: {name: team-2136daa8-eu-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:a121fdf1d494177e59636ade4c48087e4070a1a1902428c5eaeab7bdd5ea41c0  # dev-a6a6ad0f
       pullSecretName: oramasearch-dockerhub
-      source: *prod1-source
+      # The Prod 1 source every later entry uses (*prod1-source).
+      source: &prod1-source
+        databaseSecretRef: {name: v1-prod-prod1-db-ro, key: url}
+        databaseHost: aws-us-east-2-1.pg.psdb.cloud
+        writerURL: https://writer.bovista.cluster.oramacore.com
+        readerURL: https://collections.orama.com
+        masterKeySecretRef: {name: v1-prod-prod1-master-key, key: key}
+        deploymentRevision: oramacore@1.2.39+890a7e9761dfec61ea8567dcab92b4df737318a2
+        schemaRevision: pg17.11-drizzle-push-catalog-sha256:d995b5cb539d
+        settings:
+          region: us-east-2
+          instanceID: i-0b9478719a8f91e2b
+          document: OramaMigrationReadIndexInfo
+          dataDir: /opt/oramacore/.data/writer
+          credentialsSecretRef: {name: v1-prod-prod1-settings-ssm}
   - name: team-283c9f0d
     member: v1-eu
     secrets:
