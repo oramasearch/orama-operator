@@ -664,6 +664,9 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 	}); err != nil {
 		return err
 	}
+	if err := r.recoverWriterImageRollout(ctx, oc, sts); err != nil {
+		return err
+	}
 	if err := r.upsertService(ctx, oc, name, "writer",
 		[]corev1.ServicePort{{Name: "http", Port: oramacorePort, TargetPort: intstr.FromInt32(oramacorePort)}}); err != nil {
 		return err
@@ -672,6 +675,55 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 	// isn't casually evicted. Node maintenance must consciously handle it (its
 	// graceful shutdown persists data, but availability drops during any move).
 	return r.upsertPDB(ctx, oc, name, "writer", 0)
+}
+
+// OrderedReady can wait forever for a broken old pod before adopting a corrected
+// template. Replace only a crash-looping previous-image writer, with its normal
+// grace period and retained PVC; the StatefulSet still owns singleton creation.
+func (r *OramaCloudV1Reconciler) recoverWriterImageRollout(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, sts *appsv1.StatefulSet) error {
+	if !metav1.IsControlledBy(sts, oc) || sts.UID == "" || !sts.DeletionTimestamp.IsZero() ||
+		sts.Spec.Replicas == nil || *sts.Spec.Replicas != 1 {
+		return nil
+	}
+	desiredImage := ""
+	for _, c := range sts.Spec.Template.Spec.Containers {
+		if c.Name == "oramacore" {
+			desiredImage = c.Image
+		}
+	}
+	if desiredImage == "" {
+		return nil
+	}
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: sts.Namespace, Name: sts.Name + "-0"}, pod); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(pod, sts) || !pod.DeletionTimestamp.IsZero() || pod.UID == "" || pod.ResourceVersion == "" {
+		return nil
+	}
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+			return nil
+		}
+	}
+	previousImage := ""
+	for _, c := range pod.Spec.Containers {
+		if c.Name == "oramacore" {
+			previousImage = c.Image
+		}
+	}
+	if previousImage == "" || previousImage == desiredImage {
+		return nil
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name != "oramacore" || status.Ready || status.State.Waiting == nil ||
+			status.State.Waiting.Reason != "CrashLoopBackOff" || status.RestartCount == 0 ||
+			status.LastTerminationState.Terminated == nil || status.LastTerminationState.Terminated.ExitCode == 0 {
+			continue
+		}
+		return client.IgnoreNotFound(r.Delete(ctx, pod, client.Preconditions{UID: &pod.UID, ResourceVersion: &pod.ResourceVersion}))
+	}
+	return nil
 }
 
 // reconcileReaders owns the reader StatefulSet, its headless Service, the reader Service and PDB.

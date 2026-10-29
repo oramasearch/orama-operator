@@ -637,6 +637,13 @@ Driven by `spec.region.role`:
   a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
+  When an owned writer pod is unready and crash-looping on an image that differs from the
+  requested StatefulSet template, the operator replaces that pod to unblock Kubernetes'
+  `OrderedReady` rollout ([#1035](https://github.com/oramasearch/orama-operator/issues/1035)).
+  It requires a failed prior engine exit and uses UID/resource-version preconditions and the
+  pod's normal termination grace period. The StatefulSet creates its singleton replacement on
+  the same retained claim. Healthy, starting, terminating, unowned and current-image pods are
+  left alone; a crash on the requested image still requires an engine or configuration fix.
 - **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` with the
   `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set. Envoy answers
