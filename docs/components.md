@@ -289,7 +289,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-hpes` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | HPES `API_KEY`, index-builder `ORAMA_EMBEDDINGS_BEARER` ([below](#hpes-index-builders-embeddings-hpesgo-574)) |
 | `<cr>-harvest-sign` | `HARVEST_SIGN` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion or the dashboard runs | index-builder `HARVEST_SIGN`, dashboard `SCRAPER_SIGNATURE` (sent as `?signature=`), harvest-master `HARVEST_SIGNATURE` (checked): one control key under three names ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
 | `<cr>-harvest-notification` | `NOTIFICATION_SIGNATURE` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | harvest-master `NOTIFICATION_SIGNATURE` only ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
-| `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
+| `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, `reader.yaml` and `combined-reader.yaml`), analytics-processor render-config (every `oramacores` entry's `api_key`) |
 | `<cr>-clickhouse-auth` | `CLICKHOUSE_PASSWORD` | the bootstrap step, on every stack | ClickHouse, analytics-processor, dashboard, workers, DISCO and the analytics retention Job |
 | `<cr>-typesense-auth` | `TYPESENSE_API_KEY` | the bootstrap step, on every stack | Typesense and index-builder |
 | `<cr>-cron-secret` | `CRON_SECRET` | the bootstrap step, when the dashboard is enabled | dashboard and its CronJobs, whether or not the crons are enabled yet |
@@ -392,7 +392,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker; `<cr>-broker-users` the writer and readers; `<cr>-broker-harvest`
   harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master, index-builder and the dashboard; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers on the reader-only config
+  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master, index-builder and the dashboard; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers
   and analytics-processor, never the writer; the master key the writer, index-builder, workers and
   dashboard, never a reader. `<cr>-disco-auth` rolls DISCO, workers and index-builder;
   `<cr>-pgadmin-auth` rolls pgAdmin, whose emptyDir config DB is initialized with the retained
@@ -795,16 +795,18 @@ Driven by `spec.region.role`:
   `readerLocalWriterSideYAML`, `readerSideYAML`, `aiServerYAML`), so the sections and the
   replication stream are identical in every mode (writer `oramacore-writer`/`write`, readers
   `oramacore-reader`/`reader`).
-- **Reader analytics** ([#386](https://github.com/oramasearch/orama-operator/issues/386)) — only
-  `reader.yaml` carries `reader_side.analytics` (`readerAnalyticsYAML`), as on Prod 1's readers:
+- **Reader analytics** ([#386](https://github.com/oramasearch/orama-operator/issues/386),
+  [#1051](https://github.com/oramasearch/orama-operator/issues/1051)) — both reader configs,
+  `reader.yaml` and `combined-reader.yaml`, carry `reader_side.analytics` (`readerAnalyticsYAML`), as on Prod 1's readers:
   `api_key: '__ANALYTICS_API_KEY__'`, filled from `<cr>-analytics-api-key`, and Prod 1's
   `metadata_from_headers` (`user-agent`→`ua`, `CF-Connecting-IP`→`ip`, `CF-IPCountry`→`country`,
   `continent`, `colo`, `latitude`, `longitude`), which OramaCore requires; a request without these
   headers is still served. With it each reader logs search events under its `data_dir` and serves
   them once on `GET /v1/analytics`, which erases what it returns; analytics-processor pulls each
-  reader once per import with the analytics key ([Analytics import](#analytics-import)). The writer config has no reader side and no analytics block, and the combined
-  `config.yaml` and `combined-reader.yaml` have none either, so on the combined image readers record no search events. Only the
-  readers' render-config reads the analytics key.
+  reader once per import with the analytics key ([Analytics import](#analytics-import)). The writer config has no reader side and no analytics block, and the writer's combined
+  `config.yaml` has none either: the writer serves no search traffic and the processor never polls it. The block sits
+  under the reader's own `data_dir` (`/app/.data/reader/analytics_new`), apart from the combined reader's local
+  writer (`/app/.data/writer`). Only the readers' render-config reads the analytics key.
   The `ai_server` LLM settings come from `spec.llm` (`engine_llm.go`): `ai_server.llm` is the
   default provider's built-in URL, first model and key, `ai_server.remote_llms` one entry per
   provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
@@ -821,8 +823,8 @@ Driven by `spec.region.role`:
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
   `ORAMACORE_` provider splits on `_`). Explicit `secretKeyRef` env entries carry `MASTER_API_KEY`
   from `spec.masterAPIKeySecretRef` (only where the side's template holds it), `BROKER_PASSWORD`
-  from the side's key of `<cr>-broker-users`, `ANALYTICS_API_KEY` from `<cr>-analytics-api-key` (the
-  reader-only config only), and a provider's key from its `apiKeySecretRef`; the other provider
+  from the side's key of `<cr>-broker-users`, `ANALYTICS_API_KEY` from `<cr>-analytics-api-key` (every
+  reader config), and a provider's key from its `apiKeySecretRef`; the other provider
   keys come from `<cr>-engine-secret` (via `envFrom`).
   The script reads each value from its environment variable and escapes it for `sed` and the
   single-quoted scalar, so no value is evaluated, logged or written into the script.
@@ -834,7 +836,7 @@ Driven by `spec.region.role`:
   hash stays their template's alone, as they were. The pod template also carries
   `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
   `apiKeySecretRef` Secret, identical on both sides, and `orama.cloud/credentials-hash`, the side's
-  `<cr>-broker-users`, master key (writer only) and (reader-only config) analytics key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
+  `<cr>-broker-users`, master key (writer only) and analytics key (readers only) Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
   The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
   the writer and readers with no restart by hand. Without a usable master key the writer and
   reader StatefulSets are held at zero replicas, and so is a reader Deployment left by an earlier
