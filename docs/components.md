@@ -718,6 +718,15 @@ Driven by `spec.region.role`:
   `writer.jwt` set, `https://<writer.host>` must be an exact audience or the reconcile fails before
   any engine object changes. Each Ingress also answers its endpoint's `extraHosts` (below), which get
   no DNS record and do not widen the audiences.
+- **Request body size on the public hosts** (`cloudv1_networking.go`, [#1056](https://github.com/oramasearch/orama-operator/issues/1056)) — ingress-nginx
+  refuses a body over 1m with 413 unless the Ingress says otherwise, while OramaCore accepts 400 MiB
+  on write routes and 16 MiB on read routes (MCP 1 MiB; LSR-150, in builds `b6ee20fb` and
+  `86bc17ea`). `<cr>-writer` carries `nginx.ingress.kubernetes.io/proxy-body-size: 400m` and
+  `<cr>-reader` `16m`, so the engine, not nginx, decides what is too large. The reader's Envoy
+  sidecar has no buffer filter and adds no limit. Prod 1 (v1.2.38, one 400 MB server-wide limit)
+  had no limit in front of the engine either: its ALBs and Envoy stream the body. The dashboard and
+  docs Ingresses keep nginx's default; `upsertIngress` removes the annotation from them. The values
+  follow the engine's `WRITE_MAX_BODY_SIZE` and `READ_MAX_BODY_SIZE` and change with them.
 - **`/metrics` closed on the public hosts** (`engine_metrics.go`,
   [#410](https://github.com/oramasearch/orama-operator/pull/410)) — OramaCore serves Prometheus
   metrics on `:8080/metrics` (`http.with_prometheus: true`). Every public engine Ingress has a
