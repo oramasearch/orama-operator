@@ -142,6 +142,9 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"idp", r.reconcileIdP},
 		{"cloudflare", r.reconcileCloudflare},
 		{"demoSeed", r.reconcileDemoSeed},
+		// Scrape configuration, alert rules and dashboards on the platform's kube-prometheus-stack
+		// and Perses (operator#15); a cluster without them yet is not an error.
+		{"monitoring", r.reconcileMonitoring},
 		// Last, so a configuration error in it (a missing AWS Secret) never keeps another component
 		// from being reconciled (operator#446).
 		{"import-consumer", r.reconcileImportConsumer},

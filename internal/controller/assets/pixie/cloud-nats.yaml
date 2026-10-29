@@ -1,0 +1,295 @@
+# Self-hosted Pixie Cloud NATS (JetStream) — kustomize output of oramasearch/pixie k8s/cloud_deps/public/nats, vendored verbatim.
+# Commit: 4b445e0b7907c79d034bcb4a227bbaede94d370a
+# Copyright 2018- The Pixie Authors. Licensed under the Apache License, Version 2.0 (LICENSE).
+# Regenerate: hack/fetch-pixie-manifests.sh   (do NOT hand-edit; pixie_render.go transforms it)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+  name: nats
+  namespace: plc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+  name: nats-server
+  namespace: plc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+  name: plc:nats-server
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - '*'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+  name: plc:nats-server-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: plc:nats-server
+subjects:
+- kind: ServiceAccount
+  name: nats-server
+  namespace: plc
+---
+apiVersion: v1
+data:
+  nats.conf: |
+    pid_file: "/var/run/nats/nats.pid"
+    http: 8222
+
+    tls {
+      ca_file: "/etc/nats-server-tls-certs/ca.crt",
+      cert_file: "/etc/nats-server-tls-certs/server.crt",
+      key_file: "/etc/nats-server-tls-certs/server.key",
+      timeout: 3
+    }
+
+    server_name: $POD_NAME
+    jetstream {
+      store_dir: /data/jetstream
+    }
+
+    cluster {
+      name: pl-nats
+      port: 6222
+      routes [
+        nats://pl-nats-0.pl-nats:6222
+        nats://pl-nats-1.pl-nats:6222
+        nats://pl-nats-2.pl-nats:6222
+      ]
+
+      tls {
+        ca_file: "/etc/nats-server-tls-certs/ca.crt",
+        cert_file: "/etc/nats-server-tls-certs/server.crt",
+        key_file: "/etc/nats-server-tls-certs/server.key",
+        timeout: 3
+      }
+
+      advertise: $CLUSTER_ADVERTISE
+      connect_retries: 30
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+  name: nats-config
+  namespace: plc
+---
+apiVersion: v1
+data:
+  PL_JETSTREAM_CLUSTER_SIZE: "3"
+kind: ConfigMap
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+  name: pl-jetstream-config
+  namespace: plc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+    name: pl-nats
+  name: pl-nats
+  namespace: plc
+spec:
+  clusterIP: None
+  ports:
+  - name: client
+    port: 4222
+  - name: cluster
+    port: 6222
+  - name: monitor
+    port: 8222
+  - name: metrics
+    port: 7777
+  - name: leafnodes
+    port: 7422
+  - name: gateways
+    port: 7522
+  publishNotReadyAddresses: true
+  selector:
+    app: pl-cloud
+    component: cloud-deps
+    name: pl-nats
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+    name: pl-nats
+  name: pl-nats
+  namespace: plc
+spec:
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pl-cloud
+      component: cloud-deps
+      name: pl-nats
+  serviceName: pl-nats
+  template:
+    metadata:
+      labels:
+        app: pl-cloud
+        component: cloud-deps
+        name: pl-nats
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: name
+                  operator: In
+                  values:
+                  - pl-nats
+              topologyKey: kubernetes.io/hostname
+            weight: 1
+      containers:
+      - command:
+        - nats-server
+        - --config
+        - /etc/nats-config/nats.conf
+        - -js
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLUSTER_ADVERTISE
+          value: $(POD_NAME).pl-nats.$(POD_NAMESPACE).svc
+        image: ghcr.io/pixie-io/nats:2.9.25-scratch-pl1@sha256:ac7228464fbc7154e91c9a00cba85b5da1df9a3ded6c784cdd6009cece85a1e3
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - /nats-server -sl=ldm=/var/run/nats/nats.pid && /bin/sleep 60
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz?js-enabled-only=true
+            port: 8222
+          periodSeconds: 30
+          successThreshold: 1
+        name: pl-nats
+        ports:
+        - containerPort: 4222
+          name: client
+        - containerPort: 7422
+          name: leafnodes
+        - containerPort: 6222
+          name: cluster
+        - containerPort: 8222
+          name: monitor
+        - containerPort: 7777
+          name: metrics
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz?js-server-only=true
+            port: 8222
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        startupProbe:
+          failureThreshold: 90
+          httpGet:
+            path: /healthz
+            port: 8222
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        volumeMounts:
+        - mountPath: /etc/nats-config
+          name: config-volume
+        - mountPath: /etc/nats-server-tls-certs
+          name: nats-server-tls-volume
+        - mountPath: /var/run/nats
+          name: pid
+        - mountPath: /data/jetstream
+          name: nats-sts-vol
+      shareProcessNamespace: true
+      terminationGracePeriodSeconds: 60
+      volumes:
+      - name: nats-server-tls-volume
+        projected:
+          sources:
+          - secret:
+              items:
+              - key: tls.crt
+                path: server.crt
+              - key: tls.key
+                path: server.key
+              - key: ca.crt
+                path: ca.crt
+              name: service-tls-server-certs
+      - configMap:
+          name: nats-config
+        name: config-volume
+      - emptyDir: {}
+        name: pid
+  volumeClaimTemplates:
+  - metadata:
+      labels:
+        app: pl-cloud
+        component: cloud-deps
+      name: nats-sts-vol
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app: pl-cloud
+    component: cloud-deps
+  name: pl-nats-pdb
+  namespace: plc
+spec:
+  minAvailable: 51%
+  selector:
+    matchLabels:
+      app: pl-cloud
+      component: cloud-deps
+      name: pl-nats

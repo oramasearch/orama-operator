@@ -1,0 +1,97 @@
+# Every image and chart the observability work (operator#15, #456) runs, and where each must be
+# mirrored before it can run air-gapped. Nothing here is a digest of our own: digests are recorded
+# after the mirrors and builds exist (#455), and only an upstream digest the vendored manifests
+# already pin is written below.
+#
+# Checked by: cmd/platform_observability_test.go (the platform charts, rendered offline from
+# hack/charts/, use exactly the `platform` mirrors, each pod with a pull Secret) and
+# internal/controller/pixie_render_test.go (the `pixie` keys are exactly pixieImageKeys) and
+# internal/controller/observability_metrics_prometheus_test.go (the images the operator runs for
+# the hub's metrics are listed).
+
+charts:
+  - chart: kube-prometheus-stack
+    version: 92.3.0
+    file: hack/charts/kube-prometheus-stack-92.3.0.tgz
+    sha256: 48399b911fa91b353e0c3d5e32c1cb7a67a168566549723553154ffd7be5d1fa
+    source: https://prometheus-community.github.io/helm-charts
+    licence: Apache-2.0
+  - chart: perses
+    version: 0.23.3
+    file: hack/charts/perses-0.23.3.tgz
+    sha256: 3c4a779cfd5e45a5611daaa5da39cc1b5d4940930ce5e598ce6ed2ec88f93729
+    source: https://perses.github.io/helm-charts
+    licence: Apache-2.0
+
+# The platform layer on every cluster. Each mirror is a private Docker Hub repository holding the
+# upstream image at the upstream tag; the charts' values name the mirror and nothing else.
+platform:
+  - mirror: docker.io/oramasearch/platform-prometheus-operator:v0.94.1
+    upstream: quay.io/prometheus-operator/prometheus-operator:v0.94.1
+    licence: Apache-2.0
+  - mirror: docker.io/oramasearch/platform-prometheus-config-reloader:v0.94.1
+    upstream: quay.io/prometheus-operator/prometheus-config-reloader:v0.94.1
+    licence: Apache-2.0
+  - mirror: docker.io/oramasearch/platform-thanos:v0.42.4
+    upstream: quay.io/thanos/thanos:v0.42.4
+    licence: Apache-2.0
+    note: named as the operator's default only; no Thanos sidecar runs
+  - mirror: docker.io/oramasearch/platform-prometheus:v3.15.0-distroless
+    upstream: quay.io/prometheus/prometheus:v3.15.0-distroless
+    licence: Apache-2.0
+  - mirror: docker.io/oramasearch/platform-alertmanager:v0.34.1
+    upstream: quay.io/prometheus/alertmanager:v0.34.1
+    licence: Apache-2.0
+  - mirror: docker.io/oramasearch/platform-kube-state-metrics:v2.20.0
+    upstream: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0
+    licence: Apache-2.0
+  - mirror: docker.io/oramasearch/platform-node-exporter:v1.12.1-distroless
+    upstream: quay.io/prometheus/node-exporter:v1.12.1-distroless
+    licence: Apache-2.0
+  - mirror: docker.io/oramasearch/platform-perses:v0.54.0
+    upstream: docker.io/persesdev/perses:v0.54.0
+    licence: Apache-2.0
+  - mirror: docker.io/oramasearch/platform-k8s-sidecar:2.13.3
+    upstream: docker.io/kiwigrid/k8s-sidecar:2.13.3
+    licence: MIT
+
+# Platform mirrors the operator runs itself rather than a chart, so the hub's metrics need no Pixie
+# image: the hub Prometheus uses the `platform` Prometheus above, and each leaf's metrics federation
+# proxy this Envoy, the same upstream image Pixie's `envoy` key pins.
+operator:
+  - mirror: docker.io/oramasearch/platform-envoy:v1.34.2
+    upstream: "envoyproxy/envoy:v1.34.2@sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9"
+    licence: Apache-2.0
+    used_by: metrics-federation (internal/controller/observability_metrics.go platformEnvoyImage)
+
+# Pixie: the ObservabilityProvider's release keys, each a private oramasearch/pixie-* repository,
+# by digest. Built (#455) from oramasearch/pixie 4b445e0b7907c79d034bcb4a227bbaede94d370a with
+# hack/pixie-patches applied, or mirrored from the upstream named.
+pixie:
+  - {key: vizier-pem, build: "//src/vizier/services/agent/pem:pem_image", licence: Apache-2.0}
+  - {key: vizier-kelvin, build: "//src/vizier/services/agent/kelvin:kelvin_image", licence: Apache-2.0}
+  - {key: vizier-metadata, build: "//src/vizier/services/metadata:metadata_server_image", licence: Apache-2.0}
+  - {key: vizier-query-broker, build: "//src/vizier/services/query_broker:query_broker_server_image", licence: Apache-2.0}
+  - {key: vizier-cloud-connector, build: "//src/vizier/services/cloud_connector:cloud_connector_server_image", licence: Apache-2.0}
+  - {key: cloud-api, build: "//k8s/cloud:cloud_images_push (api_server)", licence: Apache-2.0}
+  - {key: cloud-artifact-tracker, build: "//k8s/cloud:cloud_images_push (artifact_tracker_server)", licence: Apache-2.0}
+  - {key: cloud-auth, build: "//k8s/cloud:cloud_images_push (auth_server)", licence: Apache-2.0}
+  - {key: cloud-config-manager, build: "//k8s/cloud:cloud_images_push (config_manager_server)", licence: Apache-2.0}
+  - {key: cloud-cron-script, build: "//k8s/cloud:cloud_images_push (cron_script_server)", licence: Apache-2.0}
+  - {key: cloud-indexer, build: "//k8s/cloud:cloud_images_push (indexer_server)", licence: Apache-2.0}
+  - {key: cloud-plugin, build: "//k8s/cloud:cloud_images_push (plugin_server)", licence: Apache-2.0}
+  - {key: cloud-profile, build: "//k8s/cloud:cloud_images_push (profile_server)", licence: Apache-2.0}
+  - {key: cloud-project-manager, build: "//k8s/cloud:cloud_images_push (project_manager_server)", licence: Apache-2.0}
+  - {key: cloud-proxy, build: "//k8s/cloud:cloud_images_push (proxy_server)", licence: Apache-2.0}
+  - {key: cloud-scriptmgr, build: "//k8s/cloud:cloud_images_push (scriptmgr_server)", licence: Apache-2.0}
+  - {key: cloud-vzconn, build: "//k8s/cloud:cloud_images_push (vzconn_server)", licence: Apache-2.0}
+  - {key: cloud-vzmgr, build: "//k8s/cloud:cloud_images_push (vzmgr_server)", licence: Apache-2.0}
+  - {key: script-bundle, build: "new in #455: hack/pixie-script-bundle (nginx-unprivileged base, BSD-2-Clause, mirrored for the build) serving px create-bundle's bundle-oss.json on :8080", licence: Apache-2.0 (scripts) and BSD-2-Clause (nginx)}
+  - {key: nats, upstream: "ghcr.io/pixie-io/nats:2.9.25-scratch-pl1@sha256:ac7228464fbc7154e91c9a00cba85b5da1df9a3ded6c784cdd6009cece85a1e3", licence: Apache-2.0}
+  - {key: curl, upstream: "ghcr.io/pixie-io/pixie-oss-pixie-dev-public-curl:8.15.0@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922", licence: MIT (curl)}
+  - {key: envoy, upstream: "envoyproxy/envoy:v1.34.2@sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9", licence: Apache-2.0}
+  - {key: hydra, upstream: "oryd/hydra:v1.9.2-sqlite@sha256:61771c706934e1ffd66f86700a28a294ce4ed150fbf30cc131710924271a5871", licence: Apache-2.0}
+  - {key: hydra-cli, upstream: "oryd/hydra:v1.9.2-alpine@sha256:faa6ca02e77e0a08f66bfa7470a5e06d80e6e68c9c35410c65a4ea7b501aea61", licence: Apache-2.0}
+  - {key: kratos, upstream: "oryd/kratos:v0.10.1@sha256:fdcfac3da3b64e619af553451607e1ab00160e59860bb19ec145cdc6f6f9c41d", licence: Apache-2.0}
+  - {key: postgres, upstream: "ghcr.io/cloudnative-pg/postgresql:16 (a CloudNativePG operand image the platform's CNPG 1.30 supports)", licence: PostgreSQL}
+  - {key: opensearch, upstream: "docker.io/opensearchproject/opensearch:2.19.6 (2.19.x only: 3.x refuses Pixie's nGram tokenizer)", licence: Apache-2.0}

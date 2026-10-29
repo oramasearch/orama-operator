@@ -99,6 +99,8 @@ type helmReleaseRequest struct {
 	// CRDURLs are manifests of CRDs a chart ships apart from itself. They are applied before the
 	// chart, on every install and upgrade.
 	CRDURLs []string
+	// PullSecret, when set, is written into the namespace before the chart.
+	PullSecret *corev1.Secret
 }
 
 // helmReleaseState is what the cluster has.
@@ -713,6 +715,12 @@ func (h *helmLeafInstaller) EnsureRelease(ctx context.Context, kubeconfig []byte
 	getter, c, err := leafClients(kubeconfig, req.Namespace)
 	if err != nil {
 		return helmReleaseState{}, err
+	}
+	if req.PullSecret != nil {
+		// Written on every pass, so a rotated pull secret reaches the cluster.
+		if err := applyNamespaceAndPullSecret(ctx, c, req.Namespace, req.PullSecret); err != nil {
+			return helmReleaseState{}, err
+		}
 	}
 	return h.ensureRelease(ctx, getter, c, req, false)
 }

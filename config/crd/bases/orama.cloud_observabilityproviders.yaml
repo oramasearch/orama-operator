@@ -1,0 +1,146 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: observabilityproviders.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: ObservabilityProvider
+    listKind: ObservabilityProviderList
+    plural: observabilityproviders
+    shortNames:
+    - obsprovider
+    singular: observabilityprovider
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.pixie.commit
+      name: Commit
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .status.hubs
+      name: Hubs
+      type: integer
+    - jsonPath: .status.agents
+      name: Agents
+      type: integer
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ObservabilityProvider is an observability vendor's release, written once, which hubs and agents
+          point at. Reconciled on the managing cluster.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ObservabilityProviderSpec is a vendor's release.
+            properties:
+              pixie:
+                description: Pixie is the release for type pixie.
+                properties:
+                  cliVersion:
+                    description: CLIVersion is the px CLI version the hub's artifact
+                      tracker reports.
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                  commit:
+                    description: |-
+                      Commit is the oramasearch/pixie commit the images were built from. It must equal the commit
+                      the operator vendors its manifests from (internal/controller/assets/pixie/COMMIT): manifests
+                      and images from different commits are refused.
+                    pattern: ^[0-9a-f]{40}$
+                    type: string
+                  images:
+                    additionalProperties:
+                      description: 'ImageDigestReference is an image by digest: repository@sha256:<64
+                        lowercase hex>.'
+                      maxLength: 512
+                      pattern: ^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$
+                      type: string
+                    description: |-
+                      Images maps each image the operator renders (see docs/infrastructure/observability.md for
+                      the exact set) to its reference by digest, repository@sha256:<64 hex>. A reference by tag is
+                      refused: what runs is what was built and recorded (#455).
+                    maxProperties: 64
+                    minProperties: 1
+                    type: object
+                  vizierVersion:
+                    description: |-
+                      VizierVersion is the version the Vizier images were tagged with, reported to Pixie Cloud and
+                      pinned in its artifact tracker so nothing offers another version.
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                required:
+                - cliVersion
+                - commit
+                - images
+                - vizierVersion
+                type: object
+              type:
+                description: Type is the vendor. Immutable.
+                enum:
+                - pixie
+                type: string
+                x-kubernetes-validations:
+                - message: type is immutable
+                  rule: self == oldSelf
+            required:
+            - type
+            type: object
+            x-kubernetes-validations:
+            - message: spec.pixie is required when type is pixie
+              rule: self.type != 'pixie' || has(self.pixie)
+          status:
+            description: ObservabilityProviderStatus says whether the release can
+              be installed.
+            properties:
+              agents:
+                format: int32
+                type: integer
+              hubs:
+                description: Hubs and Agents count the resources that use this provider.
+                format: int32
+                type: integer
+              message:
+                description: Message says why it is not Ready.
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              ready:
+                description: |-
+                  Ready is true when the release names every image the operator renders, and its commit is the
+                  one the operator vendors.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

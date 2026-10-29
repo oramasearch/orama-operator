@@ -70,6 +70,19 @@ kubectl create secret docker-registry oramasearch-dockerhub -n orama-system \
 unset ORAMA_DOCKERHUB_TOKEN
 ```
 
+The observability platform charts (kube-prometheus-stack and Perses, `helmfile.yaml`) pull their
+images from Orama's private mirrors with a Secret of the same name in `monitoring`; create it there
+the same way before `helmfile apply` (managed clusters get it from their `ClusterHelmRelease`'s
+`imagePullSecretRef`):
+
+```bash
+kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret docker-registry oramasearch-dockerhub -n monitoring \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username="$ORAMA_DOCKERHUB_USERNAME" \
+  --docker-password="$ORAMA_DOCKERHUB_TOKEN"
+```
+
 For an existing installation, preserve its valid Secret. For an internal registry, use its
 server and supplied credentials and change the image repository below. Secrets are namespaced:
 this Secret serves pods in `orama-system`; another application namespace needs its own credential.

@@ -1565,6 +1565,85 @@ Secret on its cluster with the other end's identity and address. Deleting it del
 | `status.phase` | `Ready` once both Secrets are current and both ends report an address. |
 | `status.ends[]` | `{name, identity, written, address, message}`. |
 
+## `ObservabilityProvider` (separate CRD, cluster-scoped) — an observability vendor's release
+
+Short name `obsprovider`. Lives on the managing cluster. Type `pixie` is self-hosted Pixie Cloud and
+Vizier built from our private copy `oramasearch/pixie` ([#455](https://github.com/oramasearch/orama-operator/issues/455)).
+Hubs and agents point at it, so every cluster runs the same build. Details:
+[`infrastructure/observability.md`](infrastructure/observability.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.type` | `pixie`. Immutable. |
+| `spec.pixie.commit` | The `oramasearch/pixie` commit the images were built from. Must equal the commit the operator vendors (`internal/controller/assets/pixie/COMMIT`), or the provider is not Ready. |
+| `spec.pixie.vizierVersion` / `.cliVersion` | The versions the hub's artifact tracker reports; pinned, so Pixie never offers another. |
+| `spec.pixie.images` | Every image the operator renders, by key, as `repository@sha256:<digest>` (CEL). A missing, unknown or tag-only image makes the provider not Ready. The key set is in [`observability.md`](infrastructure/observability.md#images). |
+| `status.ready` / `.message` | Whether the release can be installed, and why not. |
+| `status.hubs` / `.agents` | How many use it. |
+
+## `ObservabilityHub` (separate CRD, cluster-scoped) — one purpose's observability hub
+
+Short name `obshub`. Lives on the managing cluster, which writes a `PixieCloud` onto the hub's
+cluster. A hub runs only on a cluster tagged `purpose: prod-support` (serving production) or
+`purpose: nonprod` (serving nonprod); on any other cluster it is `Refused`.
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef` | The `ObservabilityProvider`. |
+| `spec.clusterRef` | The hub's `KubernetesCluster`. Immutable. |
+| `spec.domain` | The host name people reach the UI under (and `work.<domain>`). No DNS record or public exposure is created. |
+| `spec.organization` / `.adminEmail` | The one organisation every agent's cluster is registered under, and its administrator. The password is generated into Secret `plc/pixie-admin` on the hub's cluster. |
+| `spec.imagePullSecretRef` | Registry credentials on the managing cluster, copied as `plc/pixie-pull` under the production-credential rules. |
+| `spec.storage` | `storageClassName`, `postgres` (default 20Gi), `search` (20Gi), `messaging` (10Gi), `metrics` (100Gi, the hub Prometheus). |
+| `spec.metricsRetention` | How long the hub Prometheus keeps the metrics it federates from every cluster it serves (default `30d`). |
+| `spec.alerting.receivers[]` | `{name, severities?, slack: {urlSecretRef, channel?} \| webhook: {urlSecretRef}}`: where every alert of the hub's cluster and of every agent's cluster goes. |
+| `status.phase` | `Pending \| Progressing \| Ready \| Degraded \| Refused`, from the `PixieCloud`. |
+| `status.purpose` / `.concreteRef` / `.ready` / `.components[]` | The hub cluster's purpose, the concrete resource, `n/total` and one entry per component. |
+| `status.agents[]` | `{name, cluster, connected, metricsConnected}` for each accepted agent: Pixie's heartbeat, and the hub Prometheus reading the cluster's metrics. |
+
+## `ObservabilityAgent` (separate CRD, cluster-scoped) — one cluster's agents
+
+Short name `obsagent`. Lives on the managing cluster, which writes a `PixieVizier` onto the agent's
+cluster, links it to its hub (a `PeerConnection` pair and a `PeerLink`), and delivers the deploy key
+the hub issued for that cluster alone. An agent whose cluster's purpose may not report to its hub
+(production and prod-support report only to a prod-support hub, nonprod only to a nonprod hub) is
+`Refused`, and nothing of it is left on any cluster.
+
+| Field | Meaning |
+|---|---|
+| `spec.clusterRef` | The agent's `KubernetesCluster`. Immutable. |
+| `spec.hubRef` | The `ObservabilityHub`. |
+| `spec.imagePullSecretRef` | Registry credentials, copied as `pl/pixie-pull` under the production-credential rules. |
+| `spec.nodeMemory` | Each node agent's memory (default 2Gi, at least 1Gi); its data store is 60% of it. |
+| `status.phase` | `Pending \| Progressing \| Ready \| Degraded \| Refused`. `Ready` needs the agents ready and the hub seeing the cluster heartbeat. |
+| `status.purpose` / `.hubPurpose` / `.link` | Both clusters' purposes, and `local` or the `PeerLink` that carries the link. |
+| `status.ready` / `.components[]` / `.connected` / `.metricsConnected` | From the `PixieVizier` and the hub. |
+
+## `PixieCloud` (separate CRD, namespaced) — self-hosted Pixie Cloud
+
+Short name `pxcloud`. Written by an `ObservabilityHub` into namespace `plc` of the hub's cluster;
+nobody writes it by hand. The cluster's own operator runs Pixie Cloud from the vendored manifests,
+with OpenSearch instead of Elastic's, a CloudNativePG database with one role per service, the PxL
+script server, minted certificates and keys, a default-deny sandbox, and the bootstrap
+(administrator, organisation, one deploy key per agent). `spec` mirrors the hub (`release`, `hub`,
+`purpose`, `cluster`, `metricsRetention`, `domain`, `organization`, `adminEmail`, `pullSecretName`,
+`storage`), plus
+`agents[] {name, cluster}` (only agents the managing cluster accepted) and `alertRoutes[]`.
+It also runs the hub Prometheus (federating every cluster it serves over their peer links), its
+hub-scoped rules and dashboards. `status` has `phase`, `ready`, `components[]`, `agents[] {name,
+deployKeySecret, registered, connected, metricsConnected}`, `caCertificate` (the hub's public trust root) and the `Ready` and `Alerting` conditions.
+
+## `PixieVizier` (separate CRD, namespaced) — Pixie's agents on a cluster
+
+Short name `pxvizier`. Written by an `ObservabilityAgent` into namespace `pl` of the agent's cluster.
+The cluster's own operator runs Vizier (node agents, Kelvin, query broker, metadata, cloud connector,
+NATS) with auto-update off and no updater, its own CA and signing key, and a default-deny sandbox.
+`spec`: `release` (empty while the provider is not installable: the alert routing and rules are
+written anyway and Vizier waits), `agent`, `purpose`, `clusterName`, `cloudAddress` (the hub's vzconn, never under
+`.svc.cluster.local`), `cloudCASecretName`, `deployKeySecretName`, `pullSecretName`, `nodeMemory`,
+`alertRoutes[]`. `status`: `phase`, `ready`, `components[]`, `clusterID` (what the hub registered),
+and the `Ready` and `Alerting` conditions.
+
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 
 Provisions a **Clerk application per environment** (dev/testing/staging/prod) via the Clerk
@@ -1945,6 +2024,7 @@ How it fits: [`infrastructure/README.md`](infrastructure/README.md#installing-it
 | `spec.dependsOn[]` | Other `ClusterHelmRelease` names, on the same cluster, that must be `Ready` first. A release others depend on is not uninstalled until they are deleted. |
 | `spec.requiredCRDs[]` | CRDs that must exist on the cluster before this chart is installed or upgraded. |
 | `spec.crdURLs[]` | `https://` URLs of manifests holding CRDs the chart ships apart from itself. Applied server-side before the chart on every install and upgrade; a manifest holding anything but CustomResourceDefinitions is refused. |
+| `spec.imagePullSecretRef` / `.imagePullSecretAs` | Registry credentials on the managing cluster, copied into the release's namespace (under `imagePullSecretAs`, default its own name) before every install and upgrade, for a chart whose images come from a private registry; the chart's values name the copy. A Secret production uses is never copied to a cluster that is not production (`Degraded`, `ProductionCredential`), and a production-tier cluster's release pull Secret counts as production. |
 | `status.phase` | `Pending` (waiting for the cluster, a dependency or a CRD), `Installing`, `Ready`, `Degraded` or `Deleting`. |
 | `status.chartVersion`, `.appVersion`, `.revision`, `.releaseStatus` | The release on the cluster, in Helm's words. |
 | `status.workloads`, `.readyWorkloads` | The release's Deployments, StatefulSets and DaemonSets, and how many are rolled out. |
@@ -2024,8 +2104,15 @@ it or another `OramaOperator` names it for a cluster tagged `production`. The re
 `Degraded` with reason `ProductionCredential`, nothing reaches its cluster (no pull Secret, no chart
 pull, no release change), and it is looked at again every five minutes. Give the cluster its own
 Secret in `spec.imagePullSecretRef`, copied under the old name with `spec.imagePullSecretAs`. The
-sets count a production `OramaOperator`'s pull Secret as production too. Nothing else copies a
-Secret from the managing cluster to a managed one: a `ClusterHelmRelease`'s
+sets count a production `OramaOperator`'s pull Secret as production too.
+**`ObservabilityHub` and `ObservabilityAgent` keep the same rule** (operator#15) for the pull Secret
+and the alert receivers they copy; a refused one is `Refused` and nothing reaches its cluster. A
+production-tier agent's pull Secret and a prod-support hub's pull Secret and receivers count as
+production. **`prod-support` is production tier** (operator#456): a Secret production uses, or one
+labelled `orama.cloud/purpose: production`, may be copied to a `prod-support` cluster, and never to
+`nonprod`. A `LakeSet` or `OramaCloudV1Set` naming a `prod-support` cluster is refused
+(`SupportCluster`): it runs no customer or test workload. Nothing else copies a Secret from the
+managing cluster to a managed one: a `ClusterHelmRelease`'s
 `chart.credentialsSecretRef` and a `KubernetesClusterProvider`'s `credentialsSecretRef` are read on
 the managing cluster only, and a `KubernetesCluster`'s kubeconfig is written there.
 
