@@ -184,7 +184,7 @@ func (r *OramaCloudV1Reconciler) holdEngine(ctx context.Context, oc *oramav1alph
 
 // engineCredentialSecrets is the credential Secrets a side's render-config reads: <cr>-broker-users
 // (its broker user's password, #99), the master API key Secret where the side's template holds master_api_key, and
-// <cr>-analytics-api-key where it holds reader_side.analytics (the reader-only config).
+// <cr>-analytics-api-key where it holds reader_side.analytics (every reader config).
 func engineCredentialSecrets(oc *oramav1alpha1.OramaCloudV1, side engineSide) []string {
 	names := []string{brokerUsersSecretName(oc)}
 	if side.readsMasterAPIKey() {
@@ -238,8 +238,8 @@ func (s engineSide) generatesLocalWriterKey() bool {
 	return strings.Contains(s.template, keyPlaceholder(localWriterKeyEnv))
 }
 
-// readsAnalyticsKey reports whether the side's template holds the analytics key placeholder: only
-// the reader-only config does (reader_side.analytics.api_key).
+// readsAnalyticsKey reports whether the side's template holds the analytics key placeholder: the
+// reader-only and combined reader configs do (reader_side.analytics.api_key), no writer config does.
 func (s engineSide) readsAnalyticsKey() bool {
 	return strings.Contains(s.template, keyPlaceholder(analyticsKeyEnvName))
 }
@@ -327,9 +327,10 @@ func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 // (localWriterKeyEnv), it has no JWT provider, and it produces to its own stream,
 // oramacore-reader-local, as oramacore-reader. The reader section consumes the replication stream as
 // oramacore-reader too, so a reader holds neither the writer's master key nor any right to publish to
-// the stream the other readers apply.
+// the stream the other readers apply. Its reader_side carries the analytics block, as the reader-only
+// config's does (#1051).
 func oramacoreCombinedReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
-	return engineCommonYAML() + readerLocalWriterSideYAML(oc) + readerSideYAML(oc, brokerReaderUser) + aiServerYAML(oc)
+	return engineCommonYAML() + readerLocalWriterSideYAML(oc) + readerSideYAML(oc, brokerReaderUser) + readerAnalyticsYAML + aiServerYAML(oc)
 }
 
 // readerLocalWriterSideYAML is the writer_side of the combined reader config: the same writer settings
@@ -374,12 +375,13 @@ func oramacoreWriterConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 }
 
 // oramacoreReaderConfigYAML is the reader-only image's config: no writer_side, and the analytics
-// block appended inside reader_side. The combined config has no analytics block.
+// block appended inside reader_side. The writer's combined config has no analytics block.
 func oramacoreReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return engineCommonYAML() + readerSideYAML(oc, brokerReaderUser) + readerAnalyticsYAML + aiServerYAML(oc)
 }
 
-// readerAnalyticsYAML is reader_side.analytics, as Prod 1 sets it on its readers (#386). With it a
+// readerAnalyticsYAML is reader_side.analytics, as Prod 1 sets it on its readers (#386), in both reader
+// configs (#1051); it follows readerSideYAML, so it nests inside reader_side. With it a
 // reader logs search events under its data_dir and serves them once on GET /v1/analytics, which
 // erases what it returns; analytics-processor polls that endpoint. api_key is the
 // __ANALYTICS_API_KEY__ placeholder render-config fills from <cr>-analytics-api-key, and
@@ -575,7 +577,7 @@ func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 // CONFIG_PATH, so the credentials stay out of the ConfigMap while the reviewable config lives in one.
 // Explicit env entries, which take precedence over envFrom, carry MASTER_API_KEY from
 // spec.masterAPIKeySecretRef where the side reads it (an empty MASTER_API_KEY elsewhere), BROKER_PASSWORD, the password of the side's
-// broker user from <cr>-broker-users (engineBrokerPasswordEnv), ANALYTICS_API_KEY from <cr>-analytics-api-key on the reader-only config, and a
+// broker user from <cr>-broker-users (engineBrokerPasswordEnv), ANALYTICS_API_KEY from <cr>-analytics-api-key on every reader config, and a
 // provider's key from its apiKeySecretRef; the other provider keys come from the engine Secret
 // (envFrom). See renderConfigScript and llmKeySecretEnv.
 func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, side engineSide) corev1.Container {
@@ -664,6 +666,9 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 	}); err != nil {
 		return err
 	}
+	if err := r.recoverWriterImageRollout(ctx, oc, sts); err != nil {
+		return err
+	}
 	if err := r.upsertService(ctx, oc, name, "writer",
 		[]corev1.ServicePort{{Name: "http", Port: oramacorePort, TargetPort: intstr.FromInt32(oramacorePort)}}); err != nil {
 		return err
@@ -672,6 +677,55 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 	// isn't casually evicted. Node maintenance must consciously handle it (its
 	// graceful shutdown persists data, but availability drops during any move).
 	return r.upsertPDB(ctx, oc, name, "writer", 0)
+}
+
+// OrderedReady can wait forever for a broken old pod before adopting a corrected
+// template. Replace only a crash-looping previous-image writer, with its normal
+// grace period and retained PVC; the StatefulSet still owns singleton creation.
+func (r *OramaCloudV1Reconciler) recoverWriterImageRollout(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, sts *appsv1.StatefulSet) error {
+	if !metav1.IsControlledBy(sts, oc) || sts.UID == "" || !sts.DeletionTimestamp.IsZero() ||
+		sts.Spec.Replicas == nil || *sts.Spec.Replicas != 1 {
+		return nil
+	}
+	desiredImage := ""
+	for _, c := range sts.Spec.Template.Spec.Containers {
+		if c.Name == "oramacore" {
+			desiredImage = c.Image
+		}
+	}
+	if desiredImage == "" {
+		return nil
+	}
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: sts.Namespace, Name: sts.Name + "-0"}, pod); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(pod, sts) || !pod.DeletionTimestamp.IsZero() || pod.UID == "" || pod.ResourceVersion == "" {
+		return nil
+	}
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+			return nil
+		}
+	}
+	previousImage := ""
+	for _, c := range pod.Spec.Containers {
+		if c.Name == "oramacore" {
+			previousImage = c.Image
+		}
+	}
+	if previousImage == "" || previousImage == desiredImage {
+		return nil
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name != "oramacore" || status.Ready || status.State.Waiting == nil ||
+			status.State.Waiting.Reason != "CrashLoopBackOff" || status.RestartCount == 0 ||
+			status.LastTerminationState.Terminated == nil || status.LastTerminationState.Terminated.ExitCode == 0 {
+			continue
+		}
+		return client.IgnoreNotFound(r.Delete(ctx, pod, client.Preconditions{UID: &pod.UID, ResourceVersion: &pod.ResourceVersion}))
+	}
+	return nil
 }
 
 // reconcileReaders owns the reader StatefulSet, its headless Service, the reader Service and PDB.

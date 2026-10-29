@@ -289,7 +289,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-hpes` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | HPES `API_KEY`, index-builder `ORAMA_EMBEDDINGS_BEARER` ([below](#hpes-index-builders-embeddings-hpesgo-574)) |
 | `<cr>-harvest-sign` | `HARVEST_SIGN` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion or the dashboard runs | index-builder `HARVEST_SIGN`, dashboard `SCRAPER_SIGNATURE` (sent as `?signature=`), harvest-master `HARVEST_SIGNATURE` (checked): one control key under three names ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
 | `<cr>-harvest-notification` | `NOTIFICATION_SIGNATURE` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | harvest-master `NOTIFICATION_SIGNATURE` only ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
-| `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
+| `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, `reader.yaml` and `combined-reader.yaml`), analytics-processor render-config (every `oramacores` entry's `api_key`) |
 | `<cr>-clickhouse-auth` | `CLICKHOUSE_PASSWORD` | the bootstrap step, on every stack | ClickHouse, analytics-processor, dashboard, workers, DISCO and the analytics retention Job |
 | `<cr>-typesense-auth` | `TYPESENSE_API_KEY` | the bootstrap step, on every stack | Typesense and index-builder |
 | `<cr>-cron-secret` | `CRON_SECRET` | the bootstrap step, when the dashboard is enabled | dashboard and its CronJobs, whether or not the crons are enabled yet |
@@ -392,7 +392,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker; `<cr>-broker-users` the writer and readers; `<cr>-broker-harvest`
   harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master, index-builder and the dashboard; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers on the reader-only config
+  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master, index-builder and the dashboard; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers
   and analytics-processor, never the writer; the master key the writer, index-builder, workers and
   dashboard, never a reader. `<cr>-disco-auth` rolls DISCO, workers and index-builder;
   `<cr>-pgadmin-auth` rolls pgAdmin, whose emptyDir config DB is initialized with the retained
@@ -637,6 +637,13 @@ Driven by `spec.region.role`:
   a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
+  When an owned writer pod is unready and crash-looping on an image that differs from the
+  requested StatefulSet template, the operator replaces that pod to unblock Kubernetes'
+  `OrderedReady` rollout ([#1035](https://github.com/oramasearch/orama-operator/issues/1035)).
+  It requires a failed prior engine exit and uses UID/resource-version preconditions and the
+  pod's normal termination grace period. The StatefulSet creates its singleton replacement on
+  the same retained claim. Healthy, starting, terminating, unowned and current-image pods are
+  left alone; a crash on the requested image still requires an engine or configuration fix.
 - **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` with the
   `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set. Envoy answers
@@ -788,16 +795,18 @@ Driven by `spec.region.role`:
   `readerLocalWriterSideYAML`, `readerSideYAML`, `aiServerYAML`), so the sections and the
   replication stream are identical in every mode (writer `oramacore-writer`/`write`, readers
   `oramacore-reader`/`reader`).
-- **Reader analytics** ([#386](https://github.com/oramasearch/orama-operator/issues/386)) — only
-  `reader.yaml` carries `reader_side.analytics` (`readerAnalyticsYAML`), as on Prod 1's readers:
+- **Reader analytics** ([#386](https://github.com/oramasearch/orama-operator/issues/386),
+  [#1051](https://github.com/oramasearch/orama-operator/issues/1051)) — both reader configs,
+  `reader.yaml` and `combined-reader.yaml`, carry `reader_side.analytics` (`readerAnalyticsYAML`), as on Prod 1's readers:
   `api_key: '__ANALYTICS_API_KEY__'`, filled from `<cr>-analytics-api-key`, and Prod 1's
   `metadata_from_headers` (`user-agent`→`ua`, `CF-Connecting-IP`→`ip`, `CF-IPCountry`→`country`,
   `continent`, `colo`, `latitude`, `longitude`), which OramaCore requires; a request without these
   headers is still served. With it each reader logs search events under its `data_dir` and serves
   them once on `GET /v1/analytics`, which erases what it returns; analytics-processor pulls each
-  reader once per import with the analytics key ([Analytics import](#analytics-import)). The writer config has no reader side and no analytics block, and the combined
-  `config.yaml` and `combined-reader.yaml` have none either, so on the combined image readers record no search events. Only the
-  readers' render-config reads the analytics key.
+  reader once per import with the analytics key ([Analytics import](#analytics-import)). The writer config has no reader side and no analytics block, and the writer's combined
+  `config.yaml` has none either: the writer serves no search traffic and the processor never polls it. The block sits
+  under the reader's own `data_dir` (`/app/.data/reader/analytics_new`), apart from the combined reader's local
+  writer (`/app/.data/writer`). Only the readers' render-config reads the analytics key.
   The `ai_server` LLM settings come from `spec.llm` (`engine_llm.go`): `ai_server.llm` is the
   default provider's built-in URL, first model and key, `ai_server.remote_llms` one entry per
   provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
@@ -814,8 +823,8 @@ Driven by `spec.region.role`:
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
   `ORAMACORE_` provider splits on `_`). Explicit `secretKeyRef` env entries carry `MASTER_API_KEY`
   from `spec.masterAPIKeySecretRef` (only where the side's template holds it), `BROKER_PASSWORD`
-  from the side's key of `<cr>-broker-users`, `ANALYTICS_API_KEY` from `<cr>-analytics-api-key` (the
-  reader-only config only), and a provider's key from its `apiKeySecretRef`; the other provider
+  from the side's key of `<cr>-broker-users`, `ANALYTICS_API_KEY` from `<cr>-analytics-api-key` (every
+  reader config), and a provider's key from its `apiKeySecretRef`; the other provider
   keys come from `<cr>-engine-secret` (via `envFrom`).
   The script reads each value from its environment variable and escapes it for `sed` and the
   single-quoted scalar, so no value is evaluated, logged or written into the script.
@@ -827,7 +836,7 @@ Driven by `spec.region.role`:
   hash stays their template's alone, as they were. The pod template also carries
   `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
   `apiKeySecretRef` Secret, identical on both sides, and `orama.cloud/credentials-hash`, the side's
-  `<cr>-broker-users`, master key (writer only) and (reader-only config) analytics key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
+  `<cr>-broker-users`, master key (writer only) and analytics key (readers only) Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
   The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
   the writer and readers with no restart by hand. Without a usable master key the writer and
   reader StatefulSets are held at zero replicas, and so is a reader Deployment left by an earlier
@@ -1341,7 +1350,19 @@ The contract is [`lake/origin-tls.md`](lake/origin-tls.md). What the reconcilers
 - **`EdgeZonePolicyReconciler`** creates the owned `CloudflareZonePolicy` and copies its status;
   **`CloudflareZonePolicyReconciler`** reads the zone and its proxied records every ten minutes, probes
   each host's origin and edge, reports the zone's name (`status.zone`), and turns on Full, Full (strict), authenticated origin pulls and Always
-  Use HTTPS in that order, each when its check passes. It never turns one off.
+  Use HTTPS in that order, each when its check passes. It never turns one off. After global pulls it
+  uses the zone's origin-pull CA and client certificate: the Secret `spec.originPullSecretRef` names
+  (a copy the managing cluster's `LakeSet` distributed; never written, never replaced by one of its
+  own), or without one the operator's own Secret `orama-edge-origin-pull-<zone>` in its namespace,
+  created once. It uploads the certificate and turns zone-level pulls on once every origin that asks
+  for a client certificate accepts that CA (read from each origin's TLS CertificateRequest), uploads
+  only a leaf newer than the zone's current one and deletes only older ones, and publishes the CA in
+  `status.originClientCAPEM` ([#633](https://github.com/oramasearch/orama-operator/issues/633)).
+- **`LakeSetReconciler`** (on the managing cluster) also distributes each zone's origin-pull CA: for a
+  member whose `dnsSecretRef` Secret it copies, it creates `orama-edge-origin-pull-<zone ID>` in the
+  operator's namespace once, renews its client certificate 45 days before expiry, and copies the CA
+  certificate and client certificate (not the CA key) into the member's namespace before the Lake
+  (`managedset_origin_pull.go`). A set-managed Lake points its `EdgeZonePolicy` at that copy.
 - **`OramaZettaClusterReconciler`**: a public Zetta's Ingress gets its own `Issuer` `<name>-letsencrypt`
   from its `dnsSecretRef` and `applyIngressTLS`; without a `dnsSecretRef` the reconcile fails.
 
@@ -1645,6 +1666,11 @@ suspended. Field reference: [crd-reference.md](crd-reference.md#speccomponentsda
   `-consumption-sync` (`0 */6 * * *`), Prod 1's schedules from the dashboard's `vercel.json`, fixed.
   Each Job runs `curlimages/curl:8.10.1` (or `spec.images.overrides["dashboard-crons"]`, used as
   written) and sends `GET http://<cr>-dashboard:3000<path>` with `Authorization: Bearer $CRON_SECRET`.
+  The stack's NetworkSandbox pairs `allow-dashboard-crons-egress` with
+  `allow-dashboard-crons-ingress`: only its `dashboard-crons` pods reach its dashboard on TCP 3000;
+  the shared DNS allowance provides UDP/TCP 53. Every member renders the same rules, including
+  members with suspended or disabled crons. The next operator roll reconciles the policies without
+  restarting dashboard or cron pods; cron enablement and suspension still follow the member's spec.
   The in-cluster Service means a run cannot reach Prod 1 while DNS moves. The header reaches curl on
   stdin, so the value is in no argument, and only the HTTP status is logged, never the body. Any status
   outside 200–299 fails the Job, a redirect included (it is never followed), as do connection errors

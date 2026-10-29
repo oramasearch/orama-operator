@@ -150,6 +150,19 @@ func reconcileLakeOriginIssuer(ctx context.Context, c client.Client, scheme *run
 	return err
 }
 
+// lakeOriginPullSecretRef is the zone's distributed origin-pull Secret for a Lake that a set
+// manages, or nil (operator#633). The set copies the zone's CA, generated once on the managing
+// cluster, into the member's namespace under this name before it applies the Lake, so every
+// cluster serving the zone presents and trusts one CA. A Lake no set manages (the managing
+// cluster's own) uses the operator's per-cluster Secret, which on the managing cluster is the very
+// Secret the sets copy.
+func lakeOriginPullSecretRef(lake *oramav1alpha1.Lake, zoneID string) *corev1.LocalObjectReference {
+	if lake.Labels[managedBySetLabel] == "" {
+		return nil
+	}
+	return &corev1.LocalObjectReference{Name: originPullSecretName(zoneID)}
+}
+
 // reconcileLakeEdgePolicy keeps the Lake's EdgeProvider and EdgeZonePolicy for the zone of its
 // dnsSecretRef (keys `token` and `zoneID`), and removes them without one.
 func reconcileLakeEdgePolicy(ctx context.Context, c client.Client, scheme *runtime.Scheme, lake *oramav1alpha1.Lake, labels map[string]string) error {
@@ -187,7 +200,8 @@ func reconcileLakeEdgePolicy(ctx context.Context, c client.Client, scheme *runti
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, c, policy, func() error {
 		policy.Labels = labels
-		policy.Spec = oramav1alpha1.EdgeZonePolicySpec{ProviderRef: corev1.LocalObjectReference{Name: name}, ZoneID: zoneID}
+		policy.Spec = oramav1alpha1.EdgeZonePolicySpec{ProviderRef: corev1.LocalObjectReference{Name: name}, ZoneID: zoneID,
+			OriginPullSecretRef: lakeOriginPullSecretRef(lake, zoneID)}
 		return controllerutil.SetControllerReference(lake, policy, scheme)
 	})
 	return err

@@ -1064,17 +1064,17 @@ one, `lake-<name>-edge`.
 |---|---|
 | `spec.type` | `cloudflare` (the only type). |
 | `spec.cloudflare.accountId` | Optional Cloudflare account ID; zone policies do not need it. |
-| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit, Zone > DNS > Read, Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone. For an `EdgeHostPolicy`, on each host's zone: Zone > Zone > Read, **Zone > Config Rules > Edit** (API permission group `Config Settings Write`, for `originTLS`) and **Zone > Single Redirect > Edit** (`Dynamic URL Redirects Write`, for `redirectToHTTPS`). Never written or logged. |
+| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit, Zone > DNS > Read, Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone (edge certificates and zone-level authenticated origin pulls). For an `EdgeHostPolicy`, on each host's zone: Zone > Zone > Read, **Zone > Config Rules > Edit** (API permission group `Config Settings Write`, for `originTLS`) and **Zone > Single Redirect > Edit** (`Dynamic URL Redirects Write`, for `redirectToHTTPS`). Never written or logged. |
 | `status.ready`, `status.message` | Whether the Secret and key exist. Whether the token is allowed what a kind needs is reported by that kind. |
 
 ## `EdgeZonePolicy` (separate CRD, namespaced) — secure a DNS zone's edge
 
 The provider-neutral request "secure this zone's edge" (operator#578). It has no settings and no off
-switch: it always means origin encryption Full, then Full (strict), authenticated origin pulls, an
-edge certificate for every proxied host more than one level below the apex (Cloudflare: an Advanced
-Certificate, lake#798), and Always Use HTTPS, each done only when its check passes, and never
-undone. Short name
-`edgezp`; `kubectl get edgezp -A` shows `Origin`, `AOP`, `HTTPS`, `Phase`. A Lake with a
+switch: it always means origin encryption Full, then Full (strict), authenticated origin pulls (global,
+then zone-level with the zone's own origin-pull certificate, operator#633), an edge certificate for
+every proxied host more than one level below the apex (Cloudflare: an Advanced Certificate,
+lake#798), and Always Use HTTPS, each done only when its check passes, and never undone. Short name
+`edgezp`; `kubectl get edgezp -A` shows `Origin`, `AOP`, `ZoneAOP`, `HTTPS`, `Phase`. A Lake with a
 `dnsSecretRef` owns one, `lake-<name>-edge`. The full contract, the checks and the order are in
 [`lake/origin-tls.md`](lake/origin-tls.md).
 
@@ -1082,13 +1082,15 @@ undone. Short name
 |---|---|
 | `spec.providerRef.name` | An `EdgeProvider` in this namespace. |
 | `spec.zoneID` | The provider's zone identifier (Cloudflare: the zone ID). |
+| `spec.originPullSecretRef.name` | Optional. A Secret in this namespace with the zone's origin-pull CA certificate and client certificate (`ca.crt`, `tls.crt`, `tls.key`), copied here by the managing cluster's `LakeSet` so every cluster serving the zone presents and trusts one CA ([operator#633](https://github.com/oramasearch/orama-operator/issues/633)). When set, this Secret is the only source: the operator never creates a CA or client certificate for the zone, waits while the Secret is missing, and fails while its CA cannot be read. Unset: the operator's own Secret `orama-edge-origin-pull-<zone ID>` in its namespace, created once. A Lake that a set manages sets it to `orama-edge-origin-pull-<zone ID>`; a Lake no set manages leaves it unset. |
 | `status.phase` | `Ready` (every setting on), `Progressing` (a setting waits on a check), `Failed` (the zone cannot be read or changed; the message names the missing permission). |
 | `status.originEncryption` | The zone's observed mode: `off`, `flexible`, `full` or `strict`. Lake Ingresses redirect HTTP only at `full` or `strict`. |
-| `status.authenticatedOriginPulls`, `status.originClientCAPEM` | Whether the edge presents its client certificate to origins, and the CA that signs it. Lake Ingresses require the certificate once this is on. |
+| `status.authenticatedOriginPulls`, `status.originClientCAPEM` | Whether the edge presents a client certificate that `originClientCAPEM` verifies, and that bundle: Cloudflare's global origin-pull CA and the zone's CA until the zone presents its own certificate, then the zone's CA alone. Lake Ingresses require the certificate once this is on. False while the zone may present a certificate of another CA. |
+| `status.zoneOriginPulls` | Whether the edge presents the zone's own client certificate, signed by the zone's CA (zone-level authenticated origin pulls). |
 | `status.alwaysUseHTTPS` | Whether the edge redirects plain HTTP. |
 | `status.zone` | The zone's name (`lake.live`), read with Zone > Zone > Read. The owning Lake's `Issuer` solves DNS-01 for this zone and every name under it, and HTTP-01 for any other name; empty keeps DNS-01 for every name ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). A refused read keeps the last name. |
 | `status.proxiedHosts`, `status.hosts[]` | How many proxied hosts the zone has, and up to 50 that fail a check: `{name, origin, edge}` with the reason for each leg. |
-| `status.conditions` | `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`, `AuthenticatedOriginPulls`, `EdgeCertificateOrders` (the edge certificates ordered, pending, or why an order is refused), `AlwaysUseHTTPS`, `ZoneName` (False names the missing Zone > Zone > Read; it does not change the phase). |
+| `status.conditions` | `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`, `AuthenticatedOriginPulls`, `ZoneOriginPulls` (zone-level pulls on, or what they wait for), `EdgeCertificateOrders` (the edge certificates ordered, pending, or why an order is refused), `AlwaysUseHTTPS`, `ZoneName` (False names the missing Zone > Zone > Read; it does not change the phase). |
 
 Several policies may name one zone (one per Lake); they ask for the same settings. Deleting a policy
 changes nothing in the zone.
@@ -1097,12 +1099,18 @@ changes nothing in the zone.
 
 Created and owned by an `EdgeZonePolicy` whose provider is `cloudflare`, with the same name; a person
 never writes one. The only kind that changes a Cloudflare zone's settings (`ssl`,
-`ssl_automatic_mode`, `tls_client_auth`, `always_use_https`). Short name `cfzp`.
+`ssl_automatic_mode`, `tls_client_auth`, `always_use_https`) and its zone-level origin-pull
+certificates (`origin_tls_client_auth`). It reads the zone's CA and client certificate from the
+Secret `spec.originPullSecretRef` names (a copy the managing cluster distributed; never written
+here), or, without one, from the Secret `orama-edge-origin-pull-<zone ID>` in the operator's
+namespace, which it creates once. On the managing cluster that Secret is the one the `LakeSet`s
+copy, so every cluster serving a zone uses one CA. Short name `cfzp`.
 
 | Field | Meaning |
 |---|---|
 | `spec.zoneID` | The Cloudflare zone. |
 | `spec.apiTokenSecretRef` | The provider's token Secret and key. |
+| `spec.originPullSecretRef` | The `EdgeZonePolicy`'s, copied. |
 | `status` | The same status as `EdgeZonePolicy`, which copies it. |
 
 ## `EdgeHostPolicy` (separate CRD, namespaced) — per-host Full (strict) and HTTPS redirect
@@ -1710,7 +1718,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.tls.secretName` | Optional hand-supplied `kubernetes.io/tls` Secret in `spec.namespace` for `host` and `apexHost`. Empty (the normal case) uses the certificates the operator issues: every Lake Ingress serves HTTPS either way. Without it, the Lake's `Issuer` issues every host: DNS-01 in the `dnsSecretRef` zone, HTTP-01 for any other host and for a Lake with no `dnsSecretRef` ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). See [`lake/origin-tls.md`](lake/origin-tls.md). |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
 | `spec.ingressClassName` | `nginx` (default) or `zetta-tunnel`: which ingress serves the Lake's Ingress and its environments'. DNS follows, because it is written from the Ingress's address. The per-cluster cutover sets it in the cluster's set member ([`infrastructure/ingress.md`](infrastructure/ingress.md)). |
-| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`, for names in the zone; other names and a Lake without `dnsSecretRef` use HTTP-01), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit, **Zone > Zone Settings > Edit**, Zone > Zone > Read and **Zone > SSL and Certificates > Edit** (edge certificates for app hosts, lake#798). |
+| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`, for names in the zone; other names and a Lake without `dnsSecretRef` use HTTP-01), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit, **Zone > Zone Settings > Edit**, Zone > Zone > Read and **Zone > SSL and Certificates > Edit** (edge certificates for app hosts, lake#798, and zone-level authenticated origin pulls, operator#633). |
 | `spec.region` | `{name, label}`: where the Lake runs, for its region picker (decision 64). Rendered as `LAKE_REGION` and `LAKE_REGION_LABEL`. In a LakeSet, `name` comes from the member's cluster ([`lake/README.md#regions`](lake/README.md#regions)). |
 | `spec.regions` | The deployment's regions as the picker offers them, `[{name, label, host, latitude, longitude}]`, rendered as `LAKE_REGIONS` (JSON). A LakeSet computes it from its members. |
 | `spec.apexHost` | A second host the Lake answers (the region picker, e.g. `lake.live`). With `ingressEnabled` + `host`, adds an Ingress rule (and TLS host) and, with `dnsSecretRef`, an owned proxied `<lake>-apex-dns` record; rendered as `LAKE_APEX_HOST`. Removing it removes both. |
@@ -2048,7 +2056,7 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | Field | Meaning |
 |---|---|
 | `spec.template` | The instance's spec (a `Lake`'s, an `OramaCloudV1`'s), the default for every member. Validated by each member's cluster when applied. A `LakeSet` template does not set `namespace`; an `OramaCloudV1Set` template does not set `region.name`. |
-| `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). |
+| `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). A `LakeSet` also copies one Secret on its own: each member whose `dnsSecretRef` names a Secret the set copies gets its zone's origin-pull Secret `orama-edge-origin-pull-<zone ID>` (CA certificate and client certificate, never the CA key), which the set creates once in the operator's namespace on this cluster and renews; it is labelled with the purpose of the first member that needed it and refused for a member of another purpose ([operator#633](https://github.com/oramasearch/orama-operator/issues/633), [`lake/origin-tls.md`](lake/origin-tls.md#zone-level-authenticated-origin-pulls-the-operators-own-certificate)). A Secret listed under that name is replaced by it. |
 | `spec.clusters[]` | The members, 1 to 64. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). The cap of 64 holds for both kinds because they share this shape: the `OramaCloudV1Set` rule that each migration names one member loops over the members, and the API server refuses a CEL rule over an unbounded list. |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
 | `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members ([`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)). `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |

@@ -51,8 +51,10 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.10.4** (2026-10-26), a patch: agents default to `gpt-6.1-sol`, and a Lake restart
-replaces the App's pods ([`docs/releases/v0.10.4.md`](docs/releases/v0.10.4.md)). Before it, **v0.10.3** (2026-10-25), a patch: the Cloud v1 writer embeds 64 texts per batch, not
+The current release is **v0.10.6** (2026-10-27), a patch: an App or environment is Ready only when its rollout
+is complete ([`docs/releases/v0.10.6.md`](docs/releases/v0.10.6.md)). Before it, **v0.10.5** (2026-10-27), a patch: App hosts stop flapping to Cloudflare 526
+([`docs/releases/v0.10.5.md`](docs/releases/v0.10.5.md)). Before that, **v0.10.4** (2026-10-26), a patch: agents default to `gpt-6.1-sol`, and a Lake restart
+replaces the App's pods ([`docs/releases/v0.10.4.md`](docs/releases/v0.10.4.md)). Before that, **v0.10.3** (2026-10-25), a patch: the Cloud v1 writer embeds 64 texts per batch, not
 50,000, so a CPU writer's memory stays bounded during a copy
 ([`docs/releases/v0.10.3.md`](docs/releases/v0.10.3.md)). Before it, **v0.10.2** (2026-10-25), a patch: an app's
 Zetta binding is the JSON document app-runtime reads, and Cloud v1 stacks generate their DISCO and pgAdmin credentials
