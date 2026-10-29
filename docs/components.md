@@ -1664,6 +1664,11 @@ suspended. Field reference: [crd-reference.md](crd-reference.md#speccomponentsda
   `-consumption-sync` (`0 */6 * * *`), Prod 1's schedules from the dashboard's `vercel.json`, fixed.
   Each Job runs `curlimages/curl:8.10.1` (or `spec.images.overrides["dashboard-crons"]`, used as
   written) and sends `GET http://<cr>-dashboard:3000<path>` with `Authorization: Bearer $CRON_SECRET`.
+  The stack's NetworkSandbox pairs `allow-dashboard-crons-egress` with
+  `allow-dashboard-crons-ingress`: only its `dashboard-crons` pods reach its dashboard on TCP 3000;
+  the shared DNS allowance provides UDP/TCP 53. Every member renders the same rules, including
+  members with suspended or disabled crons. The next operator roll reconciles the policies without
+  restarting dashboard or cron pods; cron enablement and suspension still follow the member's spec.
   The in-cluster Service means a run cannot reach Prod 1 while DNS moves. The header reaches curl on
   stdin, so the value is in no argument, and only the HTTP status is logged, never the body. Any status
   outside 200–299 fails the Job, a redirect included (it is never followed), as do connection errors
