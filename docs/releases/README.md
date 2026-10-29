@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.0](v0.11.0.md) — 2026-10-29. A minor release: five observability kinds and a self-hosted Pixie (#1044), zone-level
+  authenticated origin pulls with one CA per zone (#727), and four Cloud v1 fixes (#1036, #1052, #1053, #1057). Every
+  combined-image Cloud v1 stack's readers restart once.
 - [v0.10.6](v0.10.6.md) — 2026-10-27. A patch: an App or environment is Ready only when its rollout is complete
   (#1050).
 - [v0.10.5](v0.10.5.md) — 2026-10-27. A patch: App hosts stop flapping to Cloudflare 526; the App's Secret pass
