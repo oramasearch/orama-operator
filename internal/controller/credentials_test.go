@@ -773,13 +773,9 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			rolled("a HARVEST notification key change", []string{"harvest-master"})
 			h.setSecret(testMasterSecret, "MASTER_API_KEY", "rotated-master-0123")
 			rolled("a master key change", masterReaders)
-			// Only the reader-only config reads the analytics key; the writer never does.
-			analyticsReaders := []string{"analytics-processor"}
-			if mode == "side-only" {
-				analyticsReaders = append(analyticsReaders, "reader")
-			}
+			// Every reader config reads the analytics key (#1051); the writer never does.
 			h.setSecret("v1-analytics-api-key", "ANALYTICS_API_KEY", "rotatedanalytics0123")
-			rolled("an analytics key change", analyticsReaders)
+			rolled("an analytics key change", []string{"analytics-processor", "reader"})
 			steady("a second unchanged reconcile")
 
 			// Pointing the reference at another Secret rolls the master key readers onto it.

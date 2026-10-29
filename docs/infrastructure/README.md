@@ -27,6 +27,11 @@ real cluster has been created with them yet. The first step is one non-productio
 >
 > **Status pages** (external checks, alerts, the public lake.live page; liquid-bridge#14) are in
 > [`status-pages.md`](status-pages.md).
+>
+> **Observability** (Prometheus, Alertmanager and Perses on every cluster; Pixie with a hub per
+> purpose on a `prod-support` or nonprod cluster; #15, #456) is in [`observability.md`](observability.md).
+> A cluster's `purpose` tag is `nonprod`, `production` or `prod-support`; prod-support runs support
+> services for production and no customer or test workload.
 
 ## The model
 
@@ -213,6 +218,8 @@ A general rule for every kind in this work, and for the operator from here on.
 | `EdgeHostPolicy` | `CloudflareHostPolicy` | Another CDN or edge provider |
 | `PaymentWebhookEndpoint` | `StripeWebhookEndpoint` | Another payment provider |
 | `PaymentCatalog` | `StripeCatalog` | Another payment provider |
+| `ObservabilityHub` | `PixieCloud` | Another tracing hub |
+| `ObservabilityAgent` | `PixieVizier` | Another tracing agent |
 
 ### A provider is its own resource
 
@@ -230,6 +237,7 @@ provider."*
 | `EdgeHostPolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareHostPolicy` ([`../crd-reference.md`](../crd-reference.md#edgehostpolicy-separate-crd-namespaced--per-host-full-strict-and-https-redirect)) |
 | `PaymentWebhookEndpoint` | a `PaymentProvider` (of type stripe) | `StripeWebhookEndpoint` ([`payments.md`](payments.md)) |
 | `PaymentCatalog` | a `PaymentProvider` (of type stripe) | `StripeCatalog` ([`payments.md`](payments.md#catalogs)) |
+| `ObservabilityHub`, `ObservabilityAgent` | an `ObservabilityProvider` (of type pixie) | `PixieCloud` on the hub's cluster, `PixieVizier` on each agent's ([`observability.md`](observability.md)) |
 
 ```
 KubernetesCluster ──providerRef──▶ KubernetesClusterProvider (type: aks)

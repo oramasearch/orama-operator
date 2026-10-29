@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -65,6 +66,9 @@ type setKind struct {
 	prepare func(template map[string]any, members []resolvedMember) (any, error)
 	// finish sets what a member's spec takes from where it runs and from prepare, after the merge.
 	finish func(spec map[string]any, namespace string, cluster *oramav1alpha1.KubernetesCluster, shared any) error
+	// secrets adds what the set copies on its own to a member, after the Secrets the set names (a
+	// Lake's zone origin-pull Secret, managedset_origin_pull.go). Nil for a kind that needs none.
+	secrets func(ctx context.Context, r *managedSetReconciler, spec map[string]any, copied []*corev1.Secret, resolved resolvedMember) ([]*corev1.Secret, error)
 	// observe reads an instance as its cluster reports it.
 	observe func(obj *unstructured.Unstructured) (ready bool, version, message string)
 }
@@ -74,6 +78,7 @@ var lakeSetKind = setKind{
 	instance:    oramav1alpha1.GroupVersion.WithKind("Lake"),
 	crd:         "lakes.orama.cloud", namespacePrefix: "lake-",
 	prepare: prepareLakeRegions,
+	secrets: lakeOriginPullSecrets,
 	finish: func(spec map[string]any, namespace string, cluster *oramav1alpha1.KubernetesCluster, shared any) error {
 		// A Lake names its own namespace, and every member has its own.
 		if set, ok := spec["namespace"].(string); ok && set != "" && set != namespace {
@@ -370,6 +375,10 @@ type managedSetReconciler struct {
 	rehearsals *setRehearsals
 	// productionSources is what every production set copies, read once per pass (managedset_secret_scope.go).
 	productionSources map[string]string
+	// operatorNamespace holds the zone origin-pull Secrets a LakeSet distributes (POD_NAMESPACE).
+	operatorNamespace string
+	// now is the clock for their certificate lifetimes; nil uses time.Now.
+	now func() time.Time
 }
 
 // resolvedMember is a member with everything worked out from the set and its cluster.
@@ -412,6 +421,11 @@ func (r *managedSetReconciler) resolve(ctx context.Context, spec *oramav1alpha1.
 			p := cluster.Spec.Tags[clusterPurposeTag]
 			if p == "" {
 				return nil, "", &setError{"NoPurpose", fmt.Sprintf("KubernetesCluster %s has no %q tag, so it is not known whether it is nonprod or production: nothing is applied", cluster.Name, clusterPurposeTag)}
+			}
+			if p == prodSupportPurpose {
+				// operator#456: a prod-support cluster runs support services for production
+				// (observability) and no customer or test workload.
+				return nil, "", &setError{"SupportCluster", fmt.Sprintf("KubernetesCluster %s is prod-support, which runs no customer or test workload: nothing is applied", cluster.Name)}
 			}
 			purposes[p] = append(purposes[p], cluster.Name)
 			purpose = p
@@ -690,6 +704,11 @@ func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, 
 	if req.Secrets, err = r.secretsFor(ctx, set.SetSpec(), resolved); err != nil {
 		return fail(err)
 	}
+	if r.kind.secrets != nil {
+		if req.Secrets, err = r.kind.secrets(ctx, r, merged, req.Secrets, resolved); err != nil {
+			return fail(err)
+		}
+	}
 	state, err := r.applier.ApplyMember(ctx, kubeconfig, req)
 	if err != nil {
 		return fail(err)
@@ -861,6 +880,11 @@ type LakeSetReconciler struct {
 	Scheme *runtime.Scheme
 	// Applier reaches a member's cluster. Nil means the real one; tests inject a fake.
 	Applier leafMemberApplier
+	// OperatorNamespace holds each zone's origin-pull CA Secret (orama-edge-origin-pull-<zone ID>),
+	// created once here and copied to every member that serves the zone (operator#633).
+	OperatorNamespace string
+	// Now is the clock for those certificates; nil uses time.Now.
+	Now func() time.Time
 }
 
 // OramaCloudV1SetReconciler installs OramaCloudV1 instances onto managed clusters (operator#391),
@@ -890,6 +914,7 @@ func (r *LakeSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	return (&managedSetReconciler{Client: r.Client, kind: lakeSetKind, applier: applierOr(r.Applier),
+		operatorNamespace: r.OperatorNamespace, now: r.Now,
 		e2eTests:   &setE2ETests{set: &set, observed: set.Status.DeepCopy()},
 		rehearsals: &setRehearsals{set: &set, observed: set.Status.DeepCopy()}}).reconcile(ctx, &set)
 }

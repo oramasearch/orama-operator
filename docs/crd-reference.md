@@ -1064,17 +1064,17 @@ one, `lake-<name>-edge`.
 |---|---|
 | `spec.type` | `cloudflare` (the only type). |
 | `spec.cloudflare.accountId` | Optional Cloudflare account ID; zone policies do not need it. |
-| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit, Zone > DNS > Read, Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone. For an `EdgeHostPolicy`, on each host's zone: Zone > Zone > Read, **Zone > Config Rules > Edit** (API permission group `Config Settings Write`, for `originTLS`) and **Zone > Single Redirect > Edit** (`Dynamic URL Redirects Write`, for `redirectToHTTPS`). Never written or logged. |
+| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit, Zone > DNS > Read, Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone (edge certificates and zone-level authenticated origin pulls). For an `EdgeHostPolicy`, on each host's zone: Zone > Zone > Read, **Zone > Config Rules > Edit** (API permission group `Config Settings Write`, for `originTLS`) and **Zone > Single Redirect > Edit** (`Dynamic URL Redirects Write`, for `redirectToHTTPS`). Never written or logged. |
 | `status.ready`, `status.message` | Whether the Secret and key exist. Whether the token is allowed what a kind needs is reported by that kind. |
 
 ## `EdgeZonePolicy` (separate CRD, namespaced) — secure a DNS zone's edge
 
 The provider-neutral request "secure this zone's edge" (operator#578). It has no settings and no off
-switch: it always means origin encryption Full, then Full (strict), authenticated origin pulls, an
-edge certificate for every proxied host more than one level below the apex (Cloudflare: an Advanced
-Certificate, lake#798), and Always Use HTTPS, each done only when its check passes, and never
-undone. Short name
-`edgezp`; `kubectl get edgezp -A` shows `Origin`, `AOP`, `HTTPS`, `Phase`. A Lake with a
+switch: it always means origin encryption Full, then Full (strict), authenticated origin pulls (global,
+then zone-level with the zone's own origin-pull certificate, operator#633), an edge certificate for
+every proxied host more than one level below the apex (Cloudflare: an Advanced Certificate,
+lake#798), and Always Use HTTPS, each done only when its check passes, and never undone. Short name
+`edgezp`; `kubectl get edgezp -A` shows `Origin`, `AOP`, `ZoneAOP`, `HTTPS`, `Phase`. A Lake with a
 `dnsSecretRef` owns one, `lake-<name>-edge`. The full contract, the checks and the order are in
 [`lake/origin-tls.md`](lake/origin-tls.md).
 
@@ -1082,13 +1082,15 @@ undone. Short name
 |---|---|
 | `spec.providerRef.name` | An `EdgeProvider` in this namespace. |
 | `spec.zoneID` | The provider's zone identifier (Cloudflare: the zone ID). |
+| `spec.originPullSecretRef.name` | Optional. A Secret in this namespace with the zone's origin-pull CA certificate and client certificate (`ca.crt`, `tls.crt`, `tls.key`), copied here by the managing cluster's `LakeSet` so every cluster serving the zone presents and trusts one CA ([operator#633](https://github.com/oramasearch/orama-operator/issues/633)). When set, this Secret is the only source: the operator never creates a CA or client certificate for the zone, waits while the Secret is missing, and fails while its CA cannot be read. Unset: the operator's own Secret `orama-edge-origin-pull-<zone ID>` in its namespace, created once. A Lake that a set manages sets it to `orama-edge-origin-pull-<zone ID>`; a Lake no set manages leaves it unset. |
 | `status.phase` | `Ready` (every setting on), `Progressing` (a setting waits on a check), `Failed` (the zone cannot be read or changed; the message names the missing permission). |
 | `status.originEncryption` | The zone's observed mode: `off`, `flexible`, `full` or `strict`. Lake Ingresses redirect HTTP only at `full` or `strict`. |
-| `status.authenticatedOriginPulls`, `status.originClientCAPEM` | Whether the edge presents its client certificate to origins, and the CA that signs it. Lake Ingresses require the certificate once this is on. |
+| `status.authenticatedOriginPulls`, `status.originClientCAPEM` | Whether the edge presents a client certificate that `originClientCAPEM` verifies, and that bundle: Cloudflare's global origin-pull CA and the zone's CA until the zone presents its own certificate, then the zone's CA alone. Lake Ingresses require the certificate once this is on. False while the zone may present a certificate of another CA. |
+| `status.zoneOriginPulls` | Whether the edge presents the zone's own client certificate, signed by the zone's CA (zone-level authenticated origin pulls). |
 | `status.alwaysUseHTTPS` | Whether the edge redirects plain HTTP. |
 | `status.zone` | The zone's name (`lake.live`), read with Zone > Zone > Read. The owning Lake's `Issuer` solves DNS-01 for this zone and every name under it, and HTTP-01 for any other name; empty keeps DNS-01 for every name ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). A refused read keeps the last name. |
 | `status.proxiedHosts`, `status.hosts[]` | How many proxied hosts the zone has, and up to 50 that fail a check: `{name, origin, edge}` with the reason for each leg. |
-| `status.conditions` | `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`, `AuthenticatedOriginPulls`, `EdgeCertificateOrders` (the edge certificates ordered, pending, or why an order is refused), `AlwaysUseHTTPS`, `ZoneName` (False names the missing Zone > Zone > Read; it does not change the phase). |
+| `status.conditions` | `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`, `AuthenticatedOriginPulls`, `ZoneOriginPulls` (zone-level pulls on, or what they wait for), `EdgeCertificateOrders` (the edge certificates ordered, pending, or why an order is refused), `AlwaysUseHTTPS`, `ZoneName` (False names the missing Zone > Zone > Read; it does not change the phase). |
 
 Several policies may name one zone (one per Lake); they ask for the same settings. Deleting a policy
 changes nothing in the zone.
@@ -1097,12 +1099,18 @@ changes nothing in the zone.
 
 Created and owned by an `EdgeZonePolicy` whose provider is `cloudflare`, with the same name; a person
 never writes one. The only kind that changes a Cloudflare zone's settings (`ssl`,
-`ssl_automatic_mode`, `tls_client_auth`, `always_use_https`). Short name `cfzp`.
+`ssl_automatic_mode`, `tls_client_auth`, `always_use_https`) and its zone-level origin-pull
+certificates (`origin_tls_client_auth`). It reads the zone's CA and client certificate from the
+Secret `spec.originPullSecretRef` names (a copy the managing cluster distributed; never written
+here), or, without one, from the Secret `orama-edge-origin-pull-<zone ID>` in the operator's
+namespace, which it creates once. On the managing cluster that Secret is the one the `LakeSet`s
+copy, so every cluster serving a zone uses one CA. Short name `cfzp`.
 
 | Field | Meaning |
 |---|---|
 | `spec.zoneID` | The Cloudflare zone. |
 | `spec.apiTokenSecretRef` | The provider's token Secret and key. |
+| `spec.originPullSecretRef` | The `EdgeZonePolicy`'s, copied. |
 | `status` | The same status as `EdgeZonePolicy`, which copies it. |
 
 ## `EdgeHostPolicy` (separate CRD, namespaced) — per-host Full (strict) and HTTPS redirect
@@ -1557,6 +1565,85 @@ Secret on its cluster with the other end's identity and address. Deleting it del
 | `status.phase` | `Ready` once both Secrets are current and both ends report an address. |
 | `status.ends[]` | `{name, identity, written, address, message}`. |
 
+## `ObservabilityProvider` (separate CRD, cluster-scoped) — an observability vendor's release
+
+Short name `obsprovider`. Lives on the managing cluster. Type `pixie` is self-hosted Pixie Cloud and
+Vizier built from our private copy `oramasearch/pixie` ([#455](https://github.com/oramasearch/orama-operator/issues/455)).
+Hubs and agents point at it, so every cluster runs the same build. Details:
+[`infrastructure/observability.md`](infrastructure/observability.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.type` | `pixie`. Immutable. |
+| `spec.pixie.commit` | The `oramasearch/pixie` commit the images were built from. Must equal the commit the operator vendors (`internal/controller/assets/pixie/COMMIT`), or the provider is not Ready. |
+| `spec.pixie.vizierVersion` / `.cliVersion` | The versions the hub's artifact tracker reports; pinned, so Pixie never offers another. |
+| `spec.pixie.images` | Every image the operator renders, by key, as `repository@sha256:<digest>` (CEL). A missing, unknown or tag-only image makes the provider not Ready. The key set is in [`observability.md`](infrastructure/observability.md#images). |
+| `status.ready` / `.message` | Whether the release can be installed, and why not. |
+| `status.hubs` / `.agents` | How many use it. |
+
+## `ObservabilityHub` (separate CRD, cluster-scoped) — one purpose's observability hub
+
+Short name `obshub`. Lives on the managing cluster, which writes a `PixieCloud` onto the hub's
+cluster. A hub runs only on a cluster tagged `purpose: prod-support` (serving production) or
+`purpose: nonprod` (serving nonprod); on any other cluster it is `Refused`.
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef` | The `ObservabilityProvider`. |
+| `spec.clusterRef` | The hub's `KubernetesCluster`. Immutable. |
+| `spec.domain` | The host name people reach the UI under (and `work.<domain>`). No DNS record or public exposure is created. |
+| `spec.organization` / `.adminEmail` | The one organisation every agent's cluster is registered under, and its administrator. The password is generated into Secret `plc/pixie-admin` on the hub's cluster. |
+| `spec.imagePullSecretRef` | Registry credentials on the managing cluster, copied as `plc/pixie-pull` under the production-credential rules. |
+| `spec.storage` | `storageClassName`, `postgres` (default 20Gi), `search` (20Gi), `messaging` (10Gi), `metrics` (100Gi, the hub Prometheus). |
+| `spec.metricsRetention` | How long the hub Prometheus keeps the metrics it federates from every cluster it serves (default `30d`). |
+| `spec.alerting.receivers[]` | `{name, severities?, slack: {urlSecretRef, channel?} \| webhook: {urlSecretRef}}`: where every alert of the hub's cluster and of every agent's cluster goes. |
+| `status.phase` | `Pending \| Progressing \| Ready \| Degraded \| Refused`, from the `PixieCloud`. |
+| `status.purpose` / `.concreteRef` / `.ready` / `.components[]` | The hub cluster's purpose, the concrete resource, `n/total` and one entry per component. |
+| `status.agents[]` | `{name, cluster, connected, metricsConnected}` for each accepted agent: Pixie's heartbeat, and the hub Prometheus reading the cluster's metrics. |
+
+## `ObservabilityAgent` (separate CRD, cluster-scoped) — one cluster's agents
+
+Short name `obsagent`. Lives on the managing cluster, which writes a `PixieVizier` onto the agent's
+cluster, links it to its hub (a `PeerConnection` pair and a `PeerLink`), and delivers the deploy key
+the hub issued for that cluster alone. An agent whose cluster's purpose may not report to its hub
+(production and prod-support report only to a prod-support hub, nonprod only to a nonprod hub) is
+`Refused`, and nothing of it is left on any cluster.
+
+| Field | Meaning |
+|---|---|
+| `spec.clusterRef` | The agent's `KubernetesCluster`. Immutable. |
+| `spec.hubRef` | The `ObservabilityHub`. |
+| `spec.imagePullSecretRef` | Registry credentials, copied as `pl/pixie-pull` under the production-credential rules. |
+| `spec.nodeMemory` | Each node agent's memory (default 2Gi, at least 1Gi); its data store is 60% of it. |
+| `status.phase` | `Pending \| Progressing \| Ready \| Degraded \| Refused`. `Ready` needs the agents ready and the hub seeing the cluster heartbeat. |
+| `status.purpose` / `.hubPurpose` / `.link` | Both clusters' purposes, and `local` or the `PeerLink` that carries the link. |
+| `status.ready` / `.components[]` / `.connected` / `.metricsConnected` | From the `PixieVizier` and the hub. |
+
+## `PixieCloud` (separate CRD, namespaced) — self-hosted Pixie Cloud
+
+Short name `pxcloud`. Written by an `ObservabilityHub` into namespace `plc` of the hub's cluster;
+nobody writes it by hand. The cluster's own operator runs Pixie Cloud from the vendored manifests,
+with OpenSearch instead of Elastic's, a CloudNativePG database with one role per service, the PxL
+script server, minted certificates and keys, a default-deny sandbox, and the bootstrap
+(administrator, organisation, one deploy key per agent). `spec` mirrors the hub (`release`, `hub`,
+`purpose`, `cluster`, `metricsRetention`, `domain`, `organization`, `adminEmail`, `pullSecretName`,
+`storage`), plus
+`agents[] {name, cluster}` (only agents the managing cluster accepted) and `alertRoutes[]`.
+It also runs the hub Prometheus (federating every cluster it serves over their peer links), its
+hub-scoped rules and dashboards. `status` has `phase`, `ready`, `components[]`, `agents[] {name,
+deployKeySecret, registered, connected, metricsConnected}`, `caCertificate` (the hub's public trust root) and the `Ready` and `Alerting` conditions.
+
+## `PixieVizier` (separate CRD, namespaced) — Pixie's agents on a cluster
+
+Short name `pxvizier`. Written by an `ObservabilityAgent` into namespace `pl` of the agent's cluster.
+The cluster's own operator runs Vizier (node agents, Kelvin, query broker, metadata, cloud connector,
+NATS) with auto-update off and no updater, its own CA and signing key, and a default-deny sandbox.
+`spec`: `release` (empty while the provider is not installable: the alert routing and rules are
+written anyway and Vizier waits), `agent`, `purpose`, `clusterName`, `cloudAddress` (the hub's vzconn, never under
+`.svc.cluster.local`), `cloudCASecretName`, `deployKeySecretName`, `pullSecretName`, `nodeMemory`,
+`alertRoutes[]`. `status`: `phase`, `ready`, `components[]`, `clusterID` (what the hub registered),
+and the `Ready` and `Alerting` conditions.
+
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 
 Provisions a **Clerk application per environment** (dev/testing/staging/prod) via the Clerk
@@ -1631,7 +1718,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.tls.secretName` | Optional hand-supplied `kubernetes.io/tls` Secret in `spec.namespace` for `host` and `apexHost`. Empty (the normal case) uses the certificates the operator issues: every Lake Ingress serves HTTPS either way. Without it, the Lake's `Issuer` issues every host: DNS-01 in the `dnsSecretRef` zone, HTTP-01 for any other host and for a Lake with no `dnsSecretRef` ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). See [`lake/origin-tls.md`](lake/origin-tls.md). |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
 | `spec.ingressClassName` | `nginx` (default) or `zetta-tunnel`: which ingress serves the Lake's Ingress and its environments'. DNS follows, because it is written from the Ingress's address. The per-cluster cutover sets it in the cluster's set member ([`infrastructure/ingress.md`](infrastructure/ingress.md)). |
-| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`, for names in the zone; other names and a Lake without `dnsSecretRef` use HTTP-01), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit, **Zone > Zone Settings > Edit**, Zone > Zone > Read and **Zone > SSL and Certificates > Edit** (edge certificates for app hosts, lake#798). |
+| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`, for names in the zone; other names and a Lake without `dnsSecretRef` use HTTP-01), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit, **Zone > Zone Settings > Edit**, Zone > Zone > Read and **Zone > SSL and Certificates > Edit** (edge certificates for app hosts, lake#798, and zone-level authenticated origin pulls, operator#633). |
 | `spec.region` | `{name, label}`: where the Lake runs, for its region picker (decision 64). Rendered as `LAKE_REGION` and `LAKE_REGION_LABEL`. In a LakeSet, `name` comes from the member's cluster ([`lake/README.md#regions`](lake/README.md#regions)). |
 | `spec.regions` | The deployment's regions as the picker offers them, `[{name, label, host, latitude, longitude}]`, rendered as `LAKE_REGIONS` (JSON). A LakeSet computes it from its members. |
 | `spec.apexHost` | A second host the Lake answers (the region picker, e.g. `lake.live`). With `ingressEnabled` + `host`, adds an Ingress rule (and TLS host) and, with `dnsSecretRef`, an owned proxied `<lake>-apex-dns` record; rendered as `LAKE_APEX_HOST`. Removing it removes both. |
@@ -1937,6 +2024,7 @@ How it fits: [`infrastructure/README.md`](infrastructure/README.md#installing-it
 | `spec.dependsOn[]` | Other `ClusterHelmRelease` names, on the same cluster, that must be `Ready` first. A release others depend on is not uninstalled until they are deleted. |
 | `spec.requiredCRDs[]` | CRDs that must exist on the cluster before this chart is installed or upgraded. |
 | `spec.crdURLs[]` | `https://` URLs of manifests holding CRDs the chart ships apart from itself. Applied server-side before the chart on every install and upgrade; a manifest holding anything but CustomResourceDefinitions is refused. |
+| `spec.imagePullSecretRef` / `.imagePullSecretAs` | Registry credentials on the managing cluster, copied into the release's namespace (under `imagePullSecretAs`, default its own name) before every install and upgrade, for a chart whose images come from a private registry; the chart's values name the copy. A Secret production uses is never copied to a cluster that is not production (`Degraded`, `ProductionCredential`), and a production-tier cluster's release pull Secret counts as production. |
 | `status.phase` | `Pending` (waiting for the cluster, a dependency or a CRD), `Installing`, `Ready`, `Degraded` or `Deleting`. |
 | `status.chartVersion`, `.appVersion`, `.revision`, `.releaseStatus` | The release on the cluster, in Helm's words. |
 | `status.workloads`, `.readyWorkloads` | The release's Deployments, StatefulSets and DaemonSets, and how many are rolled out. |
@@ -1968,7 +2056,7 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | Field | Meaning |
 |---|---|
 | `spec.template` | The instance's spec (a `Lake`'s, an `OramaCloudV1`'s), the default for every member. Validated by each member's cluster when applied. A `LakeSet` template does not set `namespace`; an `OramaCloudV1Set` template does not set `region.name`. |
-| `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). |
+| `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). A `LakeSet` also copies one Secret on its own: each member whose `dnsSecretRef` names a Secret the set copies gets its zone's origin-pull Secret `orama-edge-origin-pull-<zone ID>` (CA certificate and client certificate, never the CA key), which the set creates once in the operator's namespace on this cluster and renews; it is labelled with the purpose of the first member that needed it and refused for a member of another purpose ([operator#633](https://github.com/oramasearch/orama-operator/issues/633), [`lake/origin-tls.md`](lake/origin-tls.md#zone-level-authenticated-origin-pulls-the-operators-own-certificate)). A Secret listed under that name is replaced by it. |
 | `spec.clusters[]` | The members, 1 to 64. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). The cap of 64 holds for both kinds because they share this shape: the `OramaCloudV1Set` rule that each migration names one member loops over the members, and the API server refuses a CEL rule over an unbounded list. |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
 | `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members ([`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)). `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |
@@ -2016,8 +2104,15 @@ it or another `OramaOperator` names it for a cluster tagged `production`. The re
 `Degraded` with reason `ProductionCredential`, nothing reaches its cluster (no pull Secret, no chart
 pull, no release change), and it is looked at again every five minutes. Give the cluster its own
 Secret in `spec.imagePullSecretRef`, copied under the old name with `spec.imagePullSecretAs`. The
-sets count a production `OramaOperator`'s pull Secret as production too. Nothing else copies a
-Secret from the managing cluster to a managed one: a `ClusterHelmRelease`'s
+sets count a production `OramaOperator`'s pull Secret as production too.
+**`ObservabilityHub` and `ObservabilityAgent` keep the same rule** (operator#15) for the pull Secret
+and the alert receivers they copy; a refused one is `Refused` and nothing reaches its cluster. A
+production-tier agent's pull Secret and a prod-support hub's pull Secret and receivers count as
+production. **`prod-support` is production tier** (operator#456): a Secret production uses, or one
+labelled `orama.cloud/purpose: production`, may be copied to a `prod-support` cluster, and never to
+`nonprod`. A `LakeSet` or `OramaCloudV1Set` naming a `prod-support` cluster is refused
+(`SupportCluster`): it runs no customer or test workload. Nothing else copies a Secret from the
+managing cluster to a managed one: a `ClusterHelmRelease`'s
 `chart.credentialsSecretRef` and a `KubernetesClusterProvider`'s `credentialsSecretRef` are read on
 the managing cluster only, and a `KubernetesCluster`'s kubeconfig is written there.
 

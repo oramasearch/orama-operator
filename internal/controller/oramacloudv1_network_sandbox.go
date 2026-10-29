@@ -114,6 +114,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	analytics := oramaCloudComponentSelector(oc, "analytics")
 	search := oramaCloudComponentSelector(oc, "search")
 	dashboard := oramaCloudComponentSelector(oc, "dashboard")
+	dashboardCrons := oramaCloudComponentSelector(oc, dashboardCronsComponent)
 	docs := oramaCloudComponentSelector(oc, "docs")
 	workers := oramaCloudComponentSelector(oc, "workers")
 	indexBuilder := oramaCloudComponentSelector(oc, "index-builder")
@@ -365,6 +366,14 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudIngressPolicy("allow-dashboard-internal-ingress", dashboard, ingressFrom(indexBuilder, 3000)),
 		),
 		sandboxAllowance(
+			"Dashboard cron pods call the dashboard's crawler, index GC and consumption sync routes (operator#1043).",
+			oramaCloudEgressPolicy("allow-dashboard-crons-egress", dashboardCrons, egressTo(dashboard, 3000)),
+		),
+		sandboxAllowance(
+			"Dashboard accepts its cron pods' scheduled API calls (operator#1043).",
+			oramaCloudIngressPolicy("allow-dashboard-crons-ingress", dashboard, ingressFrom(dashboardCrons, 3000)),
+		),
+		sandboxAllowance(
 			"The import consumer calls the dashboard's private get-source and status routes (operator#446).",
 			oramaCloudEgressPolicy("allow-import-consumer-egress", importConsumer, egressTo(dashboard, 3000)),
 		),
@@ -587,6 +596,10 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		)
 		allowances = append(allowances, preserved...)
 		internetErr = errors.Join(internetErr, preserveErr)
+	}
+
+	if monitoringInstalled(r.Client) {
+		allowances = append(allowances, oramaCloudScrapeAllowances(engine, cnpgPods)...)
 	}
 
 	labels := labelsFor(oc, "network-sandbox")

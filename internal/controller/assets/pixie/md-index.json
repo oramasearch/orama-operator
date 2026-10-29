@@ -1,0 +1,122 @@
+{
+  "settings": {
+    "index": {
+      "store": {
+        "preload": [
+          "nvd",
+          "dvd",
+          "tim",
+          "doc",
+          "dim"
+        ]
+      },
+      "max_ngram_diff": "10",
+      "number_of_shards": "4",
+      "analysis": {
+        "filter": {
+          "dont_split_on_numerics": {
+            "type": "word_delimiter",
+            "preserve_original": "true",
+            "generate_number_parts": "false"
+          }
+        },
+        "tokenizer": {
+          "ngram_tokenizer": {
+            "type": "nGram",
+            "min_gram": "1",
+            "max_gram": "10",
+            "token_chars": [
+              "letter",
+              "digit",
+              "custom"
+            ],
+            "custom_token_chars": "-/"
+          },
+          "search_tokenizer": {
+            "type": "char_group",
+            "tokenize_on_chars": [
+              "whitespace",
+	            "-",
+              "\n",
+	            "/",
+	            "_"
+            ]
+          }
+        },
+        "analyzer": {
+          "autocomplete": {
+            "type": "custom",
+            "tokenizer": "ngram_tokenizer",
+            "filter": [
+              "lowercase"
+            ]
+          },
+          "autocomplete_search": {
+            "tokenizer": "search_tokenizer",
+            "filter": [
+              "lowercase"
+            ]
+          },
+          "myAnalyzer": {
+            "type": "custom",
+            "tokenizer": "whitespace",
+            "filter": [
+              "dont_split_on_numerics"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "orgID": {
+        "type": "text",
+        "analyzer": "myAnalyzer",
+        "eager_global_ordinals": true
+      },
+      "vizierID": {
+        "type": "text",
+        "analyzer": "myAnalyzer"
+      },
+      "clusterUID": {
+        "type": "text",
+        "analyzer": "myAnalyzer",
+        "eager_global_ordinals": true
+      },
+      "uid": {
+        "type": "text"
+      },
+      "name": {
+        "type": "text",
+        "analyzer": "autocomplete",
+        "search_analyzer": "autocomplete_search",
+        "eager_global_ordinals": true,
+        "fields": {
+          "keyword": {
+            "type": "keyword"
+          }
+        }
+      },
+      "kind": {
+        "type": "text",
+        "eager_global_ordinals": true
+      },
+      "timeStartedNS": {
+        "type": "long"
+      },
+      "timeStoppedNS": {
+        "type": "long"
+      },
+      "relatedEntityNames": {
+        "type": "text"
+      },
+      "updateVersion": {
+        "type": "long"
+      },
+      "state": {
+        "type": "integer"
+      }
+    }
+  }
+}

@@ -241,7 +241,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		return err
 	}
 	if def.ingressHost != "" {
-		return r.upsertIngress(ctx, oc, name, def.component, ingressSpec(oc, name, def.ingressHost, def.ingressExtraHosts, def.port))
+		return r.upsertIngress(ctx, oc, name, def.component, ingressSpec(oc, name, def.ingressHost, def.ingressExtraHosts, def.port), "")
 	}
 	return nil
 }
@@ -284,9 +284,11 @@ func ingressSpec(oc *oramav1alpha1.OramaCloudV1, name, host string, extraHosts [
 
 // upsertIngress writes a component's Ingress from spec (ingressSpec). The rules are replaced whole,
 // so a removed extra host loses its route and certificate, and applyIngressTLS requests origin TLS
-// from the stack's Issuer for every host. It fails, leaving any existing Ingress as it is, while the
-// stack has no Cloudflare token for the Issuer.
-func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, spec networkingv1.IngressSpec) error {
+// from the stack's Issuer for every host. bodySize, when set, is ingress-nginx's request body limit
+// for the Ingress (the engine's, cloudv1_networking.go); "" removes the annotation, leaving nginx's
+// 1m default. It fails, leaving any existing Ingress as it is, while the stack has no Cloudflare
+// token for the Issuer.
+func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, spec networkingv1.IngressSpec, bodySize string) error {
 	issuer, err := stackIngressIssuer(oc)
 	if err != nil {
 		return err
@@ -296,6 +298,14 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 		ing.Labels = labelsFor(oc, component)
 		ing.Spec.IngressClassName = spec.IngressClassName
 		ing.Spec.Rules = spec.Rules
+		if bodySize == "" {
+			delete(ing.Annotations, annotationNginxProxyBodySize)
+		} else {
+			if ing.Annotations == nil {
+				ing.Annotations = map[string]string{}
+			}
+			ing.Annotations[annotationNginxProxyBodySize] = bodySize
+		}
 		// Origin TLS from the stack's Issuer, after the rules: every host gets a certificate (#457).
 		if err := applyIngressTLS(ing, issuer); err != nil {
 			return err

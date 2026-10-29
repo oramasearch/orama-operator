@@ -1,0 +1,184 @@
+# Pixie Vizier NATS — kustomize output of oramasearch/pixie k8s/vizier_deps/base/nats, vendored verbatim.
+# Commit: 4b445e0b7907c79d034bcb4a227bbaede94d370a
+# Copyright 2018- The Pixie Authors. Licensed under the Apache License, Version 2.0 (LICENSE).
+# Regenerate: hack/fetch-pixie-manifests.sh   (do NOT hand-edit; pixie_render.go transforms it)
+apiVersion: v1
+data:
+  nats.conf: |
+    pid_file: "/var/run/nats/nats.pid"
+    http: 8222
+
+    tls {
+      ca_file: "/etc/nats-server-tls-certs/ca.crt",
+      cert_file: "/etc/nats-server-tls-certs/server.crt",
+      key_file: "/etc/nats-server-tls-certs/server.key",
+      timeout: 3
+      verify: true
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    app: pl-monitoring
+  name: nats-config
+  namespace: pl
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: pl-monitoring
+    name: pl-nats
+  name: pl-nats
+  namespace: pl
+spec:
+  ports:
+  - name: client
+    port: 4222
+  selector:
+    app: pl-monitoring
+    name: pl-nats
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: pl-monitoring
+    name: pl-nats
+  name: pl-nats-mgmt
+  namespace: pl
+spec:
+  clusterIP: None
+  ports:
+  - name: cluster
+    port: 6222
+  - name: monitor
+    port: 8222
+  - name: metrics
+    port: 7777
+  - name: leafnodes
+    port: 7422
+  - name: gateways
+    port: 7522
+  selector:
+    app: pl-monitoring
+    name: pl-nats
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: pl-monitoring
+    name: pl-nats
+  name: pl-nats
+  namespace: pl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pl-monitoring
+      name: pl-nats
+  serviceName: pl-nats
+  template:
+    metadata:
+      labels:
+        app: pl-monitoring
+        name: pl-nats
+        plane: control
+    spec:
+      containers:
+      - command:
+        - nats-server
+        - --config
+        - /etc/nats-config/nats.conf
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLUSTER_ADVERTISE
+          value: $(POD_NAME).pl-nats.$(POD_NAMESPACE).svc
+        image: ghcr.io/pixie-io/nats:2.9.25-scratch-pl1@sha256:ac7228464fbc7154e91c9a00cba85b5da1df9a3ded6c784cdd6009cece85a1e3
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - /nats-server -sl=ldm=/var/run/nats/nats.pid && /bin/sleep 60
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8222
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        name: pl-nats
+        ports:
+        - containerPort: 4222
+          name: client
+        - containerPort: 7422
+          name: leafnodes
+        - containerPort: 6222
+          name: cluster
+        - containerPort: 8222
+          name: monitor
+        - containerPort: 7777
+          name: metrics
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8222
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /etc/nats-config
+          name: config-volume
+        - mountPath: /etc/nats-server-tls-certs
+          name: nats-server-tls-volume
+        - mountPath: /var/run/nats
+          name: pid
+      securityContext:
+        fsGroup: 10100
+        runAsGroup: 10100
+        runAsNonRoot: true
+        runAsUser: 10100
+        seccompProfile:
+          type: RuntimeDefault
+      shareProcessNamespace: true
+      terminationGracePeriodSeconds: 60
+      tolerations:
+      - effect: NoSchedule
+        key: kubernetes.io/arch
+        operator: Equal
+        value: amd64
+      - effect: NoExecute
+        key: kubernetes.io/arch
+        operator: Equal
+        value: amd64
+      - effect: NoSchedule
+        key: kubernetes.io/arch
+        operator: Equal
+        value: arm64
+      - effect: NoExecute
+        key: kubernetes.io/arch
+        operator: Equal
+        value: arm64
+      volumes:
+      - name: nats-server-tls-volume
+        secret:
+          secretName: service-tls-certs
+      - configMap:
+          name: nats-config
+        name: config-volume
+      - emptyDir: {}
+        name: pid

@@ -75,6 +75,20 @@ type ClusterHelmReleaseSpec struct {
 	// +listType=set
 	// +kubebuilder:validation:items:Pattern=`^https://`
 	CRDURLs []string `json:"crdURLs,omitempty"`
+
+	// ImagePullSecretRef names registry credentials on this cluster, copied into the release's
+	// namespace before every install and upgrade, for a chart whose images come from a private
+	// registry (the observability charts' mirrors, operator#15). The chart's values name it. A
+	// Secret production uses is never copied to a cluster that is not production.
+	// +optional
+	ImagePullSecretRef *ClusterSecretReference `json:"imagePullSecretRef,omitempty"`
+
+	// ImagePullSecretAs is the copy's name in the release's namespace. Defaults to
+	// imagePullSecretRef's name.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	// +optional
+	ImagePullSecretAs string `json:"imagePullSecretAs,omitempty"`
 }
 
 // ClusterHelmReleaseStatus is what the cluster has.

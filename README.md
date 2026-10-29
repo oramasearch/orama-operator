@@ -51,7 +51,9 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.10.6** (2026-10-27), a patch: an App or environment is Ready only when its rollout
+The current release is **v0.11.0** (2026-10-29), a minor release: observability kinds and a self-hosted Pixie,
+zone-level authenticated origin pulls, and four Cloud v1 fixes ([`docs/releases/v0.11.0.md`](docs/releases/v0.11.0.md)).
+Before it, **v0.10.6** (2026-10-27), a patch: an App or environment is Ready only when its rollout
 is complete ([`docs/releases/v0.10.6.md`](docs/releases/v0.10.6.md)). Before it, **v0.10.5** (2026-10-27), a patch: App hosts stop flapping to Cloudflare 526
 ([`docs/releases/v0.10.5.md`](docs/releases/v0.10.5.md)). Before that, **v0.10.4** (2026-10-26), a patch: agents default to `gpt-6.1-sol`, and a Lake restart
 replaces the App's pods ([`docs/releases/v0.10.4.md`](docs/releases/v0.10.4.md)). Before that, **v0.10.3** (2026-10-25), a patch: the Cloud v1 writer embeds 64 texts per batch, not

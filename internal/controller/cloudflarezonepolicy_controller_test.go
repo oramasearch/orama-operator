@@ -34,12 +34,19 @@ type fakeCloudflareZone struct {
 	// name is the zone's name, answered at GET /zones/zone-1; empty answers 404.
 	name string
 	// deny maps "METHOD setting" (or "GET dns_records", "GET zone", "GET certificate_packs",
-	// "POST order", "POST order subscription") to a refusal.
+	// "POST order", "POST order subscription", "GET origin_tls_client_auth",
+	// "POST origin_tls_client_auth") to a refusal.
 	deny    map[string]bool
 	patches []string
 	// packs are the zone's certificate packs; orders records every order's hosts.
 	packs  []cfCertificatePack
 	orders [][]string
+	// clientCerts are the zone-level origin-pull certificates; zoneAOP is their enablement.
+	clientCerts []cfZoneClientCert
+	zoneAOP     bool
+	// uploadStatus is the status of an uploaded certificate (default active).
+	uploadStatus string
+	nextCert     int
 }
 
 func (z *fakeCloudflareZone) handler(t *testing.T) http.Handler {
@@ -97,6 +104,52 @@ func (z *fakeCloudflareZone) handler(t *testing.T) http.Handler {
 				t.Errorf("records listed without proxied=true")
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": z.records, "result_info": map[string]int{"page": 1, "total_pages": 1}})
+		case path == "origin_tls_client_auth/settings":
+			if z.deny[r.Method+" origin_tls_client_auth"] {
+				http.Error(w, `{"success":false}`, http.StatusForbidden)
+				return
+			}
+			if r.Method == http.MethodPut {
+				var body map[string]bool
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				z.zoneAOP = body["enabled"]
+				z.patches = append(z.patches, fmt.Sprintf("zone_aop=%v", z.zoneAOP))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]bool{"enabled": z.zoneAOP}})
+		case path == "origin_tls_client_auth":
+			if z.deny[r.Method+" origin_tls_client_auth"] {
+				http.Error(w, `{"success":false}`, http.StatusForbidden)
+				return
+			}
+			if r.Method == http.MethodPost {
+				var body map[string]string
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if !strings.Contains(body["private_key"], "PRIVATE KEY") {
+					t.Errorf("upload without a private key")
+				}
+				z.nextCert++
+				status := z.uploadStatus
+				if status == "" {
+					status = "active"
+				}
+				cert := cfZoneClientCert{ID: fmt.Sprintf("cert-%d", z.nextCert), Certificate: body["certificate"], Status: status}
+				z.clientCerts = append(z.clientCerts, cert)
+				z.patches = append(z.patches, "upload="+cert.ID)
+				_ = json.NewEncoder(w).Encode(map[string]any{"result": cert})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": z.clientCerts})
+		case strings.HasPrefix(path, "origin_tls_client_auth/") && r.Method == http.MethodDelete:
+			id := strings.TrimPrefix(path, "origin_tls_client_auth/")
+			for i, cert := range z.clientCerts {
+				if cert.ID == id {
+					z.clientCerts = append(z.clientCerts[:i], z.clientCerts[i+1:]...)
+					z.patches = append(z.patches, "delete="+id)
+					_ = json.NewEncoder(w).Encode(map[string]any{"result": cert})
+					return
+				}
+			}
+			http.NotFound(w, r)
 		case strings.HasPrefix(path, "settings/"):
 			name := strings.TrimPrefix(path, "settings/")
 			if z.deny[r.Method+" "+name] {
@@ -127,6 +180,18 @@ type fakeEdgeProber struct {
 	originInvalid map[string]bool // handshake works, certificate invalid
 	originNoTLS   map[string]bool // no TLS at all
 	edgeInvalid   map[string]bool
+	// clientCAs, when set, answers ClientCAs; nil means no origin asks for a client certificate.
+	clientCAs func(name string) (bool, [][]byte, error)
+}
+
+func (p fakeEdgeProber) ClientCAs(_ context.Context, _, name string) (bool, [][]byte, error) {
+	if p.originNoTLS[name] {
+		return false, nil, errors.New("connection refused")
+	}
+	if p.clientCAs == nil {
+		return false, nil, nil
+	}
+	return p.clientCAs(name)
 }
 
 func (p fakeEdgeProber) Origin(_ context.Context, _, name string) (bool, error) {
@@ -222,8 +287,10 @@ func TestZonePolicyWaitsForOriginCertificatesBeforeStrict(t *testing.T) {
 	if len(st.Hosts) != 1 || st.Hosts[0].Name != "*.eu.lake.live" || st.Hosts[0].Origin == "" || st.Hosts[0].Edge == "" {
 		t.Errorf("hosts = %+v", st.Hosts)
 	}
-	if st.OriginClientCAPEM != cloudflareOriginPullCA {
-		t.Error("status does not carry the edge's client CA")
+	// No origin asks for a client certificate yet, so the zone already presents its own, and the
+	// origins verify against the operator's CA alone.
+	if !st.ZoneOriginPulls || st.OriginClientCAPEM == "" || strings.Contains(st.OriginClientCAPEM, cloudflareOriginPullCA) {
+		t.Error("status does not carry the operator's client CA alone")
 	}
 }
 
