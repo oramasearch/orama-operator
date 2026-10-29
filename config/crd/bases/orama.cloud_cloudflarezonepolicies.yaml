@@ -23,6 +23,9 @@ spec:
     - jsonPath: .status.authenticatedOriginPulls
       name: AOP
       type: boolean
+    - jsonPath: .status.zoneOriginPulls
+      name: ZoneAOP
+      type: boolean
     - jsonPath: .status.alwaysUseHTTPS
       name: HTTPS
       type: boolean
@@ -77,6 +80,22 @@ spec:
                 - key
                 - name
                 type: object
+              originPullSecretRef:
+                description: |-
+                  OriginPullSecretRef is the EdgeZonePolicy's: the zone's distributed origin-pull Secret in this
+                  namespace. Unset, the operator's own per-cluster Secret.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               zoneID:
                 description: ZoneID is the Cloudflare zone.
                 minLength: 1
@@ -95,13 +114,15 @@ spec:
                   to HTTPS.
                 type: boolean
               authenticatedOriginPulls:
-                description: AuthenticatedOriginPulls is whether the edge presents
-                  its client certificate to origins.
+                description: |-
+                  AuthenticatedOriginPulls is whether the edge presents a client certificate that
+                  originClientCAPEM verifies, so origins may require it. It is false while the zone may present
+                  a certificate the bundle cannot verify (one of another CA).
                 type: boolean
               conditions:
                 description: |-
                   Conditions: Credentials, OriginCertificates, EdgeCertificates, OriginTLSStrict,
-                  AuthenticatedOriginPulls, EdgeCertificateOrders, AlwaysUseHTTPS, ZoneName.
+                  AuthenticatedOriginPulls, ZoneOriginPulls, EdgeCertificateOrders, AlwaysUseHTTPS, ZoneName.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -191,8 +212,10 @@ spec:
                 format: int64
                 type: integer
               originClientCAPEM:
-                description: OriginClientCAPEM is the CA that signs the edge's client
-                  certificate, for origins to verify.
+                description: |-
+                  OriginClientCAPEM is what origins verify the edge's client certificate against: Cloudflare's
+                  global origin-pull CA and the zone's origin-pull CA until the zone presents its own
+                  certificate, then the zone's CA alone.
                 type: string
               originEncryption:
                 description: |-
@@ -214,6 +237,12 @@ spec:
                   Lake's Issuer solves DNS-01 for this zone and every name under it, and HTTP-01 for any other
                   name; until the zone is known it solves DNS-01 for every name (operator#632).
                 type: string
+              zoneOriginPulls:
+                description: |-
+                  ZoneOriginPulls is whether the edge presents the zone's own client certificate, signed by the
+                  zone's origin-pull CA (zone-level authenticated origin pulls), rather than Cloudflare's certificate
+                  shared by every account.
+                type: boolean
             type: object
         required:
         - spec

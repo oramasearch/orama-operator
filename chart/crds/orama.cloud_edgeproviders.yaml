@@ -67,10 +67,10 @@ spec:
                       the kinds that use the provider. An EdgeZonePolicy needs, on its zone: Zone > Zone Settings >
                       Edit, Zone > DNS > Read (DNS > Edit includes it), Zone > Zone > Read (the zone's name), and
                       Zone > SSL and Certificates > Edit to order edge certificates for hosts more than one level
-                      below the apex. An EdgeHostPolicy needs, on each host's zone: Zone > Zone > Read, Zone > Config
-                      Rules > Edit (API permission group "Config Settings Write", for originTLS) and Zone > Single
-                      Redirect > Edit ("Dynamic URL Redirects Write", for redirectToHTTPS). The operator never writes
-                      or logs it.
+                      below the apex and for zone-level authenticated origin pulls. An EdgeHostPolicy needs, on each
+                      host's zone: Zone > Zone > Read, Zone > Config Rules > Edit (API permission group "Config
+                      Settings Write", for originTLS) and Zone > Single Redirect > Edit ("Dynamic URL Redirects
+                      Write", for redirectToHTTPS). The operator never writes or logs it.
                     properties:
                       key:
                         description: Key is the key in the Secret's data.

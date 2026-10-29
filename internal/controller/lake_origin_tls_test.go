@@ -544,3 +544,32 @@ func certManagerTestCRDs() []*apiextensionsv1.CustomResourceDefinition {
 		crd("certificates", "certificate", "Certificate"),
 	}
 }
+
+// A Lake a set manages points its zone policy at the zone's distributed origin-pull Secret, which
+// the set copies before it applies the Lake; a Lake no set manages leaves it unset, so its
+// cluster's operator keeps its own (operator#633).
+func TestASetManagedLakeUsesTheDistributedOriginPullSecret(t *testing.T) {
+	s := newLakeScheme(t)
+	ctx := context.Background()
+	for _, managed := range []bool{false, true} {
+		lake, secret := originTLSLake()
+		if managed {
+			lake.Labels = map[string]string{managedBySetLabel: "LakeSet.lake-prod"}
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, secret).Build()
+		if err := reconcileLakeEdgePolicy(ctx, c, s, lake, nil); err != nil {
+			t.Fatal(err)
+		}
+		var policy oramav1alpha1.EdgeZonePolicy
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); err != nil {
+			t.Fatal(err)
+		}
+		ref := policy.Spec.OriginPullSecretRef
+		switch {
+		case managed && (ref == nil || ref.Name != originPullSecretName("zone-lake-live")):
+			t.Errorf("a set-managed Lake: ref = %+v", ref)
+		case !managed && ref != nil:
+			t.Errorf("a Lake no set manages: ref = %+v", ref)
+		}
+	}
+}

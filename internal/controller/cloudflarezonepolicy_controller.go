@@ -97,6 +97,10 @@ const (
 	cfPermissionSettingsRead = "Zone > Zone Settings > Read (Edit includes it)"
 	cfPermissionSettingsEdit = "Zone > Zone Settings > Edit"
 	cfPermissionDNSRead      = "Zone > DNS > Read (Edit includes it)"
+	// The SSL and Certificates permissions cover the edge certificate orders
+	// (cloudflare_edge_certificates.go) and zone-level origin pulls (cloudflarezonepolicy_originpull.go).
+	cfPermissionCertificatesRead = "Zone > SSL and Certificates > Read (Edit includes it)"
+	cfPermissionCertificatesEdit = "Zone > SSL and Certificates > Edit"
 	// cfPermissionZoneRead ("Zone > Zone > Read") is declared with the host policy's permissions.
 )
 
@@ -108,6 +112,9 @@ type edgeProber interface {
 	// Edge resolves serverName, dials it on 443 and returns nil when the edge presents a valid
 	// certificate for it.
 	Edge(ctx context.Context, serverName string) error
+	// ClientCAs dials address:443 with SNI serverName and reports whether the origin asks for a
+	// client certificate and, if so, the subjects (DER) of the CAs it accepts.
+	ClientCAs(ctx context.Context, address, serverName string) (requested bool, acceptable [][]byte, err error)
 }
 
 // tlsEdgeProber is the real prober: Go's TLS client with the system roots (the operator image is
@@ -135,6 +142,39 @@ func (tlsEdgeProber) Origin(ctx context.Context, address, serverName string) (bo
 	return true, verifyErr
 }
 
+func (tlsEdgeProber) ClientCAs(ctx context.Context, address, serverName string) (bool, [][]byte, error) {
+	return probeClientCAs(ctx, net.JoinHostPort(address, "443"), serverName)
+}
+
+// probeClientCAs makes a TLS handshake with hostPort and returns the origin's CertificateRequest.
+func probeClientCAs(ctx context.Context, hostPort, serverName string) (bool, [][]byte, error) {
+	var requested bool
+	var acceptable [][]byte
+	config := &tls.Config{
+		ServerName: serverName,
+		MinVersion: tls.VersionTLS12,
+		// Only the server's CertificateRequest is read; the origin's own certificate is checked by
+		// Origin.
+		InsecureSkipVerify: true, //nolint:gosec // learns only which client CAs the origin accepts
+		GetClientCertificate: func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			requested = true
+			acceptable = append([][]byte(nil), info.AcceptableCAs...)
+			return &tls.Certificate{}, nil
+		},
+	}
+	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: config}
+	conn, err := dialer.DialContext(ctx, "tcp", hostPort)
+	if err != nil {
+		if requested {
+			// The origin refused the empty certificate after asking for one; what it asked is known.
+			return true, acceptable, nil
+		}
+		return false, nil, err
+	}
+	_ = conn.Close()
+	return requested, acceptable, nil
+}
+
 func (tlsEdgeProber) Edge(ctx context.Context, serverName string) error {
 	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(serverName, "443"))
@@ -155,6 +195,20 @@ type CloudflareZonePolicyReconciler struct {
 	APIBase string
 	// Prober checks hosts; nil uses TLS handshakes.
 	Prober edgeProber
+	// OperatorNamespace holds each zone's origin-pull CA and client certificate Secret
+	// (orama-edge-origin-pull-<zone>) for the policies that name no distributed one
+	// (spec.originPullSecretRef); on the managing cluster it is the Secret the LakeSets copy. Empty
+	// uses the policy's namespace.
+	OperatorNamespace string
+	// Now is the clock for certificate lifetimes; nil uses time.Now.
+	Now func() time.Time
+}
+
+func (r *CloudflareZonePolicyReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 func (r *CloudflareZonePolicyReconciler) api() string {
@@ -319,7 +373,9 @@ func failedEdgeStatus(previous oramav1alpha1.EdgeZonePolicyStatus, reason, messa
 	status := previous
 	status.Phase = edgePhaseFailed
 	status.Message = message
-	status.OriginClientCAPEM = cloudflareOriginPullCA
+	if status.OriginClientCAPEM == "" {
+		status.OriginClientCAPEM = cloudflareOriginPullCA
+	}
 	status.Conditions = []metav1.Condition{{Type: edgeConditionCredentials, Status: metav1.ConditionFalse, Reason: reason, Message: message}}
 	for _, condition := range previous.Conditions {
 		if condition.Type != edgeConditionCredentials {
@@ -386,10 +442,9 @@ func (r *CloudflareZonePolicyReconciler) observe(ctx context.Context, policy *or
 	}
 
 	status := oramav1alpha1.EdgeZonePolicyStatus{
-		Zone:              zoneName,
-		OriginClientCAPEM: cloudflareOriginPullCA,
-		ProxiedHosts:      int32(len(records)),
-		Hosts:             failing,
+		Zone:         zoneName,
+		ProxiedHosts: int32(len(records)),
+		Hosts:        failing,
 	}
 	var changeErrors []string
 	conditions := []metav1.Condition{{Type: edgeConditionCredentials, Status: metav1.ConditionTrue, Reason: "Readable", Message: "the zone's settings and DNS records are readable"}}
@@ -438,10 +493,21 @@ func (r *CloudflareZonePolicyReconciler) observe(ctx context.Context, policy *or
 			pulls = "on"
 		}
 	}
-	status.AuthenticatedOriginPulls = pulls == "on"
-	conditions = append(conditions, edgeSettingCondition(edgeConditionOriginPulls, status.AuthenticatedOriginPulls,
+	conditions = append(conditions, edgeSettingCondition(edgeConditionOriginPulls, pulls == "on",
 		"the edge presents its client certificate to origins",
 		"authenticated origin pulls wait until origin encryption is Full or Full (strict)"))
+
+	// 3b: zone-level authenticated origin pulls with the operator's own certificate (operator#633).
+	zoneLevel := r.zoneOriginPulls(ctx, policy, previous.OriginClientCAPEM, token, mode, checks)
+	if zoneLevel.changeError != "" {
+		changeErrors = append(changeErrors, zoneLevel.changeError)
+	}
+	status.OriginClientCAPEM = zoneLevel.caBundle
+	status.ZoneOriginPulls = zoneLevel.on
+	// Origins may require the edge's client certificate only when the bundle verifies whatever the
+	// zone presents.
+	status.AuthenticatedOriginPulls = (pulls == "on" || zoneLevel.on) && zoneLevel.usable
+	conditions = append(conditions, zoneLevel.condition)
 
 	// Edge certificates for hosts Universal SSL does not cover (cloudflare_edge_certificates.go).
 	if allEdges {
@@ -482,9 +548,9 @@ func (r *CloudflareZonePolicyReconciler) observe(ctx context.Context, policy *or
 		status.Phase = edgePhaseFailed
 		status.Message = strings.Join(changeErrors, "; ")
 		conditions[0] = metav1.Condition{Type: edgeConditionCredentials, Status: metav1.ConditionFalse, Reason: "ChangeRefused", Message: status.Message}
-	case mode == edgeOriginStrict && status.AuthenticatedOriginPulls && status.AlwaysUseHTTPS:
+	case mode == edgeOriginStrict && status.AuthenticatedOriginPulls && status.ZoneOriginPulls && status.AlwaysUseHTTPS:
 		status.Phase = edgePhaseReady
-		status.Message = "origin encryption Full (strict), authenticated origin pulls and Always Use HTTPS are on"
+		status.Message = "origin encryption Full (strict), zone-level authenticated origin pulls and Always Use HTTPS are on"
 	default:
 		status.Phase = edgePhaseProgressing
 		var waiting []string
@@ -541,6 +607,11 @@ func mergeEdgeConditions(previous, next []metav1.Condition, generation int64) []
 type edgeHostCheck struct {
 	handshake bool
 	status    oramav1alpha1.EdgeZoneHostStatus
+	// clientCertRequested and acceptableCAs are the origin's CertificateRequest, if it sent one;
+	// clientProbeError is set when that could not be learned.
+	clientCertRequested bool
+	acceptableCAs       [][]byte
+	clientProbeError    string
 }
 
 // edgeProbeName is the name a record is probed with: itself, or a name under a wildcard.
@@ -572,6 +643,11 @@ func (r *CloudflareZonePolicyReconciler) probe(ctx context.Context, records []cf
 			}
 			if err := prober.Edge(ctx, name); err != nil {
 				check.status.Edge = probeMessage(err)
+			}
+			requested, acceptable, err := prober.ClientCAs(ctx, record.Content, name)
+			check.clientCertRequested, check.acceptableCAs = requested, acceptable
+			if err != nil {
+				check.clientProbeError = probeMessage(err)
 			}
 			checks[i] = check
 		}(i, record)

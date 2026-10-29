@@ -143,6 +143,7 @@ func (r *EdgeZonePolicyReconciler) resolve(ctx context.Context, policy *oramav1a
 		concrete.Labels = policy.Labels
 		concrete.Spec.ZoneID = policy.Spec.ZoneID
 		concrete.Spec.APITokenSecretRef = provider.Spec.Cloudflare.APITokenSecretRef
+		concrete.Spec.OriginPullSecretRef = policy.Spec.OriginPullSecretRef
 		return controllerutil.SetControllerReference(policy, concrete, r.Scheme)
 	}); err != nil {
 		return policy.Status, err
