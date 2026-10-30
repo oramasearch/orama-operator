@@ -12,8 +12,6 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -33,9 +31,8 @@ import (
 
 const (
 	// secretPurposeLabel on a Secret on the managing cluster names the one cluster purpose it may be
-	// copied into (`nonprod`, `production`, `prod-support`). A Secret with it is never copied into a
-	// member whose cluster has another purpose, except that production and prod-support are one tier
-	// (observability_purpose.go).
+	// copied into (`nonprod`, `production`). A Secret with it is never copied into a member whose
+	// cluster has another purpose.
 	// The same key as instancePurposeLabel, which a set writes on the instances it creates.
 	secretPurposeLabel = instancePurposeLabel
 	// productionPurpose is the `purpose` tag of a production cluster.
@@ -64,14 +61,14 @@ func (s secretScope) refuse(ref oramav1alpha1.SetSecret, target string, source *
 	key := ref.Namespace + "/" + ref.Name
 	purpose := firstNonEmpty(s.purpose, "unknown")
 	label := source.Labels[secretPurposeLabel]
-	if label != "" && label != s.purpose && !(productionTier(label) && productionTier(s.purpose)) {
+	if label != "" && label != s.purpose {
 		where := "the member's cluster"
 		if s.operator {
 			where = "the target cluster"
 		}
 		return purposeRefusal("Secret %s is labelled %s=%s and %s is %s: it is never copied there", key, secretPurposeLabel, label, where, purpose)
 	}
-	if productionTier(s.purpose) {
+	if s.purpose == productionPurpose {
 		return nil
 	}
 	if by, found := s.production[key]; found {
@@ -101,7 +98,7 @@ func (r *managedSetReconciler) scopeFor(ctx context.Context, resolved resolvedMe
 	if resolved.cluster != nil {
 		scope.purpose = resolved.cluster.Spec.Tags[clusterPurposeTag]
 	}
-	if productionTier(scope.purpose) {
+	if scope.purpose == productionPurpose {
 		return scope, nil
 	}
 	if r.productionSources == nil {
@@ -117,17 +114,15 @@ func (r *managedSetReconciler) scopeFor(ctx context.Context, resolved resolvedMe
 
 // operatorSecretScope is the scope of the cluster an OramaOperator installs onto: its purpose tag
 // and, unless it is production, every Secret production copies. A cluster that does not exist yet
-// has no purpose, so it is not production.
+// has no purpose, so it is not production. An empty clusterName is the managing cluster itself
+// (an observability hub with no clusterRef), which is production (observability_purpose.go).
 func operatorSecretScope(ctx context.Context, r client.Reader, clusterName string) (secretScope, error) {
-	scope := secretScope{operator: true}
-	var cluster oramav1alpha1.KubernetesCluster
-	switch err := r.Get(ctx, types.NamespacedName{Name: clusterName}, &cluster); {
-	case err == nil:
-		scope.purpose = cluster.Spec.Tags[clusterPurposeTag]
-	case !apierrors.IsNotFound(err):
+	purpose, _, err := clusterPurpose(ctx, r, clusterName)
+	if err != nil {
 		return secretScope{}, err
 	}
-	if productionTier(scope.purpose) {
+	scope := secretScope{operator: true, purpose: purpose}
+	if scope.purpose == productionPurpose {
 		return scope, nil
 	}
 	sources, err := productionSecretSources(ctx, r)
@@ -152,16 +147,14 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 		for _, member := range spec.Clusters {
 			purpose, read := purposes[member.ClusterRef]
 			if !read {
-				var cluster oramav1alpha1.KubernetesCluster
-				switch err := r.Get(ctx, types.NamespacedName{Name: member.ClusterRef}, &cluster); {
-				case err == nil:
-					purpose = cluster.Spec.Tags[clusterPurposeTag]
-				case !apierrors.IsNotFound(err):
+				// An empty clusterRef (a hub on the managing cluster) is production.
+				var err error
+				if purpose, _, err = clusterPurpose(ctx, r, member.ClusterRef); err != nil {
 					return false, err
 				}
 				purposes[member.ClusterRef] = purpose
 			}
-			if productionTier(purpose) {
+			if purpose == productionPurpose {
 				return true, nil
 			}
 		}
@@ -266,8 +259,9 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of ClusterHelmRelease " + release.Name + " on production-tier cluster " + release.Spec.ClusterRef
 		}
 	}
-	// Observability (operator#15): a production-tier agent's or hub's pull Secret, and the alert
-	// receivers of a hub serving production, are production credentials.
+	// Observability (operator#15): a production agent's or hub's pull Secret, and the alert
+	// receivers of a hub serving production (the managing cluster's hub, #1059), are production
+	// credentials.
 	var hubs oramav1alpha1.ObservabilityHubList
 	if err := r.List(ctx, &hubs); err != nil {
 		return nil, fmt.Errorf("list ObservabilityHubs to find production Secrets: %w", err)
@@ -306,7 +300,7 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 		}
 		ref := agent.Spec.ImagePullSecretRef
 		if _, found := sources[ref.Namespace+"/"+ref.Name]; production && !found {
-			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of ObservabilityAgent " + agent.Name + " on production-tier cluster " + agent.Spec.ClusterRef
+			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of ObservabilityAgent " + agent.Name + " on production cluster " + agent.Spec.ClusterRef
 		}
 	}
 	return sources, nil

@@ -5,67 +5,80 @@ Licensed under the Apache License, Version 2.0.
 
 package controller
 
-import "fmt"
+import (
+	"context"
+	"fmt"
 
-// Cluster purposes and the observability rule (operator#456). A KubernetesCluster's `purpose` tag
-// is nonprod, production, or prod-support: a cluster that runs support services for production
-// (observability first) and no customer or test workload. prod-support counts as production for
-// the cluster rules, and production credentials may reach it; they never reach nonprod.
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+)
+
+// Cluster purposes and the observability rule (operator#456, #1059). A KubernetesCluster's
+// `purpose` tag is nonprod or production. The managing cluster has no KubernetesCluster of its
+// own: an empty clusterRef names it, and it counts as production, because it already holds every
+// production credential and manages the production clusters.
 //
 // Which hub an agent reports to is decided from the two clusters' purposes, never from a field:
 //
 //	agent cluster   reports to a hub on
-//	production      prod-support
-//	prod-support    prod-support
-//	nonprod         nonprod
+//	production      the managing cluster (a hub with no clusterRef)
+//	nonprod         a nonprod cluster
 //
-// A hub runs only on a prod-support or a nonprod cluster.
+// A hub runs only on the managing cluster or on a nonprod cluster, never on a production cluster
+// beside customer workloads. There is no separate support cluster (Steve, 2026-10-29: "let's put
+// the observability databases and functionality on the management cluster instead of provisioning
+// a prod support cluster").
 
-const (
-	nonprodPurpose     = "nonprod"
-	prodSupportPurpose = "prod-support"
-)
+const nonprodPurpose = "nonprod"
 
-// productionTier is true for the purposes production credentials may reach.
-func productionTier(purpose string) bool {
-	return purpose == productionPurpose || purpose == prodSupportPurpose
-}
+// managingClusterName is how a refusal names the cluster an empty clusterRef points at.
+const managingClusterName = "the managing cluster"
 
-// hubPurposeFor is the purpose of the hub an agent of agentPurpose reports to.
-func hubPurposeFor(agentPurpose string) (string, bool) {
-	switch agentPurpose {
-	case productionPurpose, prodSupportPurpose:
-		return prodSupportPurpose, true
-	case nonprodPurpose:
-		return nonprodPurpose, true
+// clusterPurpose is the purpose of the cluster clusterRef names, and whether that cluster exists.
+// An empty clusterRef is the managing cluster itself, which is production.
+func clusterPurpose(ctx context.Context, r client.Reader, clusterRef string) (string, bool, error) {
+	if clusterRef == "" {
+		return productionPurpose, true, nil
 	}
-	return "", false
-}
-
-// hubPurposeRefusal says why a hub may not run on a cluster of purpose, or "".
-func hubPurposeRefusal(cluster, purpose string) string {
-	switch purpose {
-	case prodSupportPurpose, nonprodPurpose:
-		return ""
-	case productionPurpose:
-		return fmt.Sprintf("KubernetesCluster %s is production: production's observability hub runs on a prod-support cluster, never beside customer workloads", cluster)
-	case "":
-		return fmt.Sprintf("KubernetesCluster %s has no %q tag, so it is not known which agents may report to it", cluster, clusterPurposeTag)
-	}
-	return fmt.Sprintf("KubernetesCluster %s has purpose %q; a hub runs only on a prod-support or nonprod cluster", cluster, purpose)
-}
-
-// agentPurposeRefusal says why an agent on agentCluster may not report to a hub on hubCluster, or "".
-func agentPurposeRefusal(agentCluster, agentPurpose, hubCluster, hubPurpose string) string {
-	want, ok := hubPurposeFor(agentPurpose)
-	if !ok {
-		if agentPurpose == "" {
-			return fmt.Sprintf("KubernetesCluster %s has no %q tag, so it is not known which hub it may report to", agentCluster, clusterPurposeTag)
+	var cluster oramav1alpha1.KubernetesCluster
+	if err := r.Get(ctx, types.NamespacedName{Name: clusterRef}, &cluster); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", false, nil
 		}
+		return "", false, err
+	}
+	return cluster.Spec.Tags[clusterPurposeTag], true, nil
+}
+
+// hubPurposeRefusal says why a hub may not run on the cluster clusterRef names, or "".
+func hubPurposeRefusal(clusterRef, purpose string) string {
+	switch {
+	case clusterRef == "", purpose == nonprodPurpose:
+		return ""
+	case purpose == productionPurpose:
+		return fmt.Sprintf("KubernetesCluster %s is production: production's observability hub runs on the managing cluster (no clusterRef), never beside customer workloads", clusterRef)
+	case purpose == "":
+		return fmt.Sprintf("KubernetesCluster %s has no %q tag, so it is not known which agents may report to it", clusterRef, clusterPurposeTag)
+	}
+	return fmt.Sprintf("KubernetesCluster %s has purpose %q; a hub runs only on the managing cluster or a nonprod cluster", clusterRef, purpose)
+}
+
+// agentPurposeRefusal says why an agent on agentCluster may not report to a hub on hubCluster, or
+// "". A hub serves only agents of its own purpose.
+func agentPurposeRefusal(agentCluster, agentPurpose, hubCluster, hubPurpose string) string {
+	switch agentPurpose {
+	case productionPurpose, nonprodPurpose:
+	case "":
+		return fmt.Sprintf("KubernetesCluster %s has no %q tag, so it is not known which hub it may report to", agentCluster, clusterPurposeTag)
+	default:
 		return fmt.Sprintf("KubernetesCluster %s has purpose %q, which reports to no hub", agentCluster, agentPurpose)
 	}
-	if hubPurpose != want {
-		return fmt.Sprintf("an agent on %s cluster %s reports only to a %s hub, and %s is %s: refused", agentPurpose, agentCluster, want, hubCluster, firstNonEmpty(hubPurpose, "untagged"))
+	if hubPurpose != agentPurpose {
+		return fmt.Sprintf("an agent on %s cluster %s reports only to a %s hub, and %s is %s: refused",
+			agentPurpose, agentCluster, agentPurpose, firstNonEmpty(hubCluster, managingClusterName), firstNonEmpty(hubPurpose, "untagged"))
 	}
 	return ""
 }

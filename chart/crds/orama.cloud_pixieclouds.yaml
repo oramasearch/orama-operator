@@ -124,8 +124,9 @@ spec:
                   type: object
                 type: array
               cluster:
-                description: 'Cluster is the hub''s own KubernetesCluster: the cluster
-                  label of its own metrics.'
+                description: |-
+                  Cluster is the hub's own KubernetesCluster: the cluster label of its own metrics. Empty on the
+                  managing cluster, whose metrics are labelled with the hub's name.
                 type: string
               domain:
                 minLength: 1
@@ -148,11 +149,12 @@ spec:
                 minLength: 1
                 type: string
               purpose:
-                description: Purpose is the hub cluster's purpose tag, as the managing
-                  cluster read it.
+                description: |-
+                  Purpose is the hub cluster's purpose tag, as the managing cluster read it: production on the
+                  managing cluster, nonprod on a nonprod cluster.
                 enum:
                 - nonprod
-                - prod-support
+                - production
                 type: string
               release:
                 description: Release is the provider's release, copied from the ObservabilityProvider.

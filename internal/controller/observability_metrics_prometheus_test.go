@@ -48,11 +48,10 @@ func prometheusBinaries(t *testing.T) (prometheus, promtool string) {
 	return filepath.Join(dir, "prometheus"), filepath.Join(dir, "promtool")
 }
 
-// testHubCloud is a prod-support hub with two production agents on other clusters and one whose
-// metrics never arrive.
+// testHubCloud is production's hub, on the managing cluster (so its own metrics carry the hub's
+// name), with two production agents on other clusters and one whose metrics never arrive.
 func testHubCloud() *oramav1alpha1.PixieCloud {
 	cloud := testPixieCloud()
-	cloud.Spec.Cluster = "support"
 	cloud.Spec.Agents = []oramav1alpha1.PixieCloudAgent{
 		{Name: "eu", Cluster: "prod-eu"}, {Name: "us", Cluster: "prod-us"}, {Name: "gone", Cluster: "prod-gone"},
 	}
@@ -144,10 +143,10 @@ tests:
       - {series: 'up{job="federate-prod-us", cluster="prod-us"}', values: '1x10 0x30'}
       - {series: 'ALERTS{alertname="Watchdog", alertstate="firing", severity="none", cluster="prod-us"}', values: '1x10'}
       - {series: 'up{job="kube-prometheus-stack-alertmanager", cluster="prod-us"}', values: '1x10'}
-      # support (the hub's own cluster): reachable, but its rules stopped and its Alertmanager is down.
-      - {series: 'up{job="federate-support", cluster="support"}', values: '1x40'}
-      - {series: 'up{job="kube-prometheus-stack-alertmanager", cluster="support"}', values: '0x40'}
-      - {series: 'ALERTS{alertname="OramaStackComponentDown", alertstate="firing", severity="critical", namespace="v1", component="writer", cluster="support"}', values: '1x40'}
+      # production (the hub's own cluster, the managing cluster): reachable, but its rules stopped and its Alertmanager is down.
+      - {series: 'up{job="federate-production", cluster="production"}', values: '1x40'}
+      - {series: 'up{job="kube-prometheus-stack-alertmanager", cluster="production"}', values: '0x40'}
+      - {series: 'ALERTS{alertname="OramaStackComponentDown", alertstate="firing", severity="critical", namespace="v1", component="writer", cluster="production"}', values: '1x40'}
       # The same alert on healthy prod-eu is delivered there, and not relayed.
       - {series: 'ALERTS{alertname="OramaStackComponentDown", alertstate="firing", severity="critical", namespace="v1", component="writer", cluster="prod-eu"}', values: '1x40'}
       # prod-gone: no metrics job at all.
@@ -168,18 +167,18 @@ tests:
       - eval_time: 20m
         alertname: ObservabilityClusterAlertingDown
         exp_alerts:
-          - exp_labels: {severity: critical, cluster: support}
-            exp_annotations: {summary: "Cluster support is reachable but its Watchdog alert is gone: its own alert rules are not running."}
+          - exp_labels: {severity: critical, cluster: production}
+            exp_annotations: {summary: "Cluster production is reachable but its Watchdog alert is gone: its own alert rules are not running."}
       - eval_time: 20m
         alertname: ObservabilityClusterAlertmanagerDown
         exp_alerts:
-          - exp_labels: {severity: critical, job: kube-prometheus-stack-alertmanager, cluster: support}
-            exp_annotations: {summary: "Cluster support's Alertmanager is down: its own alerts are not delivered."}
+          - exp_labels: {severity: critical, job: kube-prometheus-stack-alertmanager, cluster: production}
+            exp_annotations: {summary: "Cluster production's Alertmanager is down: its own alerts are not delivered."}
       - eval_time: 20m
         alertname: ObservabilityRelayedCriticalAlert
         exp_alerts:
-          - exp_labels: {severity: critical, relayed_alert: OramaStackComponentDown, namespace: v1, component: writer, cluster: support}
-            exp_annotations: {summary: "Cluster support: OramaStackComponentDown is firing in v1, and that cluster's Alertmanager cannot deliver it."}
+          - exp_labels: {severity: critical, relayed_alert: OramaStackComponentDown, namespace: v1, component: writer, cluster: production}
+            exp_annotations: {summary: "Cluster production: OramaStackComponentDown is firing in v1, and that cluster's Alertmanager cannot deliver it."}
       - eval_time: 35m
         alertname: ObservabilityClusterAlertmanagerMissing
         exp_alerts: []
@@ -200,9 +199,9 @@ evaluation_interval: 1m
 tests:
   - interval: 1m
     input_series:
-      - {series: 'up{job="federate-support", cluster="support"}', values: '1x10 _x8 1x21'}
-      - {series: 'ALERTS{alertname="Watchdog", alertstate="firing", severity="none", cluster="support"}', values: '1x10 _x8 1x21'}
-      - {series: 'up{job="kube-prometheus-stack-alertmanager", cluster="support"}', values: '1x10 _x8 1x21'}
+      - {series: 'up{job="federate-production", cluster="production"}', values: '1x10 _x8 1x21'}
+      - {series: 'ALERTS{alertname="Watchdog", alertstate="firing", severity="none", cluster="production"}', values: '1x10 _x8 1x21'}
+      - {series: 'up{job="kube-prometheus-stack-alertmanager", cluster="production"}', values: '1x10 _x8 1x21'}
       - {series: 'up{job="federate-prod-eu", cluster="prod-eu"}', values: '1x10 _x8 1x21'}
       - {series: 'ALERTS{alertname="Watchdog", alertstate="firing", severity="none", cluster="prod-eu"}', values: '1x10 _x8 1x21'}
       - {series: 'up{job="kube-prometheus-stack-alertmanager", cluster="prod-eu"}', values: '1x10 _x8 0x21'}
@@ -380,7 +379,7 @@ func TestHubFederatesEachLeafLive(t *testing.T) {
 		// Point each rendered job at a local server in place of its peer import Service, and
 		// scrape fast; everything else (path, match[], honor_labels, the cluster label and its
 		// relabelling) is as rendered.
-		addresses := map[string]string{"federate-prod-eu": euAddress, "federate-prod-us": usAddress, "federate-support": euAddress}
+		addresses := map[string]string{"federate-prod-eu": euAddress, "federate-prod-us": usAddress, "federate-production": euAddress}
 		for _, job := range jobs {
 			name := job["job_name"].(string)
 			configs := job["static_configs"].([]any)
@@ -424,7 +423,7 @@ func TestHubFederatesEachLeafLive(t *testing.T) {
 	}
 	eventually(t, "the operator reading every cluster reachable", func() bool {
 		up := federationUp()
-		return up["federate-prod-eu"] && up["federate-prod-us"] && up["federate-support"]
+		return up["federate-prod-eu"] && up["federate-prod-us"] && up["federate-production"]
 	})
 
 	stopUS()

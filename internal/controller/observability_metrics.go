@@ -30,10 +30,10 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// The hub's metrics (operator#15, #456): production's metrics, dashboards and paging live on
-// prod-support, not only on the leaves. Every cluster keeps its own Prometheus (the platform layer)
-// for its own alerts; the hub runs one more Prometheus, in plc, that federates a narrow set of
-// series from each cluster it serves and keeps them for metricsRetention.
+// The hub's metrics (operator#15, #456, #1059): production's metrics, dashboards and paging live on
+// the managing cluster, not only on the leaves. Every cluster keeps its own Prometheus (the
+// platform layer) for its own alerts; the hub runs one more Prometheus, in plc, that federates a
+// narrow set of series from each cluster it serves and keeps them for metricsRetention.
 //
 //	leaf: platform Prometheus <- metrics-federation (pl, GET /federate only) <- PeerConnection export
 //	      ==== #437 peer link, mutual TLS 1.3, the agent's own PeerLink ====

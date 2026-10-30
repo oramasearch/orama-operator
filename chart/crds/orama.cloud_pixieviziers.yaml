@@ -138,7 +138,6 @@ spec:
                 enum:
                 - nonprod
                 - production
-                - prod-support
                 type: string
               release:
                 description: |-

@@ -4,7 +4,8 @@ How the operator gives every cluster metrics, alerts, dashboards and live tracin
 outside our clusters and nothing that is not permissively licensed. This is
 [operator#15](https://github.com/oramasearch/orama-operator/issues/15) as amended by
 [#456](https://github.com/oramasearch/orama-operator/issues/456) (Pixie, implemented by this
-operator, a `prod-support` cluster, nonprod isolated), [#455](https://github.com/oramasearch/orama-operator/issues/455)
+operator, nonprod isolated), [#1059](https://github.com/oramasearch/orama-operator/issues/1059)
+(production's hub on the managing cluster), [#455](https://github.com/oramasearch/orama-operator/issues/455)
 (Pixie's images from our copy) and [#437](https://github.com/oramasearch/orama-operator/issues/437)
 (the secure link between clusters).
 
@@ -15,8 +16,9 @@ operator, a `prod-support` cluster, nonprod isolated), [#455](https://github.com
 | Monitoring is in-cluster Prometheus and Alertmanager, on every cluster identically. | Steve, #15, 2026-10-13 |
 | Grafana, Loki, Mimir and Tempo are AGPL-3.0 and ruled out. Everything is permissive, for resale and for customers' own clusters. | Steve, #15 |
 | Pixie for live tracing, installed by our operator: no Pixie operator, no OLM, versions pinned, auto-update off. | Steve, #15, #456 |
-| Pixie Cloud is self-hosted on a `prod-support` cluster for production and on nonprod for nonprod; never Pixie's or New Relic's hosted service, never Auth0. | Steve, #456 |
-| Production agents report to `prod-support`; nonprod agents and their hub stay on nonprod. The operator enforces it. | #456 |
+| Pixie Cloud is self-hosted, for production and on nonprod for nonprod; never Pixie's or New Relic's hosted service, never Auth0. | Steve, #456 |
+| Production's hub (its Prometheus, Alertmanager routing, dashboards, Pixie Cloud and their databases) runs on the managing cluster. No separate support cluster is provisioned: *"let's put the observability databases and functionality on the management cluster instead of provisioning a prod support cluster"*. | Steve, 2026-10-29, #1059 |
+| Production agents report to the managing cluster's hub; nonprod agents and their hub stay on nonprod. The operator enforces it. | #456, #1059 |
 | Agents reach a hub on another cluster only through #437's peer link (zetta-tunnel, mutual TLS 1.3, `PeerConnection` + `PeerLink`), with a deploy key of their own. | #456, #437 decision D6 |
 | Everything runs on-prem and air-gapped: images from our private registry, nothing calls out at run time. | #456 |
 
@@ -30,7 +32,7 @@ operator, a `prod-support` cluster, nonprod isolated), [#455](https://github.com
 
 | Hub on | Serves agents on |
 |---|---|
-| a `prod-support` cluster | `production` and `prod-support` clusters |
+| the managing cluster (no `clusterRef`) | `production` clusters |
 | a `nonprod` cluster | `nonprod` clusters |
 
 Every controller runs on every cluster, from the same chart; a cluster is a hub or has agents only
@@ -84,17 +86,19 @@ agent's label, and the managing cluster deletes them itself when the hub or agen
 
 ## Purpose isolation
 
-`KubernetesCluster` already carries a `purpose` tag. #456 adds a third value, **`prod-support`**: a
-cluster that runs support services for production and no customer or test workload. It counts as
-production for the cluster rules (`observability_purpose.go`).
+`KubernetesCluster` carries a `purpose` tag, `nonprod` or `production`. The managing cluster has no
+`KubernetesCluster` of its own: a hub with no `clusterRef` runs there, and the managing cluster counts
+as production, because it already holds every production credential and manages the production
+clusters (`observability_purpose.go`). The rule is read from the resources, so it is the same on
+every cluster's operator: a cluster that manages no production cluster has no production agent that
+could report to a hub without a `clusterRef`.
 
 | Rule | Enforced by |
 |---|---|
-| A hub runs only on a `prod-support` or `nonprod` cluster. | `ObservabilityHub` is `Refused`; nothing is written. |
-| An agent reports only to a hub of its purpose: production and prod-support to prod-support, nonprod to nonprod. | `ObservabilityAgent` is `Refused` and anything it had placed is removed; the hub controller also leaves it out of the `PixieCloud`'s `agents`, so the hub never issues it a key. |
-| No customer or test workload on `prod-support`. | A `LakeSet` or `OramaCloudV1Set` naming a prod-support cluster is refused (`SupportCluster`). |
-| Production credentials never reach nonprod; they may reach prod-support. | The production-credential rules of the sets and `OramaOperator` ([`crd-reference.md`](../crd-reference.md#production-credentials-never-reach-a-nonprod-member)), applied to every Secret the observability controllers copy. |
-| Nothing from production is reachable from nonprod. | A nonprod agent never gets a link to a prod-support hub, and every Pixie namespace is default-deny. |
+| A hub runs only on the managing cluster (no `clusterRef`) or on a `nonprod` cluster, never on a production cluster beside customer workloads. | `ObservabilityHub` is `Refused`; nothing is written. |
+| An agent reports only to a hub of its purpose: production to the managing cluster's hub, nonprod to a nonprod cluster's hub. | `ObservabilityAgent` is `Refused` and anything it had placed is removed; the hub controller also leaves it out of the `PixieCloud`'s `agents`, so the hub never issues it a key. |
+| Production credentials never reach nonprod. The managing cluster's hub copies its Secrets within the managing cluster. | The production-credential rules of the sets and `OramaOperator` ([`crd-reference.md`](../crd-reference.md#production-credentials-never-reach-a-nonprod-member)), applied to every Secret the observability controllers copy. |
+| Nothing from production is reachable from nonprod. | A nonprod agent never gets a link to production's hub, and every Pixie namespace is default-deny. |
 
 ## The link to the hub
 
@@ -319,7 +323,7 @@ Rules on metrics that may be absent have an `absent()` companion, so a missing t
 never a silent pass: `OramaEngineTargetsMissing` and `OramaControlDBTargetsMissing` (critical),
 `OramaStackStatusMetricsMissing`, and `ObservabilityAgentStatusMissing` on agents and hubs.
 
-## The hub's metrics: every cluster of its purpose, kept and paged on prod-support
+## The hub's metrics: every cluster of its purpose, kept and paged on the hub
 
 Each cluster keeps its own Prometheus and Alertmanager for its own alerts. That cannot cover the
 cluster itself: a lost leaf takes both with it. So the hub runs one more Prometheus, in `plc`, that
@@ -484,11 +488,13 @@ Steve's consent where the cluster rules ask for it:
    ([`config/samples/observability.yaml`](../../config/samples/observability.yaml)). The agent's alert
    routing is written at once; the rest follows the artifacts. Qualify here what is listed under
    *Not yet qualified* below.
-5. **prod-support.** Create the `KubernetesCluster` (`purpose: prod-support`; region and size are
-   Steve's), its platform layer and operator, then its hub.
+5. **Production's hub** on the managing cluster: an `ObservabilityHub` with no `clusterRef`, named
+   after the managing cluster (its own metrics carry the hub's name as their `cluster` label). It
+   needs the managing cluster's platform layer from step 3, and adds the hub's volumes there
+   (`storage`: the hub Prometheus, OpenSearch, CloudNativePG and NATS).
 6. **Production agents** on `orama-production-cluster-02` and `-03`, each with its own pull Secret,
-   reporting to the prod-support hub over their peer links, committed under `config/clusters/` like
-   every applied resource. `config/clusters/sets/v1-prod.yaml` is not part of this.
+   reporting to the managing cluster's hub over their peer links, committed under `config/clusters/`
+   like every applied resource. `config/clusters/sets/v1-prod.yaml` is not part of this.
 
 Rollback: delete the agents, then the hub (each withdraws what it placed); remove the platform
 releases from both installation paths in one change; the CRDs stay, as always.
@@ -506,8 +512,8 @@ What has been checked, and how strongly. Nothing below has run on a cluster.
 | Go TLS with the issued certificates | A Vizier's dial verifies the hub's CA and name for both allowed addresses | `TestHubCertificateIsVerifiedForTheDialedAddress` |
 | Reading the pinned sources | OpenSearch 2.19 accepts Pixie's mapping and client; the API's GraphQL key calls and token; gRPC's server name; the storage client's emulator reads; the patch applies at the pin | the tables above; `TestPixieBootstrapMatchesVendoredSchema`, `TestPixieUserTokenIsWhatPixieAccepts`, `TestPixieAPI*` against a fake API |
 
-**Not run anywhere yet**, because the images and mirrors do not exist (#455) and the prod-support
-cluster is not provisioned: Pixie on the AKS node images (Ubuntu 22.04/24.04, Azure Linux 3) and the
+**Not run anywhere yet**, because the images and mirrors do not exist (#455) and no hub has been
+created: Pixie on the AKS node images (Ubuntu 22.04/24.04, Azure Linux 3) and the
 protocols traced; the bootstrap against a live Pixie Cloud (Kratos' admin API, the adapter against the
 migrated profile database, the GraphQL key calls); OpenSearch 2.19 with Pixie's indexer and
 autocomplete; the script bundle through the proxy and the script manager; the Envoy federation proxy

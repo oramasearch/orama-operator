@@ -75,7 +75,8 @@ spec:
               hubRef:
                 description: |-
                   HubRef names the ObservabilityHub the agents report to. It is refused unless the two
-                  clusters' purposes match: production to prod-support, nonprod to nonprod.
+                  clusters' purposes match: production to the managing cluster's hub, nonprod to a nonprod
+                  cluster's hub.
                 minLength: 1
                 type: string
               imagePullSecretRef:
@@ -199,7 +200,8 @@ spec:
                   and heartbeating.
                 type: boolean
               hubPurpose:
-                description: HubPurpose is the hub cluster's purpose tag.
+                description: HubPurpose is the hub cluster's purpose tag; production
+                  for the managing cluster.
                 type: string
               link:
                 description: |-
