@@ -339,6 +339,46 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 }
 
 // A hub is never placed on a production cluster.
+// A production agent writes its alert routing before Pixie's release exists. The hub has made
+// nothing on the managing cluster yet, and the API server refuses an object in a missing namespace.
+func TestObservabilityAgentPagesBeforeTheHubRuns(t *testing.T) {
+	f := newObservabilityFixture(t, agentNamed("prod2", "prod2", "prod2-pull"))
+	ctx := context.Background()
+	if err := f.management.Delete(ctx, &oramav1alpha1.ObservabilityProvider{ObjectMeta: metav1.ObjectMeta{Name: "pixie"}}); err != nil {
+		t.Fatal(err)
+	}
+	refuseMissingNamespace := func(ctx context.Context, c client.WithWatch, obj client.Object) error {
+		if ns := obj.GetNamespace(); ns != "" {
+			if err := c.Get(ctx, client.ObjectKey{Name: ns}, &corev1.Namespace{}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	f.clusters.clusters[""] = interceptor.NewClient(f.management.(client.WithWatch), interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if err := refuseMissingNamespace(ctx, c, obj); err != nil {
+				return err
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if err := refuseMissingNamespace(ctx, c, obj); err != nil {
+				return err
+			}
+			return applyAsUpsert.Patch(ctx, c, obj, patch, opts...)
+		},
+	})
+	agent := f.reconcileAgent(t, "prod2")
+	var vizier oramav1alpha1.PixieVizier
+	if err := f.cluster("prod2").Get(ctx, client.ObjectKey{Namespace: oramav1alpha1.PixieVizierNamespace, Name: pixieConcreteName}, &vizier); err != nil {
+		t.Fatalf("no PixieVizier before the release (%s): %v", agent.Status.Message, err)
+	}
+	if len(vizier.Spec.AlertRoutes) != 1 {
+		t.Fatalf("alert routes before the release: %+v", vizier.Spec.AlertRoutes)
+	}
+}
+
 func TestObservabilityHubRefusedOnProduction(t *testing.T) {
 	f := newObservabilityFixture(t)
 	var hub oramav1alpha1.ObservabilityHub

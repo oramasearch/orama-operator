@@ -811,6 +811,11 @@ func (r *ObservabilityAgentReconciler) reconcileLink(ctx context.Context, agent 
 			Generation:     1,
 		},
 	}
+	// The hub makes its namespace only once its release exists; the link's hub end goes there first,
+	// so an agent pages before Pixie's release instead of failing on a missing namespace.
+	if err := ensurePixieNamespace(ctx, hubCluster, oramav1alpha1.PixieCloudNamespace, "baseline"); err != nil {
+		return "", err
+	}
 	if err := applyConcrete(ctx, hubCluster, hubEnd, observabilityAgentLbl, agent.Name); err != nil {
 		return "", err
 	}
