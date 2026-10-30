@@ -1,0 +1,38 @@
+# Nonprod observability (docs/infrastructure/observability.md, rollout step 4): the nonprod hub on
+# this cluster and the agent beside it. The agent writes this cluster's alert routing as soon as the
+# hub exists, so alerts reach Slack before Pixie's release (#455) does; the hub and Vizier stay
+# Pending, naming the missing ObservabilityProvider, until then.
+#
+# Secrets on the managing cluster, in orama-system, made outside git:
+#   nonprod-alerts-slack           key `url`: the Slack incoming webhook to #monitoring-stg (app "Orama Alerts")
+#   oramasearch-dockerhub-nonprod  nonprod's existing registry pull Secret
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityHub
+metadata:
+  name: nonprod
+spec:
+  providerRef: pixie
+  clusterRef: orama-nonprod-cluster-01
+  domain: pixie.nonprod.orama.internal   # the UI's host, reached by port-forward; no DNS record is made
+  organization: orama
+  adminEmail: juan@orama.com
+  imagePullSecretRef:
+    name: oramasearch-dockerhub-nonprod
+    namespace: orama-system
+  alerting:
+    receivers:
+      - name: nonprod-alerts
+        severities: [critical, warning]
+        slack:
+          urlSecretRef: {name: nonprod-alerts-slack, namespace: orama-system, key: url}
+---
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityAgent
+metadata:
+  name: orama-nonprod-cluster-01
+spec:
+  clusterRef: orama-nonprod-cluster-01
+  hubRef: nonprod
+  imagePullSecretRef:
+    name: oramasearch-dockerhub-nonprod
+    namespace: orama-system
