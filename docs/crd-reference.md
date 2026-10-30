@@ -1584,13 +1584,15 @@ Hubs and agents point at it, so every cluster runs the same build. Details:
 ## `ObservabilityHub` (separate CRD, cluster-scoped) — one purpose's observability hub
 
 Short name `obshub`. Lives on the managing cluster, which writes a `PixieCloud` onto the hub's
-cluster. A hub runs only on a cluster tagged `purpose: prod-support` (serving production) or
-`purpose: nonprod` (serving nonprod); on any other cluster it is `Refused`.
+cluster. Production's hub runs on the managing cluster itself (no `spec.clusterRef`; the managing
+cluster counts as production) and serves production agents; a hub on a cluster tagged
+`purpose: nonprod` serves nonprod agents. A hub on a production cluster, or on any other, is
+`Refused` (operator#1059).
 
 | Field | Meaning |
 |---|---|
 | `spec.providerRef` | The `ObservabilityProvider`. |
-| `spec.clusterRef` | The hub's `KubernetesCluster`. Immutable. |
+| `spec.clusterRef` | The hub's `KubernetesCluster`; omitted for the managing cluster, whose hub's own metrics are labelled with the hub's name. Immutable, including setting or removing it. |
 | `spec.domain` | The host name people reach the UI under (and `work.<domain>`). No DNS record or public exposure is created. |
 | `spec.organization` / `.adminEmail` | The one organisation every agent's cluster is registered under, and its administrator. The password is generated into Secret `plc/pixie-admin` on the hub's cluster. |
 | `spec.imagePullSecretRef` | Registry credentials on the managing cluster, copied as `plc/pixie-pull` under the production-credential rules. |
@@ -1606,7 +1608,7 @@ cluster. A hub runs only on a cluster tagged `purpose: prod-support` (serving pr
 Short name `obsagent`. Lives on the managing cluster, which writes a `PixieVizier` onto the agent's
 cluster, links it to its hub (a `PeerConnection` pair and a `PeerLink`), and delivers the deploy key
 the hub issued for that cluster alone. An agent whose cluster's purpose may not report to its hub
-(production and prod-support report only to a prod-support hub, nonprod only to a nonprod hub) is
+(production reports only to the managing cluster's hub, nonprod only to a nonprod hub) is
 `Refused`, and nothing of it is left on any cluster.
 
 | Field | Meaning |
@@ -2107,11 +2109,8 @@ Secret in `spec.imagePullSecretRef`, copied under the old name with `spec.imageP
 sets count a production `OramaOperator`'s pull Secret as production too.
 **`ObservabilityHub` and `ObservabilityAgent` keep the same rule** (operator#15) for the pull Secret
 and the alert receivers they copy; a refused one is `Refused` and nothing reaches its cluster. A
-production-tier agent's pull Secret and a prod-support hub's pull Secret and receivers count as
-production. **`prod-support` is production tier** (operator#456): a Secret production uses, or one
-labelled `orama.cloud/purpose: production`, may be copied to a `prod-support` cluster, and never to
-`nonprod`. A `LakeSet` or `OramaCloudV1Set` naming a `prod-support` cluster is refused
-(`SupportCluster`): it runs no customer or test workload. Nothing else copies a Secret from the
+production agent's pull Secret and the managing cluster's hub's pull Secret and receivers count as
+production, and are never copied to `nonprod` (operator#1059). Nothing else copies a Secret from the
 managing cluster to a managed one: a `ClusterHelmRelease`'s
 `chart.credentialsSecretRef` and a `KubernetesClusterProvider`'s `credentialsSecretRef` are read on
 the managing cluster only, and a `KubernetesCluster`'s kubeconfig is written there.

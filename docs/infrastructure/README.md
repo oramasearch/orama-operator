@@ -29,9 +29,9 @@ real cluster has been created with them yet. The first step is one non-productio
 > [`status-pages.md`](status-pages.md).
 >
 > **Observability** (Prometheus, Alertmanager and Perses on every cluster; Pixie with a hub per
-> purpose on a `prod-support` or nonprod cluster; #15, #456) is in [`observability.md`](observability.md).
-> A cluster's `purpose` tag is `nonprod`, `production` or `prod-support`; prod-support runs support
-> services for production and no customer or test workload.
+> purpose, production's on the managing cluster and nonprod's on a nonprod cluster; #15, #456, #1059)
+> is in [`observability.md`](observability.md). A cluster's `purpose` tag is `nonprod` or
+> `production`; the managing cluster, which has no `KubernetesCluster`, counts as production.
 
 ## The model
 
