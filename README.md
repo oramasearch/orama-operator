@@ -51,7 +51,9 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.11.0** (2026-10-29), a minor release: observability kinds and a self-hosted Pixie,
+The current release is **v0.11.1** (2026-10-29), a patch: production's observability hub runs on the management cluster,
+and the `prod-support` cluster purpose is removed ([`docs/releases/v0.11.1.md`](docs/releases/v0.11.1.md)).
+Before it, **v0.11.0** (2026-10-29), a minor release: observability kinds and a self-hosted Pixie,
 zone-level authenticated origin pulls, and four Cloud v1 fixes ([`docs/releases/v0.11.0.md`](docs/releases/v0.11.0.md)).
 Before it, **v0.10.6** (2026-10-27), a patch: an App or environment is Ready only when its rollout
 is complete ([`docs/releases/v0.10.6.md`](docs/releases/v0.10.6.md)). Before it, **v0.10.5** (2026-10-27), a patch: App hosts stop flapping to Cloudflare 526

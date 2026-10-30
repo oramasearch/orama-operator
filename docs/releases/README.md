@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.1](v0.11.1.md) — 2026-10-29. A patch: production's observability hub runs on the management cluster (a hub with
+  no `clusterRef`), and the `prod-support` cluster purpose is removed (#1064, #1059). No Lake or Cloud v1 workload changes on the roll.
 - [v0.11.0](v0.11.0.md) — 2026-10-29. A minor release: five observability kinds and a self-hosted Pixie (#1044), zone-level
   authenticated origin pulls with one CA per zone (#727), and four Cloud v1 fixes (#1036, #1052, #1053, #1057). Every
   combined-image Cloud v1 stack's readers restart once.
