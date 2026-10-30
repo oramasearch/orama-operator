@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.2](v0.11.2.md) — 2026-10-30. A patch: observability agents write their alert routing before Pixie's release
+  exists; leaf clients know Orama's kinds, and the agent creates the hub's `plc` namespace (#1070). No CRD changes.
 - [v0.11.1](v0.11.1.md) — 2026-10-29. A patch: production's observability hub runs on the management cluster (a hub with
   no `clusterRef`), and the `prod-support` cluster purpose is removed (#1064, #1059). No Lake or Cloud v1 workload changes on the roll.
 - [v0.11.0](v0.11.0.md) — 2026-10-29. A minor release: five observability kinds and a self-hosted Pixie (#1044), zone-level
