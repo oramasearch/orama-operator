@@ -511,6 +511,27 @@ contexts: [{name: leaf, context: {cluster: leaf, user: admin}}]
 	}
 }
 
+// A leaf client knows Orama's kinds as well as Kubernetes': the observability agent reads the hub's
+// PixieCloud and writes a PixieVizier on leaf clusters.
+func TestLeafClientsKnowOramaKinds(t *testing.T) {
+	kubeconfig := []byte(`apiVersion: v1
+kind: Config
+current-context: leaf
+clusters: [{name: leaf, cluster: {server: "https://leaf.invalid"}}]
+users: [{name: admin, user: {token: t}}]
+contexts: [{name: leaf, context: {cluster: leaf, user: admin}}]
+`)
+	_, c, err := leafClients(kubeconfig, "pl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, obj := range []client.Object{&oramav1alpha1.PixieCloud{}, &oramav1alpha1.PixieVizier{}, &corev1.Secret{}} {
+		if _, err := c.GroupVersionKindFor(obj); err != nil {
+			t.Errorf("a leaf client cannot handle %T: %v", obj, err)
+		}
+	}
+}
+
 // A CRD manifest shipped apart from a chart is applied only if it holds nothing but CRDs.
 func TestCRDManifestsHoldOnlyCRDs(t *testing.T) {
 	c := leafTestClient(t)

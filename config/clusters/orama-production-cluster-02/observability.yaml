@@ -1,0 +1,13 @@
+# This cluster's observability agent (docs/infrastructure/observability.md, rollout step 6). It
+# reports to production's hub on the managing cluster (config/clusters/observability-hub.yaml) over
+# a PeerLink, and writes this cluster's alert routing as soon as that hub exists.
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityAgent
+metadata:
+  name: orama-production-cluster-02
+spec:
+  clusterRef: orama-production-cluster-02
+  hubRef: orama-production-cluster-01
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system
