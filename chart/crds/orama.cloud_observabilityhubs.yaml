@@ -167,9 +167,10 @@ spec:
                 type: object
               clusterRef:
                 description: |-
-                  ClusterRef is the KubernetesCluster the hub runs on. Its purpose tag decides which agents may
-                  report here: a prod-support cluster serves production agents, a nonprod cluster nonprod ones.
-                  A hub on any other cluster is refused. Immutable.
+                  ClusterRef is the KubernetesCluster the hub runs on. Empty means the managing cluster itself,
+                  which is where production's hub runs: it serves production agents. A nonprod cluster's hub
+                  serves nonprod agents. A hub on a production cluster, or on one with any other purpose, is
+                  refused. Immutable.
                 minLength: 1
                 type: string
                 x-kubernetes-validations:
@@ -261,12 +262,14 @@ spec:
                 type: object
             required:
             - adminEmail
-            - clusterRef
             - domain
             - imagePullSecretRef
             - organization
             - providerRef
             type: object
+            x-kubernetes-validations:
+            - message: clusterRef is immutable
+              rule: has(self.clusterRef) == has(oldSelf.clusterRef)
           status:
             description: ObservabilityHubStatus is what the managing cluster last
               read from the hub's cluster.
@@ -387,7 +390,8 @@ spec:
                 description: Phase is Pending, Progressing, Ready, Degraded or Refused.
                 type: string
               purpose:
-                description: Purpose is the hub cluster's purpose tag.
+                description: Purpose is the hub cluster's purpose tag; production
+                  for the managing cluster.
                 type: string
               ready:
                 description: Ready is "n/total" of the hub's components.

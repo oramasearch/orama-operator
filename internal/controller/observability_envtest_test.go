@@ -91,8 +91,23 @@ func TestObservabilityCRDsRefuseMalformedResources(t *testing.T) {
 	// The concrete kinds take only the purposes the managing cluster may write.
 	cloud := testPixieCloud()
 	cloud.Namespace = "default"
-	cloud.Spec.Purpose = "production"
+	cloud.Spec.Purpose = "prod-support"
 	if err := kube.Create(ctx, cloud); !apierrors.IsInvalid(err) {
-		t.Errorf("a PixieCloud for a production cluster was accepted (%v)", err)
+		t.Errorf("a PixieCloud for a prod-support cluster was accepted (%v)", err)
+	}
+
+	// Production's hub names no cluster: it runs on the managing cluster, and stays there.
+	managing := hub(oramav1alpha1.AlertReceiver{Name: "oncall", Slack: &oramav1alpha1.SlackAlertReceiver{URLSecretRef: url}})
+	managing.Name, managing.Spec.ClusterRef = "production", ""
+	if err := kube.Create(ctx, managing); err != nil {
+		t.Fatalf("a hub on the managing cluster was refused: %v", err)
+	}
+	managing.Spec.ClusterRef = "np"
+	if err := kube.Update(ctx, managing); !apierrors.IsInvalid(err) {
+		t.Errorf("a hub moved off the managing cluster (%v)", err)
+	}
+	valid.Spec.ClusterRef = ""
+	if err := kube.Update(ctx, valid); !apierrors.IsInvalid(err) {
+		t.Errorf("a hub moved onto the managing cluster (%v)", err)
 	}
 }

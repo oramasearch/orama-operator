@@ -63,8 +63,8 @@ func testPixieCloud() *oramav1alpha1.PixieCloud {
 		ObjectMeta: metav1.ObjectMeta{Name: "hub", Namespace: oramav1alpha1.PixieCloudNamespace},
 		Spec: oramav1alpha1.PixieCloudSpec{
 			Release:        testPixieRelease(),
-			Hub:            "prod-support",
-			Purpose:        "prod-support",
+			Hub:            "production",
+			Purpose:        "production",
 			Domain:         "pixie.support.example",
 			Organization:   "orama",
 			AdminEmail:     "ops@support.example",

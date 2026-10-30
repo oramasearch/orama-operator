@@ -79,16 +79,10 @@ func (o observabilityClusters) clusters() PeerClusterClients {
 	return managedPeerClusterClients{local: o.Client}
 }
 
-// purposeOf is a KubernetesCluster's purpose tag, and whether the cluster exists.
+// purposeOf is a cluster's purpose, and whether the cluster exists (observability_purpose.go). An
+// empty name is the managing cluster.
 func (o observabilityClusters) purposeOf(ctx context.Context, name string) (string, bool, error) {
-	var cluster oramav1alpha1.KubernetesCluster
-	if err := o.Get(ctx, types.NamespacedName{Name: name}, &cluster); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", false, nil
-		}
-		return "", false, err
-	}
-	return cluster.Spec.Tags[clusterPurposeTag], true, nil
+	return clusterPurpose(ctx, o.Client, name)
 }
 
 // ensurePixieNamespace creates the namespace with its Pod Security level.

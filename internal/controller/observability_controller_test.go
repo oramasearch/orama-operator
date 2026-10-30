@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -38,8 +40,8 @@ func pullSecret(name string, labels map[string]string) *corev1.Secret {
 		Type: corev1.SecretTypeDockerConfigJson, Data: map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)}}
 }
 
-// observabilityFixture is a managing cluster with a prod-support hub cluster, a production cluster
-// and a nonprod cluster.
+// observabilityFixture is a managing cluster that runs production's hub, a production cluster and a
+// nonprod cluster.
 type observabilityFixture struct {
 	scheme     *runtime.Scheme
 	management client.Client
@@ -53,18 +55,17 @@ func newObservabilityFixture(t *testing.T, extra ...client.Object) *observabilit
 	scheme := newLakeScheme(t)
 	release := testPixieRelease()
 	objects := []client.Object{
-		purposeCluster("support", prodSupportPurpose),
 		purposeCluster("prod2", productionPurpose),
 		purposeCluster("np", nonprodPurpose),
 		&oramav1alpha1.ObservabilityProvider{ObjectMeta: metav1.ObjectMeta{Name: "pixie"},
 			Spec: oramav1alpha1.ObservabilityProviderSpec{Type: oramav1alpha1.ObservabilityProviderPixie, Pixie: &release}},
-		&oramav1alpha1.ObservabilityHub{ObjectMeta: metav1.ObjectMeta{Name: "prod-support"}, Spec: oramav1alpha1.ObservabilityHubSpec{
-			ProviderRef: "pixie", ClusterRef: "support", Domain: "pixie.support.example", Organization: "orama", AdminEmail: "ops@support.example",
-			ImagePullSecretRef: oramav1alpha1.ClusterSecretReference{Name: "support-pull", Namespace: "orama-system"},
+		&oramav1alpha1.ObservabilityHub{ObjectMeta: metav1.ObjectMeta{Name: "production"}, Spec: oramav1alpha1.ObservabilityHubSpec{
+			ProviderRef: "pixie", Domain: "pixie.ops.example", Organization: "orama", AdminEmail: "ops@ops.example",
+			ImagePullSecretRef: oramav1alpha1.ClusterSecretReference{Name: "hub-pull", Namespace: "orama-system"},
 			Alerting: &oramav1alpha1.ObservabilityAlerting{Receivers: []oramav1alpha1.AlertReceiver{{Name: "oncall",
 				Slack: &oramav1alpha1.SlackAlertReceiver{URLSecretRef: oramav1alpha1.ObservabilitySecretKeyRef{Name: "prod-slack", Namespace: "orama-system", Key: "url"}}}}},
 		}},
-		pullSecret("support-pull", nil),
+		pullSecret("hub-pull", nil),
 		pullSecret("prod2-pull", nil),
 		pullSecret("np-pull", nil),
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-slack", Namespace: "orama-system", Labels: map[string]string{secretPurposeLabel: productionPurpose}},
@@ -72,12 +73,13 @@ func newObservabilityFixture(t *testing.T, extra ...client.Object) *observabilit
 	}
 	objects = append(objects, extra...)
 	management := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
-		WithStatusSubresource(&oramav1alpha1.ObservabilityHub{}, &oramav1alpha1.ObservabilityAgent{}, &oramav1alpha1.ObservabilityProvider{}, &oramav1alpha1.PeerLink{}).
+		WithStatusSubresource(&oramav1alpha1.ObservabilityHub{}, &oramav1alpha1.ObservabilityAgent{}, &oramav1alpha1.ObservabilityProvider{}, &oramav1alpha1.PeerLink{},
+			&oramav1alpha1.PixieCloud{}, &oramav1alpha1.PeerConnection{}).
 		WithInterceptorFuncs(applyAsUpsert).Build()
 	clusters := &fakePeerClusters{clusters: map[string]client.Client{
-		"support": newObservabilityCluster(t, scheme),
-		"prod2":   newObservabilityCluster(t, scheme),
-		"np":      newObservabilityCluster(t, scheme),
+		"":      management, // the hub's cluster: the managing cluster itself
+		"prod2": newObservabilityCluster(t, scheme),
+		"np":    newObservabilityCluster(t, scheme),
 	}}
 	return &observabilityFixture{
 		scheme:     scheme,
@@ -91,12 +93,12 @@ func newObservabilityFixture(t *testing.T, extra ...client.Object) *observabilit
 func (f *observabilityFixture) reconcileHub(t *testing.T) *oramav1alpha1.ObservabilityHub {
 	t.Helper()
 	for i := 0; i < 2; i++ { // the first pass adds the finalizer
-		if _, err := f.hubs.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "prod-support"}}); err != nil {
+		if _, err := f.hubs.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "production"}}); err != nil {
 			t.Fatalf("reconcile hub: %v", err)
 		}
 	}
 	var hub oramav1alpha1.ObservabilityHub
-	if err := f.management.Get(context.Background(), types.NamespacedName{Name: "prod-support"}, &hub); err != nil {
+	if err := f.management.Get(context.Background(), types.NamespacedName{Name: "production"}, &hub); err != nil {
 		t.Fatal(err)
 	}
 	return &hub
@@ -120,25 +122,36 @@ func (f *observabilityFixture) cluster(name string) client.Client { return f.clu
 
 func agentNamed(name, cluster, pull string) *oramav1alpha1.ObservabilityAgent {
 	return &oramav1alpha1.ObservabilityAgent{ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID("0b3f2f6e-1c7a-4c55-9d1e-" + strings.Repeat("a", 12))},
-		Spec: oramav1alpha1.ObservabilityAgentSpec{ClusterRef: cluster, HubRef: "prod-support",
+		Spec: oramav1alpha1.ObservabilityAgentSpec{ClusterRef: cluster, HubRef: "production",
 			ImagePullSecretRef: oramav1alpha1.ClusterSecretReference{Name: pull, Namespace: "orama-system"}}}
 }
 
 func TestObservabilityPurposeRules(t *testing.T) {
-	for purpose, refused := range map[string]bool{prodSupportPurpose: false, nonprodPurpose: false, productionPurpose: true, "": true, "staging": true} {
-		if got := hubPurposeRefusal("c", purpose) != ""; got != refused {
-			t.Errorf("hub on %q: refused=%v, want %v", purpose, got, refused)
+	hubs := []struct {
+		cluster, purpose string
+		refused          bool
+	}{
+		{"", productionPurpose, false}, // the managing cluster
+		{"np", nonprodPurpose, false},
+		{"prod2", productionPurpose, true},
+		{"c", "", true},
+		{"c", "staging", true},
+		{"c", "prod-support", true},
+	}
+	for _, h := range hubs {
+		if got := hubPurposeRefusal(h.cluster, h.purpose) != ""; got != h.refused {
+			t.Errorf("hub on %q (%q): refused=%v, want %v", h.cluster, h.purpose, got, h.refused)
 		}
 	}
 	cases := []struct {
 		agent, hub string
 		allowed    bool
 	}{
-		{productionPurpose, prodSupportPurpose, true},
-		{prodSupportPurpose, prodSupportPurpose, true},
+		{productionPurpose, productionPurpose, true},
 		{nonprodPurpose, nonprodPurpose, true},
 		{productionPurpose, nonprodPurpose, false},
-		{nonprodPurpose, prodSupportPurpose, false},
+		{nonprodPurpose, productionPurpose, false},
+		{"prod-support", productionPurpose, false},
 		{"", nonprodPurpose, false},
 	}
 	for _, c := range cases {
@@ -146,35 +159,40 @@ func TestObservabilityPurposeRules(t *testing.T) {
 			t.Errorf("agent %q to hub %q: allowed=%v, want %v", c.agent, c.hub, got, c.allowed)
 		}
 	}
-	// Production credentials reach prod-support, never nonprod.
+	// The managing cluster is production: its hub may hold production credentials. Nonprod never may.
+	ctx := context.Background()
+	reader := fake.NewClientBuilder().WithScheme(newLakeScheme(t)).WithObjects(purposeCluster("np", nonprodPurpose)).Build()
 	production := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{secretPurposeLabel: productionPurpose}}}
 	ref := oramav1alpha1.SetSecret{Namespace: "orama-system", Name: "s"}
-	if err := (secretScope{purpose: prodSupportPurpose, operator: true}).refuse(ref, "s", production); err != nil {
-		t.Errorf("a production Secret is refused for prod-support: %v", err)
-	}
-	if err := (secretScope{purpose: nonprodPurpose, operator: true}).refuse(ref, "s", production); err == nil {
-		t.Error("a production Secret may be copied to nonprod")
+	for cluster, refused := range map[string]bool{"": false, "np": true} {
+		scope, err := operatorSecretScope(ctx, reader, cluster)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := scope.refuse(ref, "s", production) != nil; got != refused {
+			t.Errorf("a production Secret copied to %q: refused=%v, want %v", firstNonEmpty(cluster, managingClusterName), got, refused)
+		}
 	}
 }
 
-// A production agent reports to the prod-support hub through its own link and key; a nonprod agent
-// naming the same hub is refused and gets nothing.
+// A production agent reports to the hub on the managing cluster through its own link and key; a
+// nonprod agent naming the same hub is refused and gets nothing.
 func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 	ctx := context.Background()
 	f := newObservabilityFixture(t, agentNamed("prod2", "prod2", "prod2-pull"), agentNamed("np", "np", "np-pull"))
 	hub := f.reconcileHub(t)
-	if hub.Status.Purpose != prodSupportPurpose || hub.Status.ConcreteRef == "" {
+	if hub.Status.Purpose != productionPurpose || hub.Status.ConcreteRef == "" {
 		t.Fatalf("hub status %+v", hub.Status)
 	}
-	support := f.cluster("support")
+	managing := f.cluster("")
 	var cloud oramav1alpha1.PixieCloud
-	if err := support.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
+	if err := managing.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
 		t.Fatal(err)
 	}
 	if len(cloud.Spec.Agents) != 1 || cloud.Spec.Agents[0].Name != "prod2" {
-		t.Fatalf("the hub issues keys for %+v; only the production agent may report to a prod-support hub", cloud.Spec.Agents)
+		t.Fatalf("the hub issues keys for %+v; only the production agent may report to production's hub", cloud.Spec.Agents)
 	}
-	if cloud.Spec.Release.Commit != pixieManifestCommit || cloud.Spec.Purpose != prodSupportPurpose {
+	if cloud.Spec.Release.Commit != pixieManifestCommit || cloud.Spec.Purpose != productionPurpose {
 		t.Fatalf("PixieCloud spec %+v", cloud.Spec)
 	}
 
@@ -197,17 +215,17 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 	}
 	// The hub's operator issues the key and publishes its CA.
 	key := "px-dep-11111111-2222-3333-4444-555555555555"
-	if err := support.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pixieDeployKeyPrefix + "prod2", Namespace: "plc"},
+	if err := managing.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pixieDeployKeyPrefix + "prod2", Namespace: "plc"},
 		Data: map[string][]byte{"deploy-key": []byte(key)}}); err != nil {
 		t.Fatal(err)
 	}
 	cloud.Status.CACertificate = "-----BEGIN CERTIFICATE-----\nhub\n-----END CERTIFICATE-----\n"
 	cloud.Status.Agents = []oramav1alpha1.PixieCloudAgentStatus{{Name: "prod2", Registered: true, Connected: true}}
-	if err := support.Status().Update(ctx, &cloud); err != nil {
+	if err := managing.Status().Update(ctx, &cloud); err != nil {
 		t.Fatal(err)
 	}
 	agent = f.reconcileAgent(t, "prod2")
-	if agent.Status.Link != "PeerLink pixie-prod2" || agent.Status.Purpose != productionPurpose || agent.Status.HubPurpose != prodSupportPurpose {
+	if agent.Status.Link != "PeerLink pixie-prod2" || agent.Status.Purpose != productionPurpose || agent.Status.HubPurpose != productionPurpose {
 		t.Fatalf("agent status %+v", agent.Status)
 	}
 	prod2 := f.cluster("prod2")
@@ -225,7 +243,7 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 	// The link: the hub's end exports only vzconn, the agent's end imports only it, and the
 	// managing cluster's PeerLink pairs exactly those two.
 	var hubEnd, agentEnd oramav1alpha1.PeerConnection
-	if err := support.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieAgentPeer("prod2")}, &hubEnd); err != nil {
+	if err := managing.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieAgentPeer("prod2")}, &hubEnd); err != nil {
 		t.Fatal(err)
 	}
 	if err := prod2.Get(ctx, client.ObjectKey{Namespace: "pl", Name: pixieHubPeer}, &agentEnd); err != nil {
@@ -241,11 +259,11 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 		t.Fatalf("link ends: hub %+v agent %+v", hubEnd.Spec, agentEnd.Spec)
 	}
 	// The hub Prometheus scrapes exactly the Service the hub end's import creates.
-	if err := support.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
+	if err := managing.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
 		t.Fatal(err)
 	}
-	if cloud.Spec.Cluster != "support" {
-		t.Fatalf("PixieCloud cluster %q, want the hub's cluster", cloud.Spec.Cluster)
+	if cloud.Spec.Cluster != "" {
+		t.Fatalf("PixieCloud cluster %q, want none: the hub runs on the managing cluster", cloud.Spec.Cluster)
 	}
 	wantTarget := peerImportServiceName(hubEnd.Spec.Imports[0].Name) + ".plc.svc.cluster.local:9090"
 	found := false
@@ -264,7 +282,7 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 	if err := f.management.Get(ctx, types.NamespacedName{Name: "pixie-prod2"}, &link); err != nil {
 		t.Fatal(err)
 	}
-	if link.Spec.Ends[0].ClusterRef != "support" || link.Spec.Ends[1].ClusterRef != "prod2" {
+	if link.Spec.Ends[0].ClusterRef != "" || link.Spec.Ends[1].ClusterRef != "prod2" {
 		t.Fatalf("PeerLink ends %+v", link.Spec.Ends)
 	}
 
@@ -301,7 +319,7 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 	if err := prod2.Get(ctx, client.ObjectKeyFromObject(&vizier), &vizier); !apierrors.IsNotFound(err) {
 		t.Error("the PixieVizier outlived its agent")
 	}
-	if err := support.Get(ctx, client.ObjectKeyFromObject(&hubEnd), &hubEnd); !apierrors.IsNotFound(err) {
+	if err := managing.Get(ctx, client.ObjectKeyFromObject(&hubEnd), &hubEnd); !apierrors.IsNotFound(err) {
 		t.Error("the hub's end of the link outlived the agent")
 	}
 	if err := f.management.Get(ctx, types.NamespacedName{Name: "pixie-prod2"}, &link); !apierrors.IsNotFound(err) {
@@ -312,7 +330,7 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 		t.Errorf("credentials copied for the agent remain on its cluster: %d", len(leftover.Items))
 	}
 	f.reconcileHub(t)
-	if err := support.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
+	if err := managing.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
 		t.Fatal(err)
 	}
 	if len(cloud.Spec.Agents) != 0 {
@@ -324,7 +342,7 @@ func TestObservabilityAgentsReportOnlyToTheirPurposesHub(t *testing.T) {
 func TestObservabilityHubRefusedOnProduction(t *testing.T) {
 	f := newObservabilityFixture(t)
 	var hub oramav1alpha1.ObservabilityHub
-	if err := f.management.Get(context.Background(), types.NamespacedName{Name: "prod-support"}, &hub); err != nil {
+	if err := f.management.Get(context.Background(), types.NamespacedName{Name: "production"}, &hub); err != nil {
 		t.Fatal(err)
 	}
 	hub.Spec.ClusterRef = "prod2"
@@ -332,7 +350,7 @@ func TestObservabilityHubRefusedOnProduction(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := f.reconcileHub(t)
-	if got.Status.Phase != oramav1alpha1.ObservabilityPhaseRefused || !strings.Contains(got.Status.Message, "prod-support") {
+	if got.Status.Phase != oramav1alpha1.ObservabilityPhaseRefused || !strings.Contains(got.Status.Message, "managing cluster") {
 		t.Fatalf("hub on production: %+v", got.Status)
 	}
 	var cloud oramav1alpha1.PixieCloud
@@ -368,5 +386,41 @@ func TestObservabilityProductionCredentialsNeverReachNonprod(t *testing.T) {
 	var copied corev1.Secret
 	if err := f.cluster("np").Get(context.Background(), client.ObjectKey{Namespace: "pl", Name: pixiePullSecret}, &copied); !apierrors.IsNotFound(err) {
 		t.Error("the production pull Secret reached the nonprod cluster")
+	}
+}
+
+// The managing cluster's hub holds production's pull Secret and alert receivers. Listing them never
+// looks up a KubernetesCluster with no name, which the API server refuses, and a nonprod cluster
+// never gets them.
+func TestObservabilityManagingHubSecretsAreProduction(t *testing.T) {
+	ctx := context.Background()
+	hub := &oramav1alpha1.ObservabilityHub{ObjectMeta: metav1.ObjectMeta{Name: "production"}, Spec: oramav1alpha1.ObservabilityHubSpec{
+		ProviderRef: "pixie", Domain: "pixie.ops.example", Organization: "orama", AdminEmail: "ops@ops.example",
+		ImagePullSecretRef: oramav1alpha1.ClusterSecretReference{Name: "hub-pull", Namespace: "orama-system"},
+		Alerting: &oramav1alpha1.ObservabilityAlerting{Receivers: []oramav1alpha1.AlertReceiver{{Name: "oncall",
+			Slack: &oramav1alpha1.SlackAlertReceiver{URLSecretRef: oramav1alpha1.ObservabilitySecretKeyRef{Name: "prod-slack", Namespace: "orama-system", Key: "url"}}}}},
+	}}
+	reader := fake.NewClientBuilder().WithScheme(newLakeScheme(t)).WithObjects(purposeCluster("np", nonprodPurpose), hub).
+		WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if key.Name == "" {
+				return errors.New("resource name may not be empty")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		}}).Build()
+	sources, err := productionSecretSources(ctx, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"orama-system/hub-pull", "orama-system/prod-slack"} {
+		if _, found := sources[key]; !found {
+			t.Errorf("%s is not listed as a production credential: %v", key, sources)
+		}
+	}
+	scope, err := operatorSecretScope(ctx, reader, "np")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.refuse(oramav1alpha1.SetSecret{Namespace: "orama-system", Name: "hub-pull"}, pixiePullSecret, pullSecret("hub-pull", nil)) == nil {
+		t.Error("the managing cluster's hub pull Secret may be copied to a nonprod cluster")
 	}
 }

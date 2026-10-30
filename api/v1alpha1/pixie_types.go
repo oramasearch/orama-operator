@@ -57,10 +57,12 @@ type PixieCloudSpec struct {
 	// Hub is the ObservabilityHub this was written for.
 	// +kubebuilder:validation:MinLength=1
 	Hub string `json:"hub"`
-	// Purpose is the hub cluster's purpose tag, as the managing cluster read it.
-	// +kubebuilder:validation:Enum=nonprod;prod-support
+	// Purpose is the hub cluster's purpose tag, as the managing cluster read it: production on the
+	// managing cluster, nonprod on a nonprod cluster.
+	// +kubebuilder:validation:Enum=nonprod;production
 	Purpose string `json:"purpose"`
-	// Cluster is the hub's own KubernetesCluster: the cluster label of its own metrics.
+	// Cluster is the hub's own KubernetesCluster: the cluster label of its own metrics. Empty on the
+	// managing cluster, whose metrics are labelled with the hub's name.
 	// +optional
 	Cluster string `json:"cluster,omitempty"`
 	// MetricsRetention is how long the hub Prometheus keeps federated metrics.
@@ -164,7 +166,7 @@ type PixieVizierSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Agent string `json:"agent"`
 	// Purpose is the agent cluster's purpose tag, as the managing cluster read it.
-	// +kubebuilder:validation:Enum=nonprod;production;prod-support
+	// +kubebuilder:validation:Enum=nonprod;production
 	Purpose string `json:"purpose"`
 	// ClusterName is the name the cluster is registered under in Pixie Cloud.
 	// +kubebuilder:validation:MinLength=1

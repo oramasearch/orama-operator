@@ -21,8 +21,8 @@ import (
 // The provider's type decides the concrete kinds the managing operator writes onto the clusters:
 // PixieCloud on the hub's cluster and PixieVizier on each agent's. Each cluster's own operator
 // reconciles them. Which hub an agent may report to is decided from the clusters' purpose tags,
-// never from a field: production agents report only to a prod-support hub, nonprod agents only to a
-// nonprod hub.
+// never from a field: production agents report only to the hub on the managing cluster, nonprod
+// agents only to a hub on a nonprod cluster.
 
 // ObservabilityProviderType is the vendor a provider stands for.
 // +kubebuilder:validation:Enum=pixie
@@ -216,17 +216,20 @@ type ObservabilityHubStorage struct {
 }
 
 // ObservabilityHubSpec is where one purpose's observability lives.
+// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) == has(oldSelf.clusterRef)",message="clusterRef is immutable"
 type ObservabilityHubSpec struct {
 	// ProviderRef names the ObservabilityProvider whose release the hub runs.
 	// +kubebuilder:validation:MinLength=1
 	ProviderRef string `json:"providerRef"`
 
-	// ClusterRef is the KubernetesCluster the hub runs on. Its purpose tag decides which agents may
-	// report here: a prod-support cluster serves production agents, a nonprod cluster nonprod ones.
-	// A hub on any other cluster is refused. Immutable.
+	// ClusterRef is the KubernetesCluster the hub runs on. Empty means the managing cluster itself,
+	// which is where production's hub runs: it serves production agents. A nonprod cluster's hub
+	// serves nonprod agents. A hub on a production cluster, or on one with any other purpose, is
+	// refused. Immutable.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="clusterRef is immutable"
-	ClusterRef string `json:"clusterRef"`
+	// +optional
+	ClusterRef string `json:"clusterRef,omitempty"`
 
 	// Domain is the host name people reach the hub's UI under (the UI and its sign-in use it and
 	// work.<domain>). The operator does not create its DNS record or expose it publicly.
@@ -293,7 +296,7 @@ type ObservabilityHubStatus struct {
 	// Phase is Pending, Progressing, Ready, Degraded or Refused.
 	// +optional
 	Phase string `json:"phase,omitempty"`
-	// Purpose is the hub cluster's purpose tag.
+	// Purpose is the hub cluster's purpose tag; production for the managing cluster.
 	// +optional
 	Purpose string `json:"purpose,omitempty"`
 	// ConcreteRef is the concrete resource on the hub's cluster, Kind namespace/name.
@@ -353,7 +356,8 @@ type ObservabilityAgentSpec struct {
 	ClusterRef string `json:"clusterRef"`
 
 	// HubRef names the ObservabilityHub the agents report to. It is refused unless the two
-	// clusters' purposes match: production to prod-support, nonprod to nonprod.
+	// clusters' purposes match: production to the managing cluster's hub, nonprod to a nonprod
+	// cluster's hub.
 	// +kubebuilder:validation:MinLength=1
 	HubRef string `json:"hubRef"`
 
@@ -376,7 +380,7 @@ type ObservabilityAgentStatus struct {
 	// Purpose is the agent cluster's purpose tag.
 	// +optional
 	Purpose string `json:"purpose,omitempty"`
-	// HubPurpose is the hub cluster's purpose tag.
+	// HubPurpose is the hub cluster's purpose tag; production for the managing cluster.
 	// +optional
 	HubPurpose string `json:"hubPurpose,omitempty"`
 	// ConcreteRef is the concrete resource on the agent's cluster, Kind namespace/name.
