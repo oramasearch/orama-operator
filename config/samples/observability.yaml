@@ -1,4 +1,4 @@
-# Observability (operator#15, #456): the resources the managing cluster gets, in rollout order
+# Observability (operator#15, #456, #1059): the resources the managing cluster gets, in rollout order
 # (docs/infrastructure/observability.md, "Rolling it out"). A sample, not configuration: nothing
 # here is applied, and the committed resources go under config/clusters/ when each step is approved.
 #
@@ -77,39 +77,21 @@ spec:
     name: nonprod-pixie-pull
     namespace: orama-system
 ---
-# 3. The prod-support cluster. Billed: its region and size are Steve's to choose, and it is created
-#    only from config/clusters/ once approved. It runs no customer or test workload; sets refuse it.
-apiVersion: orama.cloud/v1alpha1
-kind: KubernetesCluster
-metadata:
-  name: orama-prod-support-01
-spec:
-  providerRef: azure-orama
-  region: REPLACE-region
-  kubernetesVersion: "1.35"
-  deletionPolicy: Retain
-  tags:
-    purpose: prod-support
-  nodePools:
-    - name: system
-      role: system
-      machineSize: REPLACE-size
-      count: 3
----
-# 4. Production's hub on it, and one agent per production cluster, each reporting over its own
-#    peer link with its own deploy key and pull Secret.
+# 3. Production's hub on the managing cluster (no clusterRef; #1059), and one agent per production
+#    cluster, each reporting over its own peer link with its own deploy key and pull Secret. The
+#    hub's own metrics carry the hub's name as their cluster label, so it is named after the
+#    managing cluster.
 apiVersion: orama.cloud/v1alpha1
 kind: ObservabilityHub
 metadata:
-  name: prod-support
+  name: orama-production-cluster-01
 spec:
   providerRef: pixie
-  clusterRef: orama-prod-support-01
-  domain: pixie.prod-support.example.internal
+  domain: pixie.production.example.internal
   organization: orama
   adminEmail: ops@orama.example
   imagePullSecretRef:
-    name: prod-support-pixie-pull
+    name: management-pixie-pull
     namespace: orama-system
   storage:
     postgres: 50Gi
@@ -135,7 +117,7 @@ metadata:
   name: orama-production-cluster-02
 spec:
   clusterRef: orama-production-cluster-02
-  hubRef: prod-support
+  hubRef: orama-production-cluster-01
   imagePullSecretRef:
     name: prod2-pixie-pull
     namespace: orama-system
@@ -146,7 +128,7 @@ metadata:
   name: orama-production-cluster-03
 spec:
   clusterRef: orama-production-cluster-03
-  hubRef: prod-support
+  hubRef: orama-production-cluster-01
   imagePullSecretRef:
     name: prod3-pixie-pull
     namespace: orama-system

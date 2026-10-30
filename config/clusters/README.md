@@ -23,7 +23,7 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 | File | What it holds |
 |---|---|
 | [`provider.yaml`](provider.yaml) | `KubernetesClusterProvider/azure-orama`: the Azure subscription and defaults every cluster is created with. |
-| `<cluster>/cluster.yaml` | The `KubernetesCluster`: region, version, node pools, `purpose` tag (`nonprod`, `production` or `prod-support`), deletion policy. |
+| `<cluster>/cluster.yaml` | The `KubernetesCluster`: region, version, node pools, `purpose` tag (`nonprod` or `production`), deletion policy. |
 | `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order. |
 | `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs, and the pull Secret copied to it. A nonprod cluster names its own (`orama-system/oramasearch-dockerhub-nonprod`, copied as `oramasearch-dockerhub`); a Secret production uses is refused for it (orama-operator#832). |
 | `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose, and the end-to-end runs against them (`spec.e2eTests`). |

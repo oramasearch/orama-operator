@@ -94,8 +94,8 @@ order of `projectIDs` may change.
 The same assets run `TestObservabilityCRDsRefuseMalformedResources` (operator#15): the observability
 CRDs install on a real API server (a CEL rule over the provider's image map exceeded the API
 server's cost budget and was replaced by a bounded value pattern), refuse an image by tag, a
-receiver that is both Slack and a webhook, a hub moved to another cluster and a `PixieCloud` for a
-production cluster, and default `storage` and `nodeMemory`. The setup-envtest of controller-runtime
+receiver that is both Slack and a webhook, a hub moved to another cluster, onto or off the managing cluster, and a `PixieCloud` for a purpose
+it does not take, and default `storage` and `nodeMemory`. The setup-envtest of controller-runtime
 0.18 fetches from a bucket that now answers 401; `setup-envtest@release-0.21 use 1.30.0` fetches
 the same binaries from GitHub.
 
