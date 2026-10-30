@@ -51,7 +51,9 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.11.1** (2026-10-29), a patch: production's observability hub runs on the management cluster,
+The current release is **v0.11.2** (2026-10-30), a patch: observability agents write their alert routing before Pixie's
+release exists ([`docs/releases/v0.11.2.md`](docs/releases/v0.11.2.md)).
+Before it, **v0.11.1** (2026-10-29), a patch: production's observability hub runs on the management cluster,
 and the `prod-support` cluster purpose is removed ([`docs/releases/v0.11.1.md`](docs/releases/v0.11.1.md)).
 Before it, **v0.11.0** (2026-10-29), a minor release: observability kinds and a self-hosted Pixie,
 zone-level authenticated origin pulls, and four Cloud v1 fixes ([`docs/releases/v0.11.0.md`](docs/releases/v0.11.0.md)).
