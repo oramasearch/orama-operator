@@ -51,8 +51,10 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.11.3** (2026-10-30), a patch: the platform's kube-prometheus-stack no longer raises
-`KubeCPUOvercommit` and `KubeMemoryOvercommit` ([`docs/releases/v0.11.3.md`](docs/releases/v0.11.3.md)).
+The current release is **v0.11.4** (2026-10-30), a patch: the platform's kube-prometheus-stack no longer raises
+`KubeCPUQuotaOvercommit` and `KubeMemoryQuotaOvercommit` ([`docs/releases/v0.11.4.md`](docs/releases/v0.11.4.md)).
+Before it, **v0.11.3** (2026-10-30), a patch: no `KubeCPUOvercommit` and `KubeMemoryOvercommit`
+([`docs/releases/v0.11.3.md`](docs/releases/v0.11.3.md)).
 Before it, **v0.11.2** (2026-10-30), a patch: observability agents write their alert routing before Pixie's
 release exists ([`docs/releases/v0.11.2.md`](docs/releases/v0.11.2.md)).
 Before it, **v0.11.1** (2026-10-29), a patch: production's observability hub runs on the management cluster,
