@@ -637,6 +637,10 @@ func TestHubPrometheusIsPinnedAndScoped(t *testing.T) {
 	if fsGroup, _, _ := unstructured.NestedInt64(prometheus.Object, "spec", "securityContext", "fsGroup"); fsGroup == 0 {
 		t.Error("the hub Prometheus sets no fsGroup, so its volume stays root's")
 	}
+	// Without a monitor selector prometheus-operator leaves the configuration empty: no federation, no rules.
+	if _, found, _ := unstructured.NestedMap(prometheus.Object, "spec", "scrapeConfigSelector"); !found {
+		t.Error("the hub Prometheus sets no scrapeConfigSelector, so prometheus-operator writes none of its configuration")
+	}
 	// The pods carry the label the hub's sandbox allowances select.
 	podLabels, _, _ := unstructured.NestedStringMap(prometheus.Object, "spec", "podMetadata", "labels")
 	if podLabels[pixieComponentLabel] != hubPrometheusComponent {

@@ -265,6 +265,11 @@ func hubMetricsObjects(cloud *oramav1alpha1.PixieCloud) ([]*unstructured.Unstruc
 		"additionalAlertManagerConfigs": map[string]any{"name": hubPrometheusConfig, "key": "alertmanagers.yaml"},
 		"ruleSelector":                  map[string]any{"matchLabels": map[string]any{metricsScopeLabel: metricsScopeHub}},
 		"ruleNamespaceSelector":         map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": cloud.Namespace}},
+		// prometheus-operator writes no configuration at all, these additions and the rules included,
+		// for a Prometheus that sets none of the monitor selectors. This one selects the hub's own
+		// ScrapeConfigs, of which there are none: it is there so the configuration is written.
+		"scrapeConfigSelector":          map[string]any{"matchLabels": map[string]any{metricsScopeLabel: metricsScopeHub}},
+		"scrapeConfigNamespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": cloud.Namespace}},
 	}
 	rules := prometheusRuleObject(cloud.Namespace, "hub-cluster-alerts",
 		map[string]string{metricsScopeLabel: metricsScopeHub}, "orama.observability.hub", hubClusterRules(cloud))
