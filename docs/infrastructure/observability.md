@@ -419,7 +419,10 @@ hub:  PeerConnection plc/pixie-agent-<agent> import metrics.<agent> = Service pe
 
 **What pages from the hub**, evaluated only by the hub Prometheus (rules labelled
 `orama.cloud/metrics-scope: hub`; the platform Prometheus' `ruleSelector` excludes them, on both
-installation paths), delivered by the hub cluster's Alertmanager to the hub's receivers:
+installation paths), delivered by the hub cluster's Alertmanager to the hub's receivers. The hub
+Prometheus sets a `scrapeConfigSelector` (for the hub's own ScrapeConfigs, none today): without any
+monitor selector, prometheus-operator writes none of its configuration, so neither the federation
+jobs nor these rules would load.
 
 | Alert | Fires when |
 |---|---|

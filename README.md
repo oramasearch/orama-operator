@@ -51,7 +51,9 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.11.8** (2026-10-31), a patch: people can sign in to the Pixie hubs. The organisation gets the
+The current release is **v0.11.9** (2026-10-31), a patch: the hub Prometheus writes its configuration, so it federates
+every cluster and runs the hub's alert rules ([`docs/releases/v0.11.9.md`](docs/releases/v0.11.9.md)).
+Before it, **v0.11.8** (2026-10-31), a patch: people can sign in to the Pixie hubs. The organisation gets the
 administrator's email domain, which Pixie requires, and a hub's `users` give each person their own sign-in
 ([`docs/releases/v0.11.8.md`](docs/releases/v0.11.8.md)).
 Before it, **v0.11.7** (2026-10-31), a patch: Pixie's metadata index is created as soon as OpenSearch is ready, so the
