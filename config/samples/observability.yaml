@@ -12,7 +12,7 @@ spec:
   type: pixie
   pixie:
     commit: 4b445e0b7907c79d034bcb4a227bbaede94d370a
-    vizierVersion: REPLACE-with-the-version-455-tags   # e.g. 0.14.16-orama.1
+    vizierVersion: REPLACE-with-the-version-455-tags   # e.g. 0.14.16-pre-orama.1
     cliVersion: REPLACE-with-the-version-455-tags
     images:
       vizier-pem: docker.io/oramasearch/pixie-vizier-pem_image@sha256:REPLACE
@@ -27,7 +27,6 @@ spec:
       cloud-cron-script: docker.io/oramasearch/pixie-cloud-cron_script_server_image@sha256:REPLACE
       cloud-indexer: docker.io/oramasearch/pixie-cloud-indexer_server_image@sha256:REPLACE
       cloud-plugin: docker.io/oramasearch/pixie-cloud-plugin_server_image@sha256:REPLACE
-      cloud-plugin-load-db: docker.io/oramasearch/pixie-cloud-plugin-load_db@sha256:REPLACE
       cloud-profile: docker.io/oramasearch/pixie-cloud-profile_server_image@sha256:REPLACE
       cloud-project-manager: docker.io/oramasearch/pixie-cloud-project_manager_server_image@sha256:REPLACE
       cloud-proxy: docker.io/oramasearch/pixie-cloud-proxy_server_image@sha256:REPLACE

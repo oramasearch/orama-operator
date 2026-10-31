@@ -1,0 +1,36 @@
+From ab00bae32f6badeebbbe1a24600b5e98c60d1ce0 Mon Sep 17 00:00:00 2001
+From: thatjuan <juan@cxdmail.com>
+Date: Fri, 30 Oct 2026 19:33:48 -0700
+Subject: [PATCH 4/4] ui: quote the stamp values the webpack bundle exports
+
+The stamped UI build turned each workspace status line into an unquoted
+export. Bazel 7 adds FORMATTED_DATE, whose value has spaces, so every stamped
+build of //src/ui:ui_bundle failed with "export: `31': not a valid identifier"
+(oramasearch/orama-operator#455). Each value is now exported in single quotes.
+---
+ bazel/ui.bzl | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/bazel/ui.bzl b/bazel/ui.bzl
+index 8fd2b52b6..7a2938248 100644
+--- a/bazel/ui.bzl
++++ b/bazel/ui.bzl
+@@ -69,11 +69,11 @@ def _pl_webpack_library_impl(ctx):
+     if ctx.attr.stamp:
+         # This is some truly shady stuff. The stamping on genrules just makes this file
+         # available, but does not apply it to the environment. We parse out the file
+-        # and apply it to the environment here. Hopefully,
+-        # no special characters/spaces/quotes in the results ...
++        # and apply it to the environment here, each value in single quotes: Bazel 7's
++        # FORMATTED_DATE has spaces. A value must still not hold a single quote.
+         env_cmds = [
+-            '$(sed -E "s/^([A-Za-z_]+)\\s*(.*)/export \\1=\\2/g" "{}")'.format(ctx.info_file.path),
+-            '$(sed -E "s/^([A-Za-z_]+)\\s*(.*)/export \\1=\\2/g" "{}")'.format(ctx.version_file.path),
++            '. <(sed -E "s/^([A-Za-z_]+)\\s*(.*)/export \\1=\\x27\\2\\x27/" "{}")'.format(ctx.info_file.path),
++            '. <(sed -E "s/^([A-Za-z_]+)\\s*(.*)/export \\1=\\x27\\2\\x27/" "{}")'.format(ctx.version_file.path),
+         ]
+         all_files.append(ctx.info_file)
+         all_files.append(ctx.version_file)
+-- 
+2.55.0
+

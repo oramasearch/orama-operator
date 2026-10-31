@@ -142,6 +142,23 @@ func TestPixieReleaseProblems(t *testing.T) {
 	}
 }
 
+// The committed release (#455) must be one this operator installs: its commit is the vendored one
+// and it names every key by digest. Moving the operator to another Pixie commit fails here until
+// the release is rebuilt.
+func TestCommittedPixieReleaseIsInstallable(t *testing.T) {
+	raw, err := os.ReadFile("../../config/clusters/observability-provider.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var provider oramav1alpha1.ObservabilityProvider
+	if err := sigsyaml.UnmarshalStrict(raw, &provider); err != nil {
+		t.Fatal(err)
+	}
+	if problems := pixieReleaseProblems(provider.Spec.Pixie); len(problems) != 0 {
+		t.Fatalf("the committed release cannot be installed: %v", problems)
+	}
+}
+
 // forbiddenImageFragments are image names from distributions this operator must never ship:
 // Grafana's AGPL family and Elastic's non-permissive builds, and the public registries Pixie's
 // manifests pull from (everything comes from the release, by digest).
