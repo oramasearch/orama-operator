@@ -192,7 +192,11 @@ func (r *PixieCloudReconciler) reconcile(ctx context.Context, cloud *oramav1alph
 	phase, ready, message := summarizeComponents(components)
 	status := oramav1alpha1.PixieCloudStatus{Phase: phase, Ready: ready, Components: components, Message: message, CACertificate: string(material.cloudCA)}
 
-	bootstrapMessage, err := r.bootstrap(ctx, cloud, material, phase == oramav1alpha1.ObservabilityPhaseReady, agents)
+	searchReady := false
+	for _, component := range components {
+		searchReady = searchReady || (component.Name == pixieSearchService && component.Ready)
+	}
+	bootstrapMessage, err := r.bootstrap(ctx, cloud, material, searchReady, phase == oramav1alpha1.ObservabilityPhaseReady, agents)
 	if err != nil {
 		return oramav1alpha1.PixieCloudStatus{}, nil, err
 	}
@@ -392,11 +396,11 @@ func (r *PixieCloudReconciler) databaseStatus(ctx context.Context) (oramav1alpha
 	return component, nil
 }
 
-// bootstrap runs once the hub is Ready, and keeps one deploy key per accepted agent through
-// Pixie's API. It fills in Pixie's side of statuses (one per agent, in order) and says, while it
-// cannot finish, why.
-func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alpha1.PixieCloud, material pixieCloudMaterial, hubReady bool, statuses []oramav1alpha1.PixieCloudAgentStatus) (string, error) {
-	if !hubReady {
+// bootstrap creates the metadata index once OpenSearch is ready, then, once the hub is Ready, keeps
+// one deploy key per accepted agent through Pixie's API. It fills in Pixie's side of statuses (one
+// per agent, in order) and says, while it cannot finish, why.
+func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alpha1.PixieCloud, material pixieCloudMaterial, searchReady, hubReady bool, statuses []oramav1alpha1.PixieCloudAgentStatus) (string, error) {
+	if !searchReady {
 		return "", nil
 	}
 	backend, err := r.backend(material.creds)
@@ -404,11 +408,16 @@ func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alph
 		return "", err
 	}
 	defer backend.Close()
-	if ok, why, err := backend.Ready(ctx); err != nil || !ok {
-		return firstNonEmpty(why, "waiting for Pixie's databases"), err
-	}
+	// The index before the hub is Ready: the indexer refuses to start without it, and the hub is not
+	// Ready until the indexer is.
 	if err := backend.EnsureIndex(ctx, pixieMetadataIndex); err != nil {
 		return "", err
+	}
+	if !hubReady {
+		return "", nil
+	}
+	if ok, why, err := backend.Ready(ctx); err != nil || !ok {
+		return firstNonEmpty(why, "waiting for Pixie's databases"), err
 	}
 	var admin corev1.Secret
 	if err := r.Get(ctx, client.ObjectKey{Namespace: cloud.Namespace, Name: pixieAdminSecret}, &admin); err != nil {

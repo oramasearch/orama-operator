@@ -173,12 +173,14 @@ from `pl-cloud-config`). `PL_DISABLE_AUTO_UPDATE` is `true`.
 ### The bootstrap
 
 What a person would do after installing Pixie Cloud, done by the hub cluster's operator
-(`pixie_cloud_bootstrap.go`), once the hub is Ready:
+(`pixie_cloud_bootstrap.go`). The index comes first, as soon as OpenSearch is ready; the rest once
+the hub is Ready:
 
 1. **The metadata index**, created in OpenSearch with the indexer's own body (vendored from
    `src/cloud/indexer/md/mapping.o.go` as `assets/pixie/md-index.json`). The indexer compares its
    desired settings with the live index and reindexes on any difference, so the body must be its
-   own.
+   own. It is created before the hub is Ready because the indexer, with manual index management,
+   exits when the index is missing, and the hub is not Ready without the indexer.
 2. **The administrator**, through Kratos' admin API.
 3. **The organisation and the administrator's user.** Pixie has no API that creates the first
    organisation or user without someone signing in, so this one step is a schema adapter: it reads
@@ -332,6 +334,29 @@ installed in part gets nothing written and the condition says so (`TestMonitorin
 Rules on metrics that may be absent have an `absent()` companion, so a missing target is an alert,
 never a silent pass: `OramaEngineTargetsMissing` and `OramaControlDBTargetsMissing` (critical),
 `OramaStackStatusMetricsMissing`, and `ObservabilityAgentStatusMissing` on agents and hubs.
+
+## Reaching the UIs
+
+Nothing is exposed publicly: no Ingress, no DNS record. People reach each UI with `kubectl
+port-forward` on the cluster it runs on, so access is exactly who holds that cluster's credentials.
+Perses (read-only), Prometheus and Alertmanager have no sign-in of their own.
+
+```sh
+C=orama-production-cluster-01   # or orama-production-cluster-02, -03, orama-nonprod-cluster-01
+kubectl --context $C -n monitoring port-forward svc/perses 8080:8080                            # http://localhost:8080
+kubectl --context $C -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090    # http://localhost:9090
+kubectl --context $C -n monitoring port-forward svc/kube-prometheus-stack-alertmanager 9093:9093  # http://localhost:9093
+```
+
+A Cloud v1 stack's dashboards are in its namespace's Perses project, on its own cluster. The hub's
+dashboards (project `observability-hub`) are in the Perses of the hub's cluster: the managing cluster
+for production, `orama-nonprod-cluster-01` for nonprod.
+
+The Pixie UI answers on the hub's `domain` and `work.<domain>` through `cloud-proxy-service` in `plc`
+(port 443). Point both names at `127.0.0.1` in `/etc/hosts`, forward
+`kubectl -n plc port-forward svc/cloud-proxy-service 8443:443`, open `https://<domain>:8443`, and sign
+in as the hub's `adminEmail` with the password in `plc/pixie-admin`. The browser does not trust the
+hub's CA until `PixieCloud.status.caCertificate` is imported.
 
 ## The hub's metrics: every cluster of its purpose, kept and paged on the hub
 
@@ -511,7 +536,8 @@ releases from both installation paths in one change; the CRDs stay, as always.
 
 ## Verify
 
-What has been checked, and how strongly. Nothing below has run on a cluster.
+What has been checked, and how strongly. Of all this, only the platform charts have run on a cluster: kube-prometheus-stack and
+Perses installed from the mirrors on all four clusters on 2026-10-30, every leaf scrape target up.
 
 | Evidence | What it shows | Tests |
 |---|---|---|
@@ -529,5 +555,5 @@ migrated profile database, the GraphQL key calls); OpenSearch 2.19 with Pixie's 
 autocomplete; the script bundle through the proxy and the script manager; the Envoy federation proxy
 (the `platform-envoy` mirror) and the metrics crossing a real peer link; the hub Prometheus under
 prometheus-operator and its sandbox allowances; the kube-state-metrics custom-resource metrics; the
-PodMonitors and alerts against live targets; and the platform charts installing from the mirrors.
+PodMonitors and alerts against live targets.
 Each is step 4 of the rollout, on nonprod first.
