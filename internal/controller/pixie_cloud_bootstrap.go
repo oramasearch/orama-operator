@@ -33,7 +33,8 @@ import (
 // self-hosted Pixie Cloud, done by the hub cluster's operator, idempotently.
 //
 //  1. The metadata index exists in OpenSearch, created with the indexer's own body
-//     (assets/pixie/md-index.json), so the indexer's migration finds nothing to change.
+//     (assets/pixie/md-index.json), so the indexer's migration finds nothing to change. This step
+//     runs as soon as OpenSearch is ready, before the hub is: the indexer does not start without it.
 //  2. The administrator exists in Kratos (Kratos' admin API), with the generated password.
 //  3. The organisation exists and the administrator belongs to it. Pixie has no API that creates
 //     the first organisation or user without someone signing in, so this one step is a schema
