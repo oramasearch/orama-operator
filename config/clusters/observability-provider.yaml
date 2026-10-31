@@ -43,7 +43,7 @@ spec:
       # Mirrors.
       nats: docker.io/oramasearch/pixie-nats@sha256:ac7228464fbc7154e91c9a00cba85b5da1df9a3ded6c784cdd6009cece85a1e3              # ghcr.io/pixie-io/nats:2.9.25-scratch-pl1
       curl: docker.io/oramasearch/pixie-curl@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922              # ghcr.io/pixie-io/pixie-oss-pixie-dev-public-curl:8.15.0
-      postgres: docker.io/oramasearch/pixie-postgres@sha256:34cd4159d07b3410a1b29da35072e2e927a0905e717a61afa3814624a2e8859a      # ghcr.io/cloudnative-pg/postgresql:16.15
+      postgres: docker.io/oramasearch/pixie-postgres:16.15@sha256:34cd4159d07b3410a1b29da35072e2e927a0905e717a61afa3814624a2e8859a  # ghcr.io/cloudnative-pg/postgresql:16.15; CNPG reads the version from the tag
       envoy: docker.io/oramasearch/pixie-envoy@sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9            # envoyproxy/envoy:v1.34.2
       hydra: docker.io/oramasearch/pixie-hydra@sha256:61771c706934e1ffd66f86700a28a294ce4ed150fbf30cc131710924271a5871            # oryd/hydra:v1.9.2-sqlite
       hydra-cli: docker.io/oramasearch/pixie-hydra-cli@sha256:faa6ca02e77e0a08f66bfa7470a5e06d80e6e68c9c35410c65a4ea7b501aea61    # oryd/hydra:v1.9.2-alpine
