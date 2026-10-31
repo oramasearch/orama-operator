@@ -9,7 +9,14 @@
   (`spec.restoreRehearsals`: the store now, the control database once it is backed up), until the
   managing cluster runs an operator that knows the field
   ([runbook](../../../docs/lake/restore-rehearsals.md), #127).
-- [v1-nonprod.yaml](v1-nonprod.yaml) and [v1-prod.yaml](v1-prod.yaml): Cloud v1 instances.
+- [v1-nonprod.yaml](v1-nonprod.yaml): Cloud v1 dev, with no Prod 1 migrations or migration-only
+  Secret references. Its managing-cluster pilot source Secrets await Steve (operator#979).
+- [v1-prod.yaml](v1-prod.yaml): Cloud v1 EU and US, preserving the production cutover settings.
+  Cleanup removes 37 successful migration declarations, keeping customer data because the live
+  CRs have `removeOnDelete` false/unset. The failed `team-aee7dc1a` catch-up and its four Secret
+  references remain. Archive required run evidence before applying; Juan approves the production
+  apply under D8. Steve approves any nonprod apply and separate source-Secret retirement.
+  [Cleanup behavior and checks](../README.md#copying-a-prod-1-team-into-a-member).
 
 Apply only after the credential checks and production approval in
 [operator#643](https://github.com/oramasearch/orama-operator/issues/643). Creating these references

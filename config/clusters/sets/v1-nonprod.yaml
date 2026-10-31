@@ -31,15 +31,9 @@ spec:
       # the writer accepts exactly these.
       jwtIssuer: https://app-dev.oramadev.net
   deletionPolicy: Retain
-  # Prod 1 teams copied into the members (operator#654; config/clusters/README.md, "Copying a Prod 1
-  # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
-  # namespace, with targetRef set to the member. A change to this file alone is merged and applied by Juan's side
-  # (orama-bridge decisions 20 October, 3).
-  #
-  # None now. The #149 pilot, team-4e01bc49 (orama-bridge#206, #222), was copied, verified and then removed on
-  # 2026-10-25 by deleting its entry (removeOnDelete ran the tool's remove-target). Its source Secrets were
-  # Prod 1's credentials, which a nonprod member never receives (orama-operator#787, LSR-038). A nonprod
-  # rehearsal runs against a source standing in for Prod 1 whose Secrets carry orama.cloud/purpose=nonprod.
+  # No Prod 1 migrations or migration-only Secret references remain. The pilot was removed
+  # on 2026-10-25; its source Secrets in managing-cluster orama-system await Steve (#979).
+  # A future nonprod rehearsal needs fixture credentials labelled orama.cloud/purpose=nonprod.
   migrations: []
   # Nonprod's own Secrets: none of these is one a production set copies (orama-operator#789). The
   # operator refuses to copy a production set's Secret into a nonprod member, and
@@ -150,13 +144,13 @@ spec:
       # production will run (orama-bridge decisions 2026-10-23, 3). Components not listed run the
       # v1-sandbox tag, because nothing newer exists for them.
       overrides:
-        # The Clerk dashboard from dashboard dev acb8b744: the Cloud v1 security fixes (dashboard#187),
-        # R2 upload signing (dashboard#186), the new-device sign-in code (dashboard#190), custom system
-        # prompts read from the writer (dashboard#192) and GitHub sign-in hidden until #245 (dashboard#193);
-        # built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-dev, recorded in
-        # orama-cloud-v1-bridge#23. Sentry shares the Orama project with environment v1-dev
-        # and dashboard@79abacb32d8461c06531ba7a906ab559890a907b (dashboard#194).
-        dashboard: oramasearch/dashboard:v1-dev-79abacb3-sentry@sha256:1fdf0fd4a1a9d50b8a4808d7992612d4bcdbde3f41e7e8de4ff730a4f65d9d70
+        # The Clerk dashboard from dashboard dev 6fb46b61: everything of 79abacb3 (the Cloud v1 security
+        # fixes, R2 upload signing, the new-device sign-in code, custom system prompts, GitHub sign-in hidden
+        # until #245), plus no Airbyte in the index GC or the data-source picker (dashboard#196, #197).
+        # Built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-dev, recorded in
+        # orama-cloud-v1-bridge#26. Sentry shares the Orama project with environment v1-dev and release
+        # dashboard@6fb46b61439b3c701b29d84da56a6d18e2de3dc4.
+        dashboard: oramasearch/dashboard:v1-dev-6fb46b61@sha256:d9650d4e42ef66f083c6703432e6a3104fb7461d9d893050b1d1fdb208843ec8
         # Engine develop b6ee20fb (private #18-20): CPU BGE batches of 32, E5 eight,
         # CPU arena disabled, and the configured embedding threads reach ONNX Runtime.
         # Ordered deletion, proven legacy replay recovery, and V1 checkpoint compatibility (#262).

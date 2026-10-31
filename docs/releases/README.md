@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.4](v0.11.4.md) — 2026-10-30. A patch: kube-prometheus-stack's `KubeCPUQuotaOvercommit` and `KubeMemoryQuotaOvercommit`
+  are off on every cluster, because Lake's workspace quotas are ceilings meant to exceed the cluster (#1081). Platform values only.
 - [v0.11.3](v0.11.3.md) — 2026-10-30. A patch: kube-prometheus-stack's `KubeCPUOvercommit` and `KubeMemoryOvercommit` are off
   on every cluster, which autoscale instead of holding a spare node (#1077). Platform values only; no code or CRD changes.
 - [v0.11.2](v0.11.2.md) — 2026-10-30. A patch: observability agents write their alert routing before Pixie's release

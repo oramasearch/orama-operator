@@ -300,6 +300,10 @@ Every cluster runs kube-prometheus-stack and Perses from the platform layer:
   node gone, which on a cluster sized to what it runs is nearly always. Every cluster autoscales its
   pools instead of holding a spare node, so a lost node is replaced, and a pod that cannot be placed
   meanwhile pages as `KubePodNotReady` (Pending for 15 minutes).
+  `KubeCPUQuotaOvercommit` and `KubeMemoryQuotaOvercommit` are off too. They fire when the namespaces'
+  quotas add up to more than 1.5 times the nodes, and Lake's workspace quotas (`workspace-defaults`, 4 CPU
+  and 8 GiB each) are ceilings, meant to add up to more than the cluster. A workspace that reaches its own
+  quota still pages, as `KubeQuotaExceeded`.
 - kube-state-metrics turns the operator's own status into metrics, so an alert says what the
   resource says: `orama_oramacloudv1_phase` and `orama_oramacloudv1_component_ready`,
   `orama_pixiecloud_phase` and `orama_pixiecloud_agent_connected`, `orama_pixievizier_phase`,
