@@ -294,6 +294,12 @@ Every cluster runs kube-prometheus-stack and Perses from the platform layer:
   `PixieVizier`, with the routes, as soon as the purposes match, and the cluster's operator writes
   the routing first; Vizier itself waits for the release, its key and the hub's CA.
 - **Perses** (read-only) shows every ConfigMap labelled `perses.dev/resource: "true"`.
+- **Rules** are kube-prometheus-stack's defaults, without those for what AKS runs itself (etcd, the
+  controller manager, the scheduler; Cilium replaces kube-proxy) and without `KubeCPUOvercommit` and
+  `KubeMemoryOvercommit`. Those two fire whenever the pods' requests would not fit with the largest
+  node gone, which on a cluster sized to what it runs is nearly always. Every cluster autoscales its
+  pools instead of holding a spare node, so a lost node is replaced, and a pod that cannot be placed
+  meanwhile pages as `KubePodNotReady` (Pending for 15 minutes).
 - kube-state-metrics turns the operator's own status into metrics, so an alert says what the
   resource says: `orama_oramacloudv1_phase` and `orama_oramacloudv1_component_ready`,
   `orama_pixiecloud_phase` and `orama_pixiecloud_agent_connected`, `orama_pixievizier_phase`,

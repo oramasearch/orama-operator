@@ -211,6 +211,13 @@ spec:
         kubeProxy: false
         kubeSchedulerAlerting: false
         kubeSchedulerRecording: false
+      # Both rules ask whether every pod's requests would still fit with the largest node gone. Every
+      # cluster autoscales its pools, so a lost node is replaced, not held spare: meeting them would keep
+      # an idle node on each cluster. A pod that cannot be placed still pages, as KubePodNotReady after
+      # 15 minutes (docs/infrastructure/observability.md).
+      disabled:
+        KubeCPUOvercommit: true
+        KubeMemoryOvercommit: true
     prometheusOperator:
       image:
         registry: docker.io
