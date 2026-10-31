@@ -36,6 +36,8 @@ func testPixieRelease() oramav1alpha1.PixieRelease {
 	for _, key := range pixieImageKeys {
 		images[key] = oramav1alpha1.ImageDigestReference(fmt.Sprintf("registry.example/oramasearch/pixie-%s@sha256:%x", key, sha256.Sum256([]byte(key))))
 	}
+	// CloudNativePG reads the version from the tag.
+	images["postgres"] = oramav1alpha1.ImageDigestReference(fmt.Sprintf("registry.example/oramasearch/pixie-postgres:16.15@sha256:%x", sha256.Sum256([]byte("postgres"))))
 	return oramav1alpha1.PixieRelease{Commit: pixieManifestCommit, VizierVersion: "0.14.16-orama.1", CLIVersion: "0.8.9-orama.1", Images: images}
 }
 
@@ -132,6 +134,9 @@ func TestPixieReleaseProblems(t *testing.T) {
 		"unknown image":    func(r *oramav1alpha1.PixieRelease) { r.Images["grafana"] = r.Images["curl"] },
 		"tag, not digest":  func(r *oramav1alpha1.PixieRelease) { r.Images["kratos"] = "oryd/kratos:v0.10.1" },
 		"truncated digest": func(r *oramav1alpha1.PixieRelease) { r.Images["kratos"] = "oryd/kratos@sha256:abc" },
+		"postgres without a tag": func(r *oramav1alpha1.PixieRelease) {
+			r.Images["postgres"] = oramav1alpha1.ImageDigestReference("registry.example/pixie-postgres@sha256:" + strings.Repeat("a", 64))
+		},
 	}
 	for name, mutate := range cases {
 		release := testPixieRelease()

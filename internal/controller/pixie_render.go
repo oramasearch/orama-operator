@@ -171,6 +171,9 @@ func pixieReleaseProblems(release *oramav1alpha1.PixieRelease) []string {
 		}
 		if !imageReferenceByDigest(string(ref)) {
 			problems = append(problems, fmt.Sprintf("image %s is %q, not repository@sha256:<digest>", key, ref))
+		} else if name, _, _ := strings.Cut(string(ref), "@"); key == "postgres" && strings.LastIndex(name, ":") < strings.LastIndex(name, "/") {
+			// CloudNativePG reads the PostgreSQL version from the tag and refuses a digest alone.
+			problems = append(problems, fmt.Sprintf("image postgres is %q, not repository:<version>@sha256:<digest>", ref))
 		}
 	}
 	sort.Strings(unknown)
