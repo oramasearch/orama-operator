@@ -31,15 +31,9 @@ spec:
       # the writer accepts exactly these.
       jwtIssuer: https://app-dev.oramadev.net
   deletionPolicy: Retain
-  # Prod 1 teams copied into the members (operator#654; config/clusters/README.md, "Copying a Prod 1
-  # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
-  # namespace, with targetRef set to the member. A change to this file alone is merged and applied by Juan's side
-  # (orama-bridge decisions 20 October, 3).
-  #
-  # None now. The #149 pilot, team-4e01bc49 (orama-bridge#206, #222), was copied, verified and then removed on
-  # 2026-10-25 by deleting its entry (removeOnDelete ran the tool's remove-target). Its source Secrets were
-  # Prod 1's credentials, which a nonprod member never receives (orama-operator#787, LSR-038). A nonprod
-  # rehearsal runs against a source standing in for Prod 1 whose Secrets carry orama.cloud/purpose=nonprod.
+  # No Prod 1 migrations or migration-only Secret references remain. The pilot was removed
+  # on 2026-10-25; its source Secrets in managing-cluster orama-system await Steve (#979).
+  # A future nonprod rehearsal needs fixture credentials labelled orama.cloud/purpose=nonprod.
   migrations: []
   # Nonprod's own Secrets: none of these is one a production set copies (orama-operator#789). The
   # operator refuses to copy a production set's Secret into a nonprod member, and
