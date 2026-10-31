@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.11](v0.11.11.md) — 2026-10-31. A patch: Envoy's CORS allows the hub's domain, so the UI runs scripts; every Pixie
+  pod template carries a fingerprint of the ConfigMaps it reads (#1117).
 - [v0.11.10](v0.11.10.md) — 2026-10-31. A patch: the UI fetches the PxL script bundle from its own origin and the API server
   from the bundle server's Service (#1113).
 - [v0.11.9](v0.11.9.md) — 2026-10-31. A patch: the hub Prometheus sets a `scrapeConfigSelector`, so prometheus-operator writes
