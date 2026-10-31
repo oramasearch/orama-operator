@@ -522,8 +522,8 @@ What has been checked, and how strongly. Nothing below has run on a cluster.
 | Go TLS with the issued certificates | A Vizier's dial verifies the hub's CA and name for both allowed addresses | `TestHubCertificateIsVerifiedForTheDialedAddress` |
 | Reading the pinned sources | OpenSearch 2.19 accepts Pixie's mapping and client; the API's GraphQL key calls and token; gRPC's server name; the storage client's emulator reads; the patch applies at the pin | the tables above; `TestPixieBootstrapMatchesVendoredSchema`, `TestPixieUserTokenIsWhatPixieAccepts`, `TestPixieAPI*` against a fake API |
 
-**Not run anywhere yet**, because the images and mirrors do not exist (#455) and no hub has been
-created: Pixie on the AKS node images (Ubuntu 22.04/24.04, Azure Linux 3) and the
+**Not run anywhere yet**, because no hub has been created; the images and mirrors exist since
+2026-10-31 (#455, [`observability-provider.yaml`](../../config/clusters/observability-provider.yaml)): Pixie on the AKS node images (Ubuntu 22.04/24.04, Azure Linux 3) and the
 protocols traced; the bootstrap against a live Pixie Cloud (Kratos' admin API, the adapter against the
 migrated profile database, the GraphQL key calls); OpenSearch 2.19 with Pixie's indexer and
 autocomplete; the script bundle through the proxy and the script manager; the Envoy federation proxy
