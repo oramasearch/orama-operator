@@ -8,6 +8,8 @@ package controller
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"embed"
 	"errors"
 	"fmt"
@@ -514,5 +516,75 @@ func bindingsToNamespace(object client.Object, namespace string) {
 		if subjects[i].Kind == rbacv1.ServiceAccountKind {
 			subjects[i].Namespace = namespace
 		}
+	}
+}
+
+// stampPixieConfigHash gives every pod template a fingerprint of the rendered ConfigMaps it reads
+// (envFrom, env valueFrom, volumes), so a configuration change rolls exactly the pods that read it.
+// Pixie's services read their configuration once, at start: a ConfigMap changed under a running pod
+// changes nothing (v0.11.10's script bundle URL reached the API server, whose Deployment changed,
+// but not the proxy, whose did not).
+func stampPixieConfigHash(objects []client.Object) {
+	configs := map[string]map[string]string{}
+	for _, object := range objects {
+		if cm, ok := object.(*corev1.ConfigMap); ok {
+			configs[cm.Name] = cm.Data
+		}
+	}
+	for _, object := range objects {
+		spec, _ := podSpecOf(object)
+		if spec == nil {
+			continue
+		}
+		read := map[string]bool{}
+		for _, containers := range [][]corev1.Container{spec.InitContainers, spec.Containers} {
+			for _, c := range containers {
+				for _, from := range c.EnvFrom {
+					if from.ConfigMapRef != nil {
+						read[from.ConfigMapRef.Name] = true
+					}
+				}
+				for _, env := range c.Env {
+					if env.ValueFrom != nil && env.ValueFrom.ConfigMapKeyRef != nil {
+						read[env.ValueFrom.ConfigMapKeyRef.Name] = true
+					}
+				}
+			}
+		}
+		for _, volume := range spec.Volumes {
+			if volume.ConfigMap != nil {
+				read[volume.ConfigMap.Name] = true
+			}
+			if volume.Projected != nil {
+				for _, source := range volume.Projected.Sources {
+					if source.ConfigMap != nil {
+						read[source.ConfigMap.Name] = true
+					}
+				}
+			}
+		}
+		names := make([]string, 0, len(read))
+		for name := range read {
+			if _, rendered := configs[name]; rendered {
+				names = append(names, name)
+			}
+		}
+		if len(names) == 0 {
+			continue
+		}
+		sort.Strings(names)
+		hash := sha256.New()
+		for _, name := range names {
+			keys := make([]string, 0, len(configs[name]))
+			for key := range configs[name] {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			fmt.Fprintf(hash, "%s\x00", name)
+			for _, key := range keys {
+				fmt.Fprintf(hash, "%s=%s\x00", key, configs[name][key])
+			}
+		}
+		podTemplateAnnotations(object)[pixieConfigAnnotation] = hex.EncodeToString(hash.Sum(nil))[:16]
 	}
 }
