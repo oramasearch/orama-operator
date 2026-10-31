@@ -35,11 +35,17 @@ import (
 //  1. The metadata index exists in OpenSearch, created with the indexer's own body
 //     (assets/pixie/md-index.json), so the indexer's migration finds nothing to change. This step
 //     runs as soon as OpenSearch is ready, before the hub is: the indexer does not start without it.
-//  2. The administrator exists in Kratos (Kratos' admin API), with the generated password.
-//  3. The organisation exists and the administrator belongs to it. Pixie has no API that creates
-//     the first organisation or user without someone signing in, so this one step is a schema
-//     adapter: it reads first and inserts only what is missing, as a dedicated role ("bootstrap")
-//     that may only read and insert those two tables, against the vendored, pinned profile schema
+//  2. The administrator and every user of spec.users exist in Kratos (Kratos' admin API), each
+//     with the password the operator generated. A user removed from spec.users loses the Kratos
+//     identity, and so the sign-in.
+//  3. The organisation exists, with the administrator's email domain, and the administrator and
+//     every user belong to it. Pixie's sign-in refuses a member of an organisation that has no
+//     domain unless the organisation is named after that member's email
+//     (src/cloud/auth/controllers/login.go, loginSimple), so the domain is what lets anyone sign in.
+//     Pixie has no API that creates the first organisation or user without someone signing in, so
+//     this one step is a schema adapter: it reads first and writes only what is missing, as a
+//     dedicated role ("bootstrap") that may only read and insert those two tables and set an
+//     organisation's domain, against the vendored, pinned profile schema
 //     (TestPixieBootstrapMatchesVendoredSchema).
 //  4. Each agent cluster's deploy key is created, listed and deleted through Pixie Cloud's own API
 //     (GraphQL CreateDeploymentKey, deploymentKeys, DeleteDeploymentKey), as the administrator,
@@ -78,10 +84,15 @@ type pixieHubBackend interface {
 	// Ready reports whether the services the bootstrap uses accept requests yet, and what is not.
 	Ready(ctx context.Context) (bool, string, error)
 	EnsureIndex(ctx context.Context, name string) error
-	// EnsureAdmin returns the administrator's Kratos identity id.
-	EnsureAdmin(ctx context.Context, email, password string) (string, error)
-	// EnsureOrg returns the organisation's and the administrator's ids.
-	EnsureOrg(ctx context.Context, name, adminEmail, identityID string) (pixieIdentity, error)
+	// EnsureIdentity returns the Kratos identity id of a person who signs in, creating it with
+	// password when missing.
+	EnsureIdentity(ctx context.Context, email, password string) (string, error)
+	// DeleteIdentity removes a person's Kratos identity, if there is one.
+	DeleteIdentity(ctx context.Context, email string) error
+	// EnsureOrg returns the organisation's id, and gives it domain when it has none.
+	EnsureOrg(ctx context.Context, name, domain string) (string, error)
+	// EnsureUser returns the id of the organisation's user for email.
+	EnsureUser(ctx context.Context, orgID, email, identityID, firstName, lastName string) (string, error)
 	DeployKeyIDs(ctx context.Context, as pixieIdentity) (map[string]bool, error)
 	CreateDeployKey(ctx context.Context, as pixieIdentity) (pixieDeployKey, error)
 	DeleteDeployKey(ctx context.Context, as pixieIdentity, id string) error
@@ -172,18 +183,22 @@ func (h *pixieHubClient) Ready(ctx context.Context) (bool, string, error) {
 	if err := h.profile.QueryRow(ctx, `SELECT version, dirty FROM profile_service_migrations LIMIT 1`).Scan(&version, &dirty); err != nil || dirty || version < pixieProfileMigrationNeeded {
 		return false, fmt.Sprintf("Pixie's profile migrations are not at %d yet", pixieProfileMigrationNeeded), nil
 	}
-	// The bootstrap role may read and insert organisations and users, nothing else. Granted by
-	// the tables' owner, only when missing.
+	// The bootstrap role may read and insert organisations and users, and set an organisation's
+	// domain, nothing else. Granted by the tables' owner, only when missing.
 	var granted bool
 	if err := h.profile.QueryRow(ctx,
 		`SELECT has_table_privilege($1, 'orgs', 'INSERT') AND has_table_privilege($1, 'users', 'INSERT')
-		    AND has_table_privilege($1, 'orgs', 'SELECT') AND has_table_privilege($1, 'users', 'SELECT')`,
+		    AND has_table_privilege($1, 'orgs', 'SELECT') AND has_table_privilege($1, 'users', 'SELECT')
+		    AND has_column_privilege($1, 'orgs', 'domain_name', 'UPDATE')`,
 		pixieBootstrapRole).Scan(&granted); err != nil {
 		return false, "", fmt.Errorf("read the bootstrap role's privileges: %w", err)
 	}
 	if !granted {
-		if _, err := h.profile.Exec(ctx, `GRANT SELECT, INSERT ON orgs, users TO `+pgx.Identifier{pixieBootstrapRole}.Sanitize()); err != nil {
-			return false, "", fmt.Errorf("grant the bootstrap role: %w", err)
+		role := pgx.Identifier{pixieBootstrapRole}.Sanitize()
+		for _, grant := range []string{`GRANT SELECT, INSERT ON orgs, users TO ` + role, `GRANT UPDATE (domain_name) ON orgs TO ` + role} {
+			if _, err := h.profile.Exec(ctx, grant); err != nil {
+				return false, "", fmt.Errorf("grant the bootstrap role: %w", err)
+			}
 		}
 	}
 	if h.bootstrap == nil {
@@ -250,8 +265,13 @@ type kratosIdentity struct {
 	} `json:"traits"`
 }
 
-func (h *pixieHubClient) EnsureAdmin(ctx context.Context, email, password string) (string, error) {
-	admin := fmt.Sprintf("https://kratos.%s.svc:4434/admin/identities", oramav1alpha1.PixieCloudNamespace)
+func kratosIdentities() string {
+	return fmt.Sprintf("https://kratos.%s.svc:4434/admin/identities", oramav1alpha1.PixieCloudNamespace)
+}
+
+// findIdentity returns the Kratos identity id for email, or "" when there is none.
+func (h *pixieHubClient) findIdentity(ctx context.Context, email string) (string, error) {
+	admin := kratosIdentities()
 	for page := 1; page <= 50; page++ {
 		resp, err := h.request(ctx, http.MethodGet, fmt.Sprintf("%s?per_page=250&page=%d", admin, page), nil, nil)
 		if err != nil {
@@ -272,60 +292,106 @@ func (h *pixieHubClient) EnsureAdmin(ctx context.Context, email, password string
 			break
 		}
 	}
+	return "", nil
+}
+
+func (h *pixieHubClient) EnsureIdentity(ctx context.Context, email, password string) (string, error) {
+	if id, err := h.findIdentity(ctx, email); err != nil || id != "" {
+		return id, err
+	}
 	body := map[string]any{
 		"schema_id":   "default",
 		"traits":      map[string]any{"email": email},
 		"credentials": map[string]any{"password": map[string]any{"config": map[string]any{"password": password}}},
 	}
-	resp, err := h.request(ctx, http.MethodPost, admin, body, nil)
+	resp, err := h.request(ctx, http.MethodPost, kratosIdentities(), body, nil)
 	if err != nil {
-		return "", fmt.Errorf("create the Kratos administrator: %w", err)
+		return "", fmt.Errorf("create the Kratos identity of %s: %w", email, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("create the Kratos administrator: Kratos answered %s: %s", resp.Status, data)
+		return "", fmt.Errorf("create the Kratos identity of %s: Kratos answered %s: %s", email, resp.Status, data)
 	}
 	var created kratosIdentity
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil || created.ID == "" {
-		return "", fmt.Errorf("create the Kratos administrator: no identity id in the answer")
+		return "", fmt.Errorf("create the Kratos identity of %s: no identity id in the answer", email)
 	}
 	return created.ID, nil
 }
 
-// EnsureOrg reads before it writes: a steady hub issues no INSERT.
-func (h *pixieHubClient) EnsureOrg(ctx context.Context, name, adminEmail, identityID string) (pixieIdentity, error) {
+func (h *pixieHubClient) DeleteIdentity(ctx context.Context, email string) error {
+	id, err := h.findIdentity(ctx, email)
+	if err != nil || id == "" {
+		return err
+	}
+	resp, err := h.request(ctx, http.MethodDelete, kratosIdentities()+"/"+url.PathEscape(id), nil, nil)
+	if err != nil {
+		return fmt.Errorf("delete the Kratos identity of %s: %w", email, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("delete the Kratos identity of %s: Kratos answered %s: %s", email, resp.Status, data)
+	}
+	return nil
+}
+
+// EnsureOrg reads before it writes: a steady hub issues no INSERT or UPDATE.
+func (h *pixieHubClient) EnsureOrg(ctx context.Context, name, domain string) (string, error) {
 	if h.bootstrap == nil {
-		return pixieIdentity{}, errors.New("the bootstrap role is not signed in")
+		return "", errors.New("the bootstrap role is not signed in")
 	}
-	identity := pixieIdentity{Email: adminEmail}
-	err := h.bootstrap.QueryRow(ctx, `SELECT id::text FROM orgs WHERE org_name = $1`, name).Scan(&identity.OrgID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		identity.OrgID = uuid.NewSHA1(pixieOrgNamespace, []byte(name)).String()
-		if _, err := h.bootstrap.Exec(ctx, `INSERT INTO orgs (id, org_name) VALUES ($1, $2)`, identity.OrgID, name); err != nil {
-			return pixieIdentity{}, fmt.Errorf("create organisation %s: %w", name, err)
+	var orgID string
+	var current *string
+	err := h.bootstrap.QueryRow(ctx, `SELECT id::text, domain_name FROM orgs WHERE org_name = $1`, name).Scan(&orgID, &current)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		orgID = uuid.NewSHA1(pixieOrgNamespace, []byte(name)).String()
+		if _, err := h.bootstrap.Exec(ctx, `INSERT INTO orgs (id, org_name, domain_name) VALUES ($1, $2, $3)`, orgID, name, domain); err != nil {
+			return "", fmt.Errorf("create organisation %s: %w", name, err)
 		}
-	} else if err != nil {
-		return pixieIdentity{}, fmt.Errorf("read organisation %s: %w", name, err)
+	case err != nil:
+		return "", fmt.Errorf("read organisation %s: %w", name, err)
+	case current == nil || *current == "":
+		// Hubs bootstrapped before the domain was written: nobody could sign in to them.
+		if _, err := h.bootstrap.Exec(ctx, `UPDATE orgs SET domain_name = $2 WHERE id = $1 AND (domain_name IS NULL OR domain_name = '')`, orgID, domain); err != nil {
+			return "", fmt.Errorf("set organisation %s's domain: %w", name, err)
+		}
+	case !strings.EqualFold(*current, domain):
+		return "", fmt.Errorf("organisation %s has domain %q, not %q: nothing is changed", name, *current, domain)
 	}
-	var userOrg string
-	err = h.bootstrap.QueryRow(ctx, `SELECT id::text, COALESCE(org_id::text, '') FROM users WHERE email = $1`, adminEmail).Scan(&identity.UserID, &userOrg)
+	return orgID, nil
+}
+
+// EnsureUser reads before it writes, and never moves a user from another organisation.
+func (h *pixieHubClient) EnsureUser(ctx context.Context, orgID, email, identityID, firstName, lastName string) (string, error) {
+	if h.bootstrap == nil {
+		return "", errors.New("the bootstrap role is not signed in")
+	}
+	var userID, userOrg string
+	err := h.bootstrap.QueryRow(ctx, `SELECT id::text, COALESCE(org_id::text, '') FROM users WHERE email = $1`, email).Scan(&userID, &userOrg)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := h.bootstrap.QueryRow(ctx,
 			`INSERT INTO users (org_id, first_name, last_name, email, is_approved, identity_provider, auth_provider_id)
-			 VALUES ($1, 'Hub', 'Administrator', $2, true, 'kratos', $3) RETURNING id::text`,
-			identity.OrgID, adminEmail, identityID).Scan(&identity.UserID); err != nil {
-			return pixieIdentity{}, fmt.Errorf("create the administrator's user: %w", err)
+			 VALUES ($1, $2, $3, $4, true, 'kratos', $5) RETURNING id::text`,
+			orgID, firstName, lastName, email, identityID).Scan(&userID); err != nil {
+			return "", fmt.Errorf("create the user %s: %w", email, err)
 		}
-		return identity, nil
+		return userID, nil
 	}
 	if err != nil {
-		return pixieIdentity{}, fmt.Errorf("read the administrator's user: %w", err)
+		return "", fmt.Errorf("read the user %s: %w", email, err)
 	}
-	if userOrg != identity.OrgID {
-		return pixieIdentity{}, fmt.Errorf("user %s belongs to organisation %q, not %s (%s): nothing is changed", adminEmail, userOrg, name, identity.OrgID)
+	if userOrg != orgID {
+		return "", fmt.Errorf("user %s belongs to organisation %q, not %s: nothing is changed", email, userOrg, orgID)
 	}
-	return identity, nil
+	return userID, nil
+}
+
+// pixieEmailDomain is the part of an email after the @, lowercased.
+func pixieEmailDomain(email string) string {
+	return strings.ToLower(email[strings.LastIndex(email, "@")+1:])
 }
 
 // pixieUserToken is a user token for Pixie's API, as Pixie's auth service issues one

@@ -357,6 +357,11 @@ type fakeHubBackend struct {
 	index     string
 	admin     [2]string
 	org       string
+	domain    string
+	// identities and members are Kratos' identities (email -> password) and the organisation's
+	// users (email -> identity).
+	identities map[string]string
+	members    map[string]string
 	keys      map[string]string // id -> key, as Pixie holds them
 	created   int
 	deleted   []string
@@ -370,13 +375,32 @@ func (f *fakeHubBackend) EnsureIndex(_ context.Context, name string) error {
 	f.index = name
 	return nil
 }
-func (f *fakeHubBackend) EnsureAdmin(_ context.Context, email, password string) (string, error) {
-	f.admin = [2]string{email, password}
-	return "identity-1", nil
+func (f *fakeHubBackend) EnsureIdentity(_ context.Context, email, password string) (string, error) {
+	if f.identities == nil {
+		f.identities = map[string]string{}
+	}
+	if f.admin[0] == "" {
+		f.admin = [2]string{email, password}
+	}
+	if _, ok := f.identities[email]; !ok {
+		f.identities[email] = password
+	}
+	return "identity-" + email, nil
 }
-func (f *fakeHubBackend) EnsureOrg(_ context.Context, name, email, identity string) (pixieIdentity, error) {
-	f.org = name + "/" + identity
-	return pixieIdentity{OrgID: "org-1", UserID: "user-1", Email: email}, nil
+func (f *fakeHubBackend) DeleteIdentity(_ context.Context, email string) error {
+	delete(f.identities, email)
+	return nil
+}
+func (f *fakeHubBackend) EnsureOrg(_ context.Context, name, domain string) (string, error) {
+	f.org, f.domain = name, domain
+	return "org-1", nil
+}
+func (f *fakeHubBackend) EnsureUser(_ context.Context, orgID, email, identity, _, _ string) (string, error) {
+	if f.members == nil {
+		f.members = map[string]string{}
+	}
+	f.members[email] = orgID + "/" + identity
+	return "user-" + email, nil
 }
 func (f *fakeHubBackend) DeployKeyIDs(_ context.Context, as pixieIdentity) (map[string]bool, error) {
 	if as.OrgID != "org-1" {
@@ -531,8 +555,8 @@ func TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys(t *testing.T) {
 		_ = kube.Get(ctx, client.ObjectKeyFromObject(cloud), &status)
 		t.Fatalf("bootstrap: index %q admin %q; hub %s: %s", backend.index, backend.admin[0], status.Status.Phase, status.Status.Message)
 	}
-	if backend.org != "orama/identity-1" {
-		t.Fatalf("organisation bootstrap %q", backend.org)
+	if backend.org != "orama" || backend.members["ops@support.example"] != "org-1/identity-ops@support.example" {
+		t.Fatalf("organisation bootstrap %q, members %v", backend.org, backend.members)
 	}
 	ids := map[string]string{}
 	for _, agent := range []string{"prod2", "prod3"} {
@@ -651,4 +675,73 @@ func TestPixieVizierNamesAnImageItCannotPull(t *testing.T) {
 		}
 	}
 	t.Fatal("no kelvin component")
+}
+
+// Pixie's sign-in refuses a member of an organisation without a domain (login.go, loginSimple), which
+// is how the first production hub turned its administrator away: the organisation gets the
+// administrator's email domain. Every person in spec.users gets a password, a Kratos identity and a
+// user in the organisation; removing one takes the sign-in away.
+func TestPixieCloudBootstrapLetsTheAdministratorAndEveryUserSignIn(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPixieScheme(t)
+	cloud := testPixieCloud()
+	cloud.Name = pixieConcreteName
+	cloud.Spec.AdminEmail = "ops@Support.Example"
+	cloud.Spec.Users = []string{"steve@support.example", "ops@support.example"}
+	kube := newPixieTestClient(t, scheme, interceptor.Funcs{},
+		cloud,
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pixie-pull", Namespace: "plc"}, Data: map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{}`)}},
+	)
+	backend := &fakeHubBackend{keys: map[string]string{}, ready: true}
+	r := &PixieCloudReconciler{Client: kube, Scheme: scheme, OperatorNamespace: "orama-system",
+		Backend:   func(pixieHubCredentials) (pixieHubBackend, error) { return backend, nil },
+		MetricsUp: func(context.Context) (map[string]bool, error) { return map[string]bool{}, nil }}
+	reconcileTwice(t, r, "plc", pixieConcreteName)
+	markPixieWorkloadsReady(t, kube, "plc")
+	reconcileTwice(t, r, "plc", pixieConcreteName)
+
+	if backend.domain != "support.example" {
+		t.Fatalf("the organisation's domain is %q, want the administrator's, support.example", backend.domain)
+	}
+	var user corev1.Secret
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: "pixie-user-steve-support.example"}, &user); err != nil {
+		t.Fatalf("no password Secret for steve: %v", err)
+	}
+	password := string(user.Data["password"])
+	if string(user.Data["email"]) != "steve@support.example" || len(password) < 32 || backend.identities["steve@support.example"] != password {
+		t.Fatalf("steve's Secret %v, Kratos %v", user.Data["email"], backend.identities)
+	}
+	if backend.members["steve@support.example"] != "org-1/identity-steve@support.example" {
+		t.Fatalf("steve is not a member of the organisation: %v", backend.members)
+	}
+	// The administrator listed again among the users keeps its own Secret, and gets no second one.
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: "pixie-user-ops-support.example"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the administrator got a user Secret: %v", err)
+	}
+
+	// Steady: the password stays.
+	reconcileTwice(t, r, "plc", pixieConcreteName)
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(&user), &user); err != nil || string(user.Data["password"]) != password {
+		t.Fatalf("steve's password changed on a steady pass: %v", err)
+	}
+
+	// Removed from the list: the Kratos identity goes, then the Secret.
+	var live oramav1alpha1.PixieCloud
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(cloud), &live); err != nil {
+		t.Fatal(err)
+	}
+	live.Spec.Users = nil
+	if err := kube.Update(ctx, &live); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTwice(t, r, "plc", pixieConcreteName)
+	if _, ok := backend.identities["steve@support.example"]; ok {
+		t.Error("steve can still sign in after leaving spec.users")
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(&user), &user); !apierrors.IsNotFound(err) {
+		t.Errorf("steve's Secret is still there: %v", err)
+	}
+	if _, ok := backend.identities["ops@Support.Example"]; !ok {
+		t.Error("the administrator lost the sign-in")
+	}
 }

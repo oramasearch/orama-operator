@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -37,6 +38,7 @@ const (
 	pixieAgentImportService = "peer-" + pixieAgentImport
 	pixieAlertingCondition  = "Alerting"
 	pixieDeployKeyLabel     = "orama.cloud/pixie-agent"
+	pixieUserLabel          = "orama.cloud/pixie-user"
 )
 
 // PixieCloudReconciler runs self-hosted Pixie Cloud on the hub's cluster from a PixieCloud the
@@ -423,12 +425,20 @@ func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alph
 	if err := r.Get(ctx, client.ObjectKey{Namespace: cloud.Namespace, Name: pixieAdminSecret}, &admin); err != nil {
 		return "", err
 	}
-	identityID, err := backend.EnsureAdmin(ctx, cloud.Spec.AdminEmail, string(admin.Data["password"]))
+	identityID, err := backend.EnsureIdentity(ctx, cloud.Spec.AdminEmail, string(admin.Data["password"]))
 	if err != nil {
 		return "", err
 	}
-	as, err := backend.EnsureOrg(ctx, cloud.Spec.Organization, cloud.Spec.AdminEmail, identityID)
+	orgID, err := backend.EnsureOrg(ctx, cloud.Spec.Organization, pixieEmailDomain(cloud.Spec.AdminEmail))
 	if err != nil {
+		return "", err
+	}
+	userID, err := backend.EnsureUser(ctx, orgID, cloud.Spec.AdminEmail, identityID, "Hub", "Administrator")
+	if err != nil {
+		return "", err
+	}
+	as := pixieIdentity{OrgID: orgID, UserID: userID, Email: cloud.Spec.AdminEmail}
+	if err := r.ensureUsers(ctx, cloud, backend, orgID); err != nil {
 		return "", err
 	}
 	known, err := backend.DeployKeyIDs(ctx, as)
@@ -501,6 +511,64 @@ func (r *PixieCloudReconciler) ensureDeployKey(ctx context.Context, cloud *orama
 		return controllerutil.SetControllerReference(cloud, secret, r.Scheme)
 	})
 	return err
+}
+
+// pixieUserSecret names the Secret holding one user's password: pixie-user-<email>, with every
+// character a Secret name cannot hold made a dash.
+func pixieUserSecret(email string) string {
+	name := []byte(strings.ToLower(email))
+	for i, c := range name {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '.' && c != '-' {
+			name[i] = '-'
+		}
+	}
+	return pixieUserPrefix + strings.Trim(string(name), ".-")
+}
+
+// ensureUsers gives every person of spec.users a generated password, a Kratos identity and a user
+// in the organisation, and takes the sign-in away from anyone no longer listed.
+func (r *PixieCloudReconciler) ensureUsers(ctx context.Context, cloud *oramav1alpha1.PixieCloud, backend pixieHubBackend, orgID string) error {
+	wanted := map[string]bool{}
+	for _, email := range cloud.Spec.Users {
+		if strings.EqualFold(email, cloud.Spec.AdminEmail) {
+			continue
+		}
+		name := pixieUserSecret(email)
+		secret, err := ensureMintedSecret(ctx, r.Client, r.Scheme, cloud, name, corev1.SecretTypeOpaque,
+			map[string]string{pixieManagedLabel: pixieManagedCloud, pixieUserLabel: "true"},
+			fixedKey("email", email), randomKey("password", 24))
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(string(secret.Data["email"]), email) {
+			return fmt.Errorf("Secret %s/%s holds the password of %s, not %s", cloud.Namespace, name, secret.Data["email"], email)
+		}
+		wanted[name] = true
+		identityID, err := backend.EnsureIdentity(ctx, email, string(secret.Data["password"]))
+		if err != nil {
+			return err
+		}
+		if _, err := backend.EnsureUser(ctx, orgID, email, identityID, email[:strings.LastIndex(email, "@")], ""); err != nil {
+			return err
+		}
+	}
+	var existing corev1.SecretList
+	if err := r.List(ctx, &existing, client.InNamespace(cloud.Namespace), client.HasLabels{pixieUserLabel}); err != nil {
+		return err
+	}
+	for i := range existing.Items {
+		secret := &existing.Items[i]
+		if wanted[secret.Name] || !metav1.IsControlledBy(secret, cloud) {
+			continue
+		}
+		if err := backend.DeleteIdentity(ctx, string(secret.Data["email"])); err != nil {
+			return err
+		}
+		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // setStatus writes status only when it changed (principle 7).

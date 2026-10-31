@@ -75,6 +75,11 @@ type PixieCloudSpec struct {
 	Organization string `json:"organization"`
 	// +kubebuilder:validation:MinLength=3
 	AdminEmail string `json:"adminEmail"`
+	// Users are the other people who sign in, as members of the organisation. Each gets a
+	// generated password in Secret pixie-user-<email>.
+	// +listType=set
+	// +optional
+	Users []string `json:"users,omitempty"`
 	// PullSecretName is the registry credentials Secret in this namespace.
 	// +kubebuilder:validation:MinLength=1
 	PullSecretName string `json:"pullSecretName"`
