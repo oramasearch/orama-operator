@@ -483,60 +483,11 @@ spec:
       profile: light
   # Retain: a member taken out of the set keeps running; it is never deleted by an edit to this list.
   deletionPolicy: Retain
-  # Prod 1 teams copied into the members (operator#654; config/clusters/README.md, "Copying a Prod 1
-  # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
-  # namespace. Applying needs Juan's consent like the rest of this file (D8).
-  #
-  # Cleanup prepared 2026-10-30: the 37 Succeeded migration entries are retired. Their live
-  # removeOnDelete is false/unset, so deletion removes only run artifacts and copied evidence.
-  # Keep this failed catch-up and its four Secret references until its result is dispositioned.
-  # Preserve the applied runID, source, image, step and attempt; changing them could rerun writes.
-  migrations:
-  - member: v1-eu
-    name: team-aee7dc1a
-    secrets:
-    - name: v1-prod-prod1-db-ro
-      namespace: orama-system
-    - name: v1-prod-prod1-master-key
-      namespace: orama-system
-    - name: v1-prod-prod1-settings-ssm
-      namespace: orama-system
-    - name: team-aee7dc1a-eu-evidence
-      namespace: orama-system
-    spec:
-      apply: true
-      attempt: 1
-      evidenceSecretRef:
-        key: isolation.json
-        name: team-aee7dc1a-eu-evidence
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:2edfbc6731bad091c6f62ad4cdebd204816a7dfc5e4ed018d0d308ae9f9fb05a
-      projectIDs:
-      - 567547b3-42c8-4762-8337-6fb0efa00b8e
-      - be8e361e-ee2c-4455-bebf-e3de358e1d8b
-      pullSecretName: oramasearch-dockerhub
-      runID: eu-2
-      source:
-        databaseHost: aws-us-east-2-1.pg.psdb.cloud
-        databaseSecretRef:
-          key: url
-          name: v1-prod-prod1-db-ro
-        deploymentRevision: oramacore@1.2.39+890a7e9761dfec61ea8567dcab92b4df737318a2
-        masterKeySecretRef:
-          key: key
-          name: v1-prod-prod1-master-key
-        readerURL: https://collections.orama.com
-        schemaRevision: pg17.11-drizzle-push-catalog-sha256:d995b5cb539d
-        settings:
-          credentialsSecretRef:
-            name: v1-prod-prod1-settings-ssm
-          dataDir: /opt/oramacore/.data/writer
-          document: OramaMigrationReadIndexInfo
-          instanceID: i-0b9478719a8f91e2b
-          region: us-east-2
-        writerURL: https://writer.bovista.cluster.oramacore.com
-      step: catchUp
-      teamID: aee7dc1a-22fb-4a26-832f-0d881a4aa8c2
-      removeOnDelete: false
+  # Prod 1 teams copied into the members (operator#654). Every migration is retired: the 37 Succeeded
+  # entries on 2026-10-31 (#1073), and the failed team-aee7dc1a catch-up with them, when an older
+  # copy of this file was applied by mistake at 03:25Z and its resource was deleted. Declaring it again
+  # would start a new catch-up against a decommissioned Prod 1, so the list stays empty.
+  migrations: []
   secrets:
   - name: oramasearch-dockerhub
     namespace: orama-system
