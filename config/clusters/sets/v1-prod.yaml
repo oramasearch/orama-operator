@@ -215,13 +215,14 @@ spec:
         manageLoadBalancers: false     # no geo load balancer across the members yet
       images:
         overrides:
-          # The production dashboard: dashboard dev 79abacb3 (the new-device sign-in code, dashboard#190;
-          # custom system prompts read from the writer, dashboard#192; GitHub sign-in hidden until #245,
-          # dashboard#193) built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-prod
-          # for https://app.orama.com, Cloud v1's Clerk now on clerk.app.orama.com (orama-bridge decisions
-          # 25 October, 13); recorded in orama-cloud-v1-bridge#24. Sentry uses the existing Orama project
-          # with environment v1-prod and release dashboard@79abacb32d8461c06531ba7a906ab559890a907b (dashboard#194).
-          dashboard: oramasearch/dashboard:v1-prod-79abacb3-com@sha256:d7fb4c31d8bed3145347415a45ac30b22ae5b6ded16710f852c0017e79ec65e5
+          # The production dashboard: dashboard dev 6fb46b61, everything of 79abacb3 (the new-device sign-in
+          # code, custom system prompts read from the writer, GitHub sign-in hidden until #245) plus no Airbyte
+          # in the index GC or the data-source picker (dashboard#196, #197). Built with orama-cloud-v1-bridge
+          # build/images/dashboard/public.env.v1-prod for https://app.orama.com, Cloud v1's Clerk on
+          # clerk.app.orama.com (orama-bridge decisions 25 October, 13); recorded in orama-cloud-v1-bridge#26.
+          # Sentry uses the existing Orama project with environment v1-prod and release
+          # dashboard@6fb46b61439b3c701b29d84da56a6d18e2de3dc4.
+          dashboard: oramasearch/dashboard:v1-prod-6fb46b61@sha256:b5e35ecc17d53ab6768096337d60ba5b04a09d5c019886c9945ab4710d6a374f
       # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
       # default is Standard SSD. v1-eu was created as a sandbox on 10Gi Standard SSD volumes, which
       # cannot change class in place, so each volume approved its replacement once (approveDataDeletion,
