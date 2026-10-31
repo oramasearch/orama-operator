@@ -223,6 +223,7 @@ func pixieCloudDepsConfig() []client.Object {
 		config("pl-auth-connector-config", map[string]string{"PL_AUTH_CONNECTOR_NAME": "", "PL_AUTH_CONNECTOR_CALLBACK_URL": ""}),
 		config("pl-errors-config", map[string]string{"PL_SENTRY_DSN": ""}),
 		config("pl-ld-config", map[string]string{"PL_LD_CLIENT_ID": "", "PL_LD_SDK_KEY": ""}),
+		config("pl-sentry-dsn-config", map[string]string{"PL_PROD_SENTRY": "", "PL_DEV_SENTRY": "", "PL_OPERATOR_SENTRY": ""}),
 		config("segment-config", map[string]string{"write-key": "", "ui-write-key": "", "cli-write-key": ""}),
 	}
 }
