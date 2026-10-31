@@ -36,6 +36,8 @@ func testPixieRelease() oramav1alpha1.PixieRelease {
 	for _, key := range pixieImageKeys {
 		images[key] = oramav1alpha1.ImageDigestReference(fmt.Sprintf("registry.example/oramasearch/pixie-%s@sha256:%x", key, sha256.Sum256([]byte(key))))
 	}
+	// CloudNativePG reads the version from the tag.
+	images["postgres"] = oramav1alpha1.ImageDigestReference(fmt.Sprintf("registry.example/oramasearch/pixie-postgres:16.15@sha256:%x", sha256.Sum256([]byte("postgres"))))
 	return oramav1alpha1.PixieRelease{Commit: pixieManifestCommit, VizierVersion: "0.14.16-orama.1", CLIVersion: "0.8.9-orama.1", Images: images}
 }
 
@@ -132,6 +134,9 @@ func TestPixieReleaseProblems(t *testing.T) {
 		"unknown image":    func(r *oramav1alpha1.PixieRelease) { r.Images["grafana"] = r.Images["curl"] },
 		"tag, not digest":  func(r *oramav1alpha1.PixieRelease) { r.Images["kratos"] = "oryd/kratos:v0.10.1" },
 		"truncated digest": func(r *oramav1alpha1.PixieRelease) { r.Images["kratos"] = "oryd/kratos@sha256:abc" },
+		"postgres without a tag": func(r *oramav1alpha1.PixieRelease) {
+			r.Images["postgres"] = oramav1alpha1.ImageDigestReference("registry.example/pixie-postgres@sha256:" + strings.Repeat("a", 64))
+		},
 	}
 	for name, mutate := range cases {
 		release := testPixieRelease()
@@ -272,6 +277,55 @@ func TestRenderVizierRefusesTinyNodeMemory(t *testing.T) {
 	vz.Spec.NodeMemory = resource.MustParse("512Mi")
 	if _, err := renderVizier(vizierRender{Vizier: vz}); err == nil {
 		t.Fatal("a node agent below 1Gi was rendered")
+	}
+}
+
+// Every ConfigMap key a Cloud container needs is rendered beside it. config-manager would not start
+// on either hub without pl-sentry-dsn-config, which upstream ships in cloud_deps.
+func TestPixieCloudRendersEveryConfigMapItNeeds(t *testing.T) {
+	objects, err := renderPixieCloud(pixieCloudRender{Cloud: testPixieCloud(), CertsHash: "abc", DatabaseHost: pixieDBHost()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs := map[string]map[string]string{}
+	for _, object := range objects {
+		if config, ok := object.(*corev1.ConfigMap); ok {
+			configs[config.Name] = config.Data
+		}
+	}
+	optional := func(flag *bool) bool { return flag != nil && *flag }
+	for _, object := range objects {
+		spec, _ := podSpecOf(object)
+		if spec == nil {
+			continue
+		}
+		for _, container := range append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...) {
+			for _, env := range container.Env {
+				if env.ValueFrom == nil || env.ValueFrom.ConfigMapKeyRef == nil || optional(env.ValueFrom.ConfigMapKeyRef.Optional) {
+					continue
+				}
+				ref := env.ValueFrom.ConfigMapKeyRef
+				if _, found := configs[ref.Name][ref.Key]; !found {
+					t.Errorf("%s/%s reads %s from ConfigMap %s, which is not rendered", object.GetName(), container.Name, ref.Key, ref.Name)
+				}
+			}
+			for _, from := range container.EnvFrom {
+				if from.ConfigMapRef == nil || optional(from.ConfigMapRef.Optional) {
+					continue
+				}
+				if _, found := configs[from.ConfigMapRef.Name]; !found {
+					t.Errorf("%s/%s reads ConfigMap %s, which is not rendered", object.GetName(), container.Name, from.ConfigMapRef.Name)
+				}
+			}
+		}
+		for _, volume := range spec.Volumes {
+			if volume.ConfigMap == nil || optional(volume.ConfigMap.Optional) {
+				continue
+			}
+			if _, found := configs[volume.ConfigMap.Name]; !found {
+				t.Errorf("%s mounts ConfigMap %s, which is not rendered", object.GetName(), volume.ConfigMap.Name)
+			}
+		}
 	}
 }
 

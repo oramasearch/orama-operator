@@ -107,7 +107,10 @@ func applyPixieObjects(ctx context.Context, c client.Client, scheme *runtime.Sch
 func pixieObjectID(kind, namespace, name string) string { return kind + "/" + namespace + "/" + name }
 
 // prunePixieObjects deletes every object labelled for managed, in namespace or cluster-scoped,
-// that is not in keep. A nil keep deletes them all (teardown).
+// that is not in keep. A nil keep deletes them all (teardown). An object another controller owns
+// is never deleted: CloudNativePG copies the database Cluster's inherited labels, the pixie label
+// included, onto the ServiceAccount, Services and budget it creates, and deleting them left the
+// database unable to reach the API server.
 func prunePixieObjects(ctx context.Context, c client.Client, namespace, managed string, keep map[string]bool) error {
 	var errs []error
 	for _, gvk := range pixiePrunedKinds {
@@ -127,6 +130,9 @@ func prunePixieObjects(ctx context.Context, c client.Client, namespace, managed 
 		for i := range list.Items {
 			item := &list.Items[i]
 			if keep[pixieObjectID(gvk.Kind, item.GetNamespace(), item.GetName())] {
+				continue
+			}
+			if controller := metav1.GetControllerOf(item); controller != nil && !strings.HasPrefix(controller.APIVersion, oramav1alpha1.GroupVersion.Group+"/") {
 				continue
 			}
 			propagation := metav1.DeletePropagationBackground

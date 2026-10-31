@@ -232,7 +232,7 @@ exactly these keys, or the provider is not Ready:
 |---|---|
 | `vizier-pem`, `vizier-kelvin`, `vizier-metadata`, `vizier-query-broker`, `vizier-cloud-connector` | `//k8s/vizier:vizier_images_push` (the cert provisioner and updater are not needed) |
 | `cloud-api`, `cloud-artifact-tracker`, `cloud-auth`, `cloud-config-manager`, `cloud-cron-script`, `cloud-indexer`, `cloud-plugin`, `cloud-profile`, `cloud-project-manager`, `cloud-proxy`, `cloud-scriptmgr`, `cloud-vzconn`, `cloud-vzmgr` | `//k8s/cloud:cloud_images_push` (the metrics server and plugin loader are not needed) |
-| `nats`, `curl`, `postgres` | mirrors of the images Pixie's manifests name (`ghcr.io/pixie-io/...`); `postgres` is a CloudNativePG operand image |
+| `nats`, `curl`, `postgres` | mirrors of the images Pixie's manifests name (`ghcr.io/pixie-io/...`); `postgres` is a CloudNativePG operand image, named by tag and digest (`:16.15@sha256:…`) because CloudNativePG reads the version from the tag |
 | `envoy`, `hydra`, `hydra-cli`, `kratos` | mirrors of `envoyproxy/envoy`, `oryd/hydra` (`-sqlite` and `-alpine`), `oryd/kratos` at the versions the manifests pin |
 | `opensearch` | a mirror of `opensearchproject/opensearch` 2.19 |
 | `script-bundle` | new in #455: `hack/pixie-script-bundle` (nginx, non-root) serving `bundle-oss.json`, built with `px create-bundle` at the same commit, on port 8080 at `/pixie-scripts/bundle.json` |
