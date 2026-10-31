@@ -211,13 +211,17 @@ spec:
         kubeProxy: false
         kubeSchedulerAlerting: false
         kubeSchedulerRecording: false
-      # Both rules ask whether every pod's requests would still fit with the largest node gone. Every
+      # The overcommit pair asks whether every pod's requests would still fit with the largest node gone. Every
       # cluster autoscales its pools, so a lost node is replaced, not held spare: meeting them would keep
       # an idle node on each cluster. A pod that cannot be placed still pages, as KubePodNotReady after
-      # 15 minutes (docs/infrastructure/observability.md).
+      # 15 minutes (docs/infrastructure/observability.md). The quota pair fires when namespace quotas add up
+      # to more than the nodes: Lake's workspace quotas are ceilings, meant to add up to more than the
+      # cluster. A workspace at its own quota still pages, as KubeQuotaExceeded.
       disabled:
         KubeCPUOvercommit: true
         KubeMemoryOvercommit: true
+        KubeCPUQuotaOvercommit: true
+        KubeMemoryQuotaOvercommit: true
     prometheusOperator:
       image:
         registry: docker.io
