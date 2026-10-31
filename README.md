@@ -51,10 +51,12 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.11.5** (2026-10-31), a patch: Pixie's release, the `ObservabilityProvider` naming all 27
-images by digest, so the observability hubs and agents can install
+The current release is **v0.11.6** (2026-10-31), a patch: the observability hubs' Prometheus can write its volume, the
+Pixie prune no longer deletes the database's own objects, and Pixie Cloud's `config-manager` gets its Sentry ConfigMap
+([`docs/releases/v0.11.6.md`](docs/releases/v0.11.6.md)).
+Before it, **v0.11.5** (2026-10-31), a patch: Pixie's release, the `ObservabilityProvider` naming all 27 images by digest
 ([`docs/releases/v0.11.5.md`](docs/releases/v0.11.5.md)).
-Before it, **v0.11.4** (2026-10-30), a patch: the platform's kube-prometheus-stack no longer raises
+Before that, **v0.11.4** (2026-10-30), a patch: the platform's kube-prometheus-stack no longer raises
 `KubeCPUQuotaOvercommit` and `KubeMemoryQuotaOvercommit` ([`docs/releases/v0.11.4.md`](docs/releases/v0.11.4.md)).
 Before it, **v0.11.3** (2026-10-30), a patch: no `KubeCPUOvercommit` and `KubeMemoryOvercommit`
 ([`docs/releases/v0.11.3.md`](docs/releases/v0.11.3.md)).

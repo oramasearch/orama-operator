@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.6](v0.11.6.md) — 2026-10-31. A patch: the hub Prometheus owns its volume (`fsGroup`), a Pixie Postgres image must
+  carry its tag (#1091); the Pixie prune spares objects another controller owns, and `pl-sentry-dsn-config` is rendered (#1092).
 - [v0.11.5](v0.11.5.md) — 2026-10-31. A patch: Pixie's release (#455), `config/clusters/observability-provider.yaml` naming
   all 27 images by digest, and the build patches they were made with (#1085). No operator code or CRD changes.
 - [v0.11.4](v0.11.4.md) — 2026-10-30. A patch: kube-prometheus-stack's `KubeCPUQuotaOvercommit` and `KubeMemoryQuotaOvercommit`
