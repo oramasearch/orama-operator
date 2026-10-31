@@ -484,9 +484,9 @@ func TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys(t *testing.T) {
 		}}
 	reconcileTwice(t, r, "plc", pixieConcreteName)
 
-	// Before the hub is ready, keys are minted but not registered.
+	// Before OpenSearch is ready, the bootstrap does nothing.
 	if backend.index != "" || len(backend.keys) != 0 {
-		t.Fatal("the bootstrap ran before the hub was ready")
+		t.Fatal("the bootstrap ran before OpenSearch was ready")
 	}
 	// The metrics are Pixie's no concern: they are reported before Pixie runs.
 	var early oramav1alpha1.PixieCloud
@@ -503,6 +503,19 @@ func TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys(t *testing.T) {
 	sandbox.Spec.Policies = append(sandbox.Spec.Policies, peerAllowance)
 	if err := kube.Update(ctx, &sandbox); err != nil {
 		t.Fatal(err)
+	}
+	// OpenSearch alone ready: the index is created then, because the indexer, and so the hub, waits for it.
+	var search appsv1.StatefulSet
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieSearchService}, &search); err != nil {
+		t.Fatal(err)
+	}
+	search.Status = appsv1.StatefulSetStatus{ObservedGeneration: search.Generation, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1}
+	if err := kube.Status().Update(ctx, &search); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTwice(t, r, "plc", pixieConcreteName)
+	if backend.index != pixieMetadataIndex || len(backend.keys) != 0 {
+		t.Fatalf("with only OpenSearch ready: index %q, %d keys; want the index and no keys", backend.index, len(backend.keys))
 	}
 	markPixieWorkloadsReady(t, kube, "plc")
 	reconcileTwice(t, r, "plc", pixieConcreteName)

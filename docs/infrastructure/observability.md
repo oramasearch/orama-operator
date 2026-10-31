@@ -173,12 +173,14 @@ from `pl-cloud-config`). `PL_DISABLE_AUTO_UPDATE` is `true`.
 ### The bootstrap
 
 What a person would do after installing Pixie Cloud, done by the hub cluster's operator
-(`pixie_cloud_bootstrap.go`), once the hub is Ready:
+(`pixie_cloud_bootstrap.go`). The index comes first, as soon as OpenSearch is ready; the rest once
+the hub is Ready:
 
 1. **The metadata index**, created in OpenSearch with the indexer's own body (vendored from
    `src/cloud/indexer/md/mapping.o.go` as `assets/pixie/md-index.json`). The indexer compares its
    desired settings with the live index and reindexes on any difference, so the body must be its
-   own.
+   own. It is created before the hub is Ready because the indexer, with manual index management,
+   exits when the index is missing, and the hub is not Ready without the indexer.
 2. **The administrator**, through Kratos' admin API.
 3. **The organisation and the administrator's user.** Pixie has no API that creates the first
    organisation or user without someone signing in, so this one step is a schema adapter: it reads
