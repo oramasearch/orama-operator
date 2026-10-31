@@ -33,6 +33,8 @@ const (
 	vizierClusterConfig  = "pl-cluster-config"
 	vizierCloudCAPath    = "/etc/pixie-cloud-ca"
 	pixieCertsAnnotation = "orama.cloud/pixie-certs"
+	// pixieConfigAnnotation is a fingerprint of the ConfigMaps a pod reads (stampPixieConfigHash).
+	pixieConfigAnnotation = "orama.cloud/pixie-config"
 )
 
 // vizierObjects is exactly the Vizier the operator applies.
@@ -165,6 +167,7 @@ func renderVizier(input vizierRender) ([]client.Object, error) {
 			return nil, err
 		}
 	}
+	stampPixieConfigHash(objects)
 	return objects, nil
 }
 

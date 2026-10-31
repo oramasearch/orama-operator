@@ -210,6 +210,7 @@ func renderPixieCloud(input pixieCloudRender) ([]client.Object, error) {
 			return nil, err
 		}
 	}
+	stampPixieConfigHash(objects)
 	return objects, nil
 }
 
@@ -455,6 +456,19 @@ func transformPixieCloudConfig(cm *corev1.ConfigMap, input pixieCloudRender) err
 		// gets the in-cluster address instead (pixieScriptBundleInCluster).
 		urls, _ := json.Marshal([]string{pixieScriptBundlePath})
 		return set("SCRIPT_BUNDLE_URLS", string(urls))
+	case "proxy-envoy-config":
+		// Envoy serves gRPC-web (script runs) on the proxy's port 4444 and answers the browser's CORS
+		// preflight. Upstream allows only its own domain, so every script run from our UI was refused
+		// (403 to OPTIONS ExecuteScript, "http status code: 0" in the UI). The UI's origin is
+		// work.<domain>; the suffix <domain> covers it and the domain itself.
+		const upstream = `- suffix: "dev.withpixie.dev"`
+		for key, value := range cm.Data {
+			if strings.Contains(value, upstream) {
+				cm.Data[key] = strings.ReplaceAll(value, upstream, fmt.Sprintf("- suffix: %q", cloud.Spec.Domain))
+				return nil
+			}
+		}
+		return fmt.Errorf("ConfigMap %s has no CORS origin %s to replace", cm.Name, upstream)
 	case "pl-scriptmgr-config":
 		if err := set("PL_BUNDLE_BUCKET", pixieScriptsBucket); err != nil {
 			return err
