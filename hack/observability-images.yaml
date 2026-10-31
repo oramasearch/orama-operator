@@ -1,7 +1,7 @@
 # Every image and chart the observability work (operator#15, #456) runs, and where each must be
-# mirrored before it can run air-gapped. Nothing here is a digest of our own: digests are recorded
-# after the mirrors and builds exist (#455), and only an upstream digest the vendored manifests
-# already pin is written below.
+# mirrored before it can run air-gapped. Nothing here is a digest of our own: the release's digests
+# are in config/clusters/observability-provider.yaml (#455), and only an upstream digest the vendored
+# manifests already pin is written below.
 #
 # Checked by: cmd/platform_observability_test.go (the platform charts, rendered offline from
 # hack/charts/, use exactly the `platform` mirrors, each pod with a pull Secret) and
@@ -63,6 +63,13 @@ operator:
     upstream: "envoyproxy/envoy:v1.34.2@sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9"
     licence: Apache-2.0
     used_by: metrics-federation (internal/controller/observability_metrics.go platformEnvoyImage)
+
+# Images used only to build one of ours, never run as they are.
+build:
+  - mirror: docker.io/oramasearch/platform-nginx-unprivileged:1.30.6-alpine
+    upstream: "nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03"
+    licence: BSD-2-Clause
+    used_by: the pixie `script-bundle` image (hack/pixie-script-bundle), as its base by digest
 
 # Pixie: the ObservabilityProvider's release keys, each a private oramasearch/pixie-* repository,
 # by digest. Built (#455) from oramasearch/pixie 4b445e0b7907c79d034bcb4a227bbaede94d370a with
