@@ -394,6 +394,22 @@ func TestRenderPixieCloud(t *testing.T) {
 			t.Errorf("the hub still fetches %s", value)
 		}
 	}
+	// The UI's bundle is on its own origin (work.<domain>): a bundle on <domain> is cross-origin and the
+	// browser refuses it. The API server reads the bundle server directly: the hub's domain does not
+	// resolve inside the cluster.
+	if bundles.Data["SCRIPT_BUNDLE_URLS"] != `["/pxl_scripts/bundle.json"]` {
+		t.Errorf("the UI fetches its scripts from %s, not its own origin", bundles.Data["SCRIPT_BUNDLE_URLS"])
+	}
+	apiServer := byKey[pixieObjectKey{"Deployment", "api-server"}].(*appsv1.Deployment)
+	apiBundle := ""
+	for _, env := range containerNamed(&apiServer.Spec.Template.Spec, "api-server").Env {
+		if env.Name == "SCRIPT_BUNDLE_URLS" {
+			apiBundle = env.Value
+		}
+	}
+	if apiBundle != `["http://pixie-scripts.plc.svc:8080/pixie-scripts/bundle.json"]` {
+		t.Errorf("the API server reads its scripts from %q, not the bundle server", apiBundle)
+	}
 	scriptmgr := byKey[pixieObjectKey{"Deployment", "scriptmgr-server"}].(*appsv1.Deployment)
 	for _, env := range containerNamed(&scriptmgr.Spec.Template.Spec, "scriptmgr-server").Env {
 		// Google's storage client prepends http:// itself; a scheme here breaks every read.

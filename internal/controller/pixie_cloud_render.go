@@ -277,6 +277,9 @@ func transformPixieCloudObject(object client.Object, input pixieCloudRender) err
 		removeEnv(app, "PL_VIZIER_IMAGE_SECRET_FILE")
 		dropVolume(spec, "vizier-image-secret")
 		dropVolume(spec, "elastic-certs-pub")
+		// The API server reads the bundle itself (hack/pixie-patches/0001): from the bundle server in
+		// this namespace, since nothing in the cluster resolves the hub's domain.
+		setEnv(app, "SCRIPT_BUNDLE_URLS", pixieScriptBundleInCluster())
 	case "indexer-server":
 		app := containerNamed(spec, "indexer-server")
 		setEnv(app, "PL_ES_URL", fmt.Sprintf("https://%s.%s.svc:%d", pixieSearchService, oramav1alpha1.PixieCloudNamespace, pixieSearchPort))
@@ -391,6 +394,16 @@ func dropVolume(spec *corev1.PodSpec, name string) {
 	spec.Volumes = kept
 }
 
+// pixieScriptBundlePath is where the UI fetches its PxL script bundle: the proxy's /pxl_scripts/
+// location (pixieScriptsLocation), on the page's own origin.
+const pixieScriptBundlePath = "/pxl_scripts/bundle.json"
+
+// pixieScriptBundleInCluster is the API server's SCRIPT_BUNDLE_URLS: the bundle server's Service.
+func pixieScriptBundleInCluster() string {
+	urls, _ := json.Marshal([]string{fmt.Sprintf("http://%s.%s.svc:%d/pixie-scripts/bundle.json", pixieScriptsService, oramav1alpha1.PixieCloudNamespace, pixieScriptsPort)})
+	return string(urls)
+}
+
 // pixieScriptsLocation is appended to the proxy's API locations: the UI fetches its PxL script
 // bundle from the hub's own domain instead of artifacts.px.dev.
 const pixieScriptsLocation = `
@@ -436,7 +449,11 @@ func transformPixieCloudConfig(cm *corev1.ConfigMap, input pixieCloudRender) err
 		}
 		return set("PL_ARTIFACT_BUCKET", "")
 	case "pl-script-bundles-config":
-		urls, _ := json.Marshal([]string{"https://" + cloud.Spec.Domain + "/pxl_scripts/bundle.json"})
+		// What the UI is given (the proxy writes it into the page). A path on the page's own origin:
+		// the UI runs on work.<domain>, and a bundle on <domain> is another origin, which the browser
+		// refuses without CORS headers ("Failed to Load Script Bundles", Network Error). The API server
+		// gets the in-cluster address instead (pixieScriptBundleInCluster).
+		urls, _ := json.Marshal([]string{pixieScriptBundlePath})
 		return set("SCRIPT_BUNDLE_URLS", string(urls))
 	case "pl-scriptmgr-config":
 		if err := set("PL_BUNDLE_BUCKET", pixieScriptsBucket); err != nil {
