@@ -363,7 +363,7 @@ dashboards (project `observability-hub`) are in the Perses of the hub's cluster:
 for production, `orama-nonprod-cluster-01` for nonprod.
 
 The Pixie UI answers on the hub's `domain` and `work.<domain>` through `cloud-proxy-service` in `plc`
-(port 443). The browser must reach both names **on port 443**: the proxy redirects `<domain>` to
+(port 443). Script runs go to the proxy's Envoy on port **4444** (gRPC-web, from `work.<domain>`), whose CORS allows the hub's `domain` and its subdomains (upstream allows only `dev.withpixie.dev`, which refused every script run), so forward 4444 too. The browser must reach both names **on port 443**: the proxy redirects `<domain>` to
 `https://work.<domain>/` without the port, so a forward on any other local port breaks at the first
 redirect. Each person signs in with their own email: the hub's `adminEmail` (password in
 `plc/pixie-admin`) or one of its `users` (password in `plc/pixie-user-<email>`). The browser does not

@@ -542,3 +542,71 @@ func TestPixieInventoryMatchesReleaseKeys(t *testing.T) {
 		t.Fatalf("inventory keys %v, release keys %v", keys, want)
 	}
 }
+
+// Nothing rendered for a hub names Pixie's own domains: each one is a setting that points our hub at
+// upstream's cloud. The Envoy CORS origin was one (script runs refused with a 403 preflight).
+func TestPixieCloudRendersNoUpstreamDomain(t *testing.T) {
+	objects, err := renderPixieCloud(pixieCloudRender{Cloud: testPixieCloud(), CertsHash: "abc", DatabaseHost: pixieDBHost()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range objects {
+		data, err := json.Marshal(object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, upstream := range []string{"withpixie.dev", "withpixie.ai", "px.dev", "gcr.io/pixie-oss"} {
+			if strings.Contains(string(data), upstream) {
+				t.Errorf("%s %s names %s", object.GetObjectKind().GroupVersionKind().Kind, object.GetName(), upstream)
+			}
+		}
+	}
+	envoy := map[string]string{}
+	for _, object := range objects {
+		if cm, ok := object.(*corev1.ConfigMap); ok && cm.Name == "proxy-envoy-config" {
+			envoy = cm.Data
+		}
+	}
+	found := false
+	for _, value := range envoy {
+		found = found || strings.Contains(value, `- suffix: "`+testPixieCloud().Spec.Domain+`"`)
+	}
+	if !found {
+		t.Error("Envoy's CORS does not allow the hub's own domain, so the UI cannot run scripts")
+	}
+}
+
+// A ConfigMap a pod reads changes the pod template's fingerprint, so the pod rolls; a pod that does not
+// read it keeps its template. The script bundle URL reached the API server in v0.11.10 but not the
+// proxy, which kept serving the old one.
+func TestPixieConfigChangeRollsThePodsThatReadIt(t *testing.T) {
+	objects, err := renderPixieCloud(pixieCloudRender{Cloud: testPixieCloud(), CertsHash: "abc", DatabaseHost: pixieDBHost()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashes := func() map[string]string {
+		out := map[string]string{}
+		for _, object := range objects {
+			if _, ok := object.(*appsv1.Deployment); ok {
+				out[object.GetName()] = podTemplateAnnotations(object)[pixieConfigAnnotation]
+			}
+		}
+		return out
+	}
+	before := hashes()
+	for _, object := range objects {
+		if cm, ok := object.(*corev1.ConfigMap); ok && cm.Name == "pl-script-bundles-config" {
+			cm.Data["SCRIPT_BUNDLE_URLS"] = `["/elsewhere/bundle.json"]`
+		}
+	}
+	stampPixieConfigHash(objects)
+	after := hashes()
+	if before["cloud-proxy"] == "" || before["cloud-proxy"] == after["cloud-proxy"] {
+		t.Errorf("the proxy's fingerprint %q -> %q: a change to the bundle URL it serves would not roll it", before["cloud-proxy"], after["cloud-proxy"])
+	}
+	for name, hash := range before {
+		if name != "cloud-proxy" && name != "api-server" && hash != after[name] {
+			t.Errorf("%s rolled for a ConfigMap it does not read", name)
+		}
+	}
+}
