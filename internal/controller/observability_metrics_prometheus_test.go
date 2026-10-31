@@ -633,6 +633,10 @@ func TestHubPrometheusIsPinnedAndScoped(t *testing.T) {
 	if spec["image"] != platformPrometheusImage || spec["retention"] != "90d" || spec["retentionSize"] != "96GB" {
 		t.Errorf("hub Prometheus spec: image %v retention %v size %v", spec["image"], spec["retention"], spec["retentionSize"])
 	}
+	// The pods own their volume, or Prometheus cannot write to it.
+	if fsGroup, _, _ := unstructured.NestedInt64(prometheus.Object, "spec", "securityContext", "fsGroup"); fsGroup == 0 {
+		t.Error("the hub Prometheus sets no fsGroup, so its volume stays root's")
+	}
 	// The pods carry the label the hub's sandbox allowances select.
 	podLabels, _, _ := unstructured.NestedStringMap(prometheus.Object, "spec", "podMetadata", "labels")
 	if podLabels[pixieComponentLabel] != hubPrometheusComponent {

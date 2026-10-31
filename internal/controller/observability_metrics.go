@@ -247,6 +247,15 @@ func hubMetricsObjects(cloud *oramav1alpha1.PixieCloud) ([]*unstructured.Unstruc
 		"retention":        firstNonEmpty(cloud.Spec.MetricsRetention, "30d"),
 		"retentionSize":    size,
 		"storage":          map[string]any{"volumeClaimTemplate": map[string]any{"spec": claim}},
+		// The platform Prometheus's identity (kube-prometheus-stack's default). Without fsGroup the
+		// volume stays root's and Prometheus, which runs as a non-root user, cannot write to it.
+		"securityContext": map[string]any{
+			"runAsNonRoot":   true,
+			"runAsUser":      int64(1000),
+			"runAsGroup":     int64(2000),
+			"fsGroup":        int64(2000),
+			"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+		},
 		"resources": map[string]any{
 			"requests": map[string]any{"cpu": "200m", "memory": "1Gi"},
 			"limits":   map[string]any{"cpu": "2", "memory": "2Gi"},
