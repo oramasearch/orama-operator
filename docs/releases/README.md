@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.8](v0.11.8.md) — 2026-10-31. A patch: people can sign in to the Pixie hubs. The organisation gets the
+  administrator's email domain, and `ObservabilityHub.spec.users` gives each person a generated password (#1103).
 - [v0.11.7](v0.11.7.md) — 2026-10-31. A patch: Pixie's metadata index is created once OpenSearch is ready, before the hub
   is, so the indexer starts and the hubs can become Ready (#1098); how to reach the monitoring UIs (#1072).
 - [v0.11.6](v0.11.6.md) — 2026-10-31. A patch: the hub Prometheus owns its volume (`fsGroup`), a Pixie Postgres image must

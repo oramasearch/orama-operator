@@ -51,10 +51,12 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.11.7** (2026-10-31), a patch: Pixie's metadata index is created as soon as OpenSearch is
-ready, so the indexer starts and the observability hubs can become Ready
-([`docs/releases/v0.11.7.md`](docs/releases/v0.11.7.md)).
-Before it, **v0.11.6** (2026-10-31), a patch: the hubs' Prometheus can write its volume, the Pixie prune no longer deletes
+The current release is **v0.11.8** (2026-10-31), a patch: people can sign in to the Pixie hubs. The organisation gets the
+administrator's email domain, which Pixie requires, and a hub's `users` give each person their own sign-in
+([`docs/releases/v0.11.8.md`](docs/releases/v0.11.8.md)).
+Before it, **v0.11.7** (2026-10-31), a patch: Pixie's metadata index is created as soon as OpenSearch is ready, so the
+indexer starts and the observability hubs can become Ready ([`docs/releases/v0.11.7.md`](docs/releases/v0.11.7.md)).
+Before that, **v0.11.6** (2026-10-31), a patch: the hubs' Prometheus can write its volume, the Pixie prune no longer deletes
 the database's own objects, and `config-manager` gets its Sentry ConfigMap
 ([`docs/releases/v0.11.6.md`](docs/releases/v0.11.6.md)).
 Before that, **v0.11.5** (2026-10-31), a patch: Pixie's release, the `ObservabilityProvider` naming all 27 images by digest
