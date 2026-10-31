@@ -249,6 +249,16 @@ type ObservabilityHubSpec struct {
 	// +kubebuilder:validation:MaxLength=200
 	AdminEmail string `json:"adminEmail"`
 
+	// Users are the other people who sign in to the hub's UI, by email, as members of the
+	// administrator's organisation. The operator generates each one's password and keeps it in
+	// Secret pixie-user-<email> on the hub's cluster. Removing an email removes that sign-in.
+	// +kubebuilder:validation:items:Pattern=`^[^@\s]+@[^@\s]+\.[^@\s]+$`
+	// +kubebuilder:validation:items:MaxLength=200
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=set
+	// +optional
+	Users []string `json:"users,omitempty"`
+
 	// ImagePullSecretRef is a registry credentials Secret on the managing cluster, copied to the
 	// hub's cluster under the production-credential rules. Give each cluster its own.
 	ImagePullSecretRef ClusterSecretReference `json:"imagePullSecretRef"`

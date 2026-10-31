@@ -260,6 +260,18 @@ spec:
                       Empty means the cluster's default.
                     type: string
                 type: object
+              users:
+                description: |-
+                  Users are the other people who sign in to the hub's UI, by email, as members of the
+                  administrator's organisation. The operator generates each one's password and keeps it in
+                  Secret pixie-user-<email> on the hub's cluster. Removing an email removes that sign-in.
+                items:
+                  maxLength: 200
+                  pattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+                  type: string
+                maxItems: 50
+                type: array
+                x-kubernetes-list-type: set
             required:
             - adminEmail
             - domain

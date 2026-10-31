@@ -54,6 +54,7 @@ const (
 	pixieCloudCASecret     = "pixie-cloud-ca"
 	pixieServiceCASecret   = "pixie-service-ca"
 	pixieAdminSecret       = "pixie-admin"
+	pixieUserPrefix        = "pixie-user-"
 	pixieDeployKeyPrefix   = "pixie-deploy-key-"
 )
 

@@ -134,6 +134,7 @@ it succeeds for the two addresses and fails for another name or another CA.
 | The bootstrap role | the hub's operator | `plc/pixie-db-bootstrap`: may only read and insert `orgs` and `users` in the profile database (granted by their owner when missing), two connections. |
 | OpenSearch users | the hub's operator | `plc/pixie-search`: `pixie-indexer` writes the metadata indices, `pixie-api` only reads them; only bcrypt hashes reach OpenSearch. |
 | The administrator's password | the hub's operator | `plc/pixie-admin`. Upstream creates `admin@default.com` with password `admin`; that container is removed. |
+| Each user's password | the hub's operator | `plc/pixie-user-<email>`, keys `email` and `password`, one per email in the hub's `users`. |
 | Registry credentials and alert receiver URLs | people, on the managing cluster | Copied to each cluster under the production-credential rules. Give each cluster its own pull Secret. |
 
 Copies on other clusters carry the hub's or agent's label, never an owner reference across
@@ -181,12 +182,21 @@ the hub is Ready:
    desired settings with the live index and reindexes on any difference, so the body must be its
    own. It is created before the hub is Ready because the indexer, with manual index management,
    exits when the index is missing, and the hub is not Ready without the indexer.
-2. **The administrator**, through Kratos' admin API.
-3. **The organisation and the administrator's user.** Pixie has no API that creates the first
+2. **The administrator and the users**, through Kratos' admin API: `adminEmail` with the password in
+   `plc/pixie-admin`, and each email of `users` with its own generated password in
+   `plc/pixie-user-<email>` (every character a Secret name cannot hold becomes `-`, so
+   `steve@orama.com` is `pixie-user-steve-orama.com`). An email removed from `users` loses its Kratos
+   identity, so its sign-in, and then its Secret.
+3. **The organisation, and everyone's user in it.** Pixie has no API that creates the first
    organisation or user without someone signing in, so this one step is a schema adapter: it reads
-   first and inserts only what is missing, as the dedicated `bootstrap` role, against the vendored
+   first and writes only what is missing, as the dedicated `bootstrap` role, against the vendored
    profile migrations (`TestPixieBootstrapMatchesVendoredSchema` checks every column it writes and
    that nothing it leaves out is required). The organisation's id is a function of its name.
+   **The organisation's domain is the administrator's email domain.** Pixie's sign-in refuses a member
+   of an organisation that has no domain unless the organisation is named after that member's email
+   (`src/cloud/auth/controllers/login.go`, `loginSimple`), with *"Our system found an issue with your
+   account"*. Hubs bootstrapped before v0.11.8 had none and turned everyone away; the bootstrap sets
+   it on them (the role may update `orgs.domain_name` and nothing else of an existing row).
 4. **Deploy keys, through Pixie's own API**: GraphQL `CreateDeploymentKey`, `deploymentKeys`,
    `DeleteDeploymentKey` and `clusters`, as the administrator, with a five-minute token the operator
    signs with the hub's signing key exactly as Pixie's auth service issues one
@@ -353,10 +363,13 @@ dashboards (project `observability-hub`) are in the Perses of the hub's cluster:
 for production, `orama-nonprod-cluster-01` for nonprod.
 
 The Pixie UI answers on the hub's `domain` and `work.<domain>` through `cloud-proxy-service` in `plc`
-(port 443). Point both names at `127.0.0.1` in `/etc/hosts`, forward
-`kubectl -n plc port-forward svc/cloud-proxy-service 8443:443`, open `https://<domain>:8443`, and sign
-in as the hub's `adminEmail` with the password in `plc/pixie-admin`. The browser does not trust the
-hub's CA until `PixieCloud.status.caCertificate` is imported.
+(port 443). The browser must reach both names **on port 443**: the proxy redirects `<domain>` to
+`https://work.<domain>/` without the port, so a forward on any other local port breaks at the first
+redirect. Each person signs in with their own email: the hub's `adminEmail` (password in
+`plc/pixie-admin`) or one of its `users` (password in `plc/pixie-user-<email>`). The browser does not
+trust the hub's CA until `PixieCloud.status.caCertificate` is imported. The step-by-step, for every
+UI on every cluster, is techops-docs'
+[observability runbook](https://github.com/oramasearch/techops-docs/blob/main/docs/platform/observability-runbook.md).
 
 ## The hub's metrics: every cluster of its purpose, kept and paged on the hub
 
