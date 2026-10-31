@@ -242,6 +242,14 @@ spec:
                       Empty means the cluster's default.
                     type: string
                 type: object
+              users:
+                description: |-
+                  Users are the other people who sign in, as members of the organisation. Each gets a
+                  generated password in Secret pixie-user-<email>.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
             required:
             - adminEmail
             - domain

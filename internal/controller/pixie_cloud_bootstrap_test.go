@@ -192,7 +192,7 @@ func TestPixieBootstrapMatchesVendoredSchema(t *testing.T) {
 		}
 	}
 	written := map[string][]string{
-		"orgs":  {"id", "org_name"},
+		"orgs":  {"id", "org_name", "domain_name"},
 		"users": {"org_id", "first_name", "last_name", "email", "is_approved", "identity_provider", "auth_provider_id"},
 	}
 	for table, names := range written {

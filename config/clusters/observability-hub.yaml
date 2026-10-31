@@ -16,6 +16,8 @@ spec:
   domain: pixie.production.orama.internal   # the UI's host, reached by port-forward; no DNS record is made
   organization: orama
   adminEmail: juan@orama.com
+  users:
+    - steve@orama.com
   imagePullSecretRef:
     name: oramasearch-dockerhub
     namespace: orama-system

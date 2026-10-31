@@ -1594,7 +1594,8 @@ cluster counts as production) and serves production agents; a hub on a cluster t
 | `spec.providerRef` | The `ObservabilityProvider`. |
 | `spec.clusterRef` | The hub's `KubernetesCluster`; omitted for the managing cluster, whose hub's own metrics are labelled with the hub's name. Immutable, including setting or removing it. |
 | `spec.domain` | The host name people reach the UI under (and `work.<domain>`). No DNS record or public exposure is created. |
-| `spec.organization` / `.adminEmail` | The one organisation every agent's cluster is registered under, and its administrator. The password is generated into Secret `plc/pixie-admin` on the hub's cluster. |
+| `spec.organization` / `.adminEmail` | The one organisation every agent's cluster is registered under, and its administrator. The password is generated into Secret `plc/pixie-admin` on the hub's cluster. The organisation's domain is the administrator's email domain (Pixie refuses sign-in to an organisation without one). |
+| `spec.users` | Everyone else who signs in to the hub's UI, by email (at most 50), as members of the organisation. Each password is generated into Secret `plc/pixie-user-<email>` on the hub's cluster; removing an email removes that sign-in. |
 | `spec.imagePullSecretRef` | Registry credentials on the managing cluster, copied as `plc/pixie-pull` under the production-credential rules. |
 | `spec.storage` | `storageClassName`, `postgres` (default 20Gi), `search` (20Gi), `messaging` (10Gi), `metrics` (100Gi, the hub Prometheus). |
 | `spec.metricsRetention` | How long the hub Prometheus keeps the metrics it federates from every cluster it serves (default `30d`). |
@@ -1628,8 +1629,8 @@ nobody writes it by hand. The cluster's own operator runs Pixie Cloud from the v
 with OpenSearch instead of Elastic's, a CloudNativePG database with one role per service, the PxL
 script server, minted certificates and keys, a default-deny sandbox, and the bootstrap
 (administrator, organisation, one deploy key per agent). `spec` mirrors the hub (`release`, `hub`,
-`purpose`, `cluster`, `metricsRetention`, `domain`, `organization`, `adminEmail`, `pullSecretName`,
-`storage`), plus
+`purpose`, `cluster`, `metricsRetention`, `domain`, `organization`, `adminEmail`, `users`,
+`pullSecretName`, `storage`), plus
 `agents[] {name, cluster}` (only agents the managing cluster accepted) and `alertRoutes[]`.
 It also runs the hub Prometheus (federating every cluster it serves over their peer links), its
 hub-scoped rules and dashboards. `status` has `phase`, `ready`, `components[]`, `agents[] {name,
