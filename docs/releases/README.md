@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.3](v0.11.3.md) — 2026-10-30. A patch: kube-prometheus-stack's `KubeCPUOvercommit` and `KubeMemoryOvercommit` are off
+  on every cluster, which autoscale instead of holding a spare node (#1077). Platform values only; no code or CRD changes.
 - [v0.11.2](v0.11.2.md) — 2026-10-30. A patch: observability agents write their alert routing before Pixie's release
   exists; leaf clients know Orama's kinds, and the agent creates the hub's `plc` namespace (#1070). No CRD changes.
 - [v0.11.1](v0.11.1.md) — 2026-10-29. A patch: production's observability hub runs on the management cluster (a hub with
