@@ -280,6 +280,55 @@ func TestRenderVizierRefusesTinyNodeMemory(t *testing.T) {
 	}
 }
 
+// Every ConfigMap key a Cloud container needs is rendered beside it. config-manager would not start
+// on either hub without pl-sentry-dsn-config, which upstream ships in cloud_deps.
+func TestPixieCloudRendersEveryConfigMapItNeeds(t *testing.T) {
+	objects, err := renderPixieCloud(pixieCloudRender{Cloud: testPixieCloud(), CertsHash: "abc", DatabaseHost: pixieDBHost()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs := map[string]map[string]string{}
+	for _, object := range objects {
+		if config, ok := object.(*corev1.ConfigMap); ok {
+			configs[config.Name] = config.Data
+		}
+	}
+	optional := func(flag *bool) bool { return flag != nil && *flag }
+	for _, object := range objects {
+		spec, _ := podSpecOf(object)
+		if spec == nil {
+			continue
+		}
+		for _, container := range append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...) {
+			for _, env := range container.Env {
+				if env.ValueFrom == nil || env.ValueFrom.ConfigMapKeyRef == nil || optional(env.ValueFrom.ConfigMapKeyRef.Optional) {
+					continue
+				}
+				ref := env.ValueFrom.ConfigMapKeyRef
+				if _, found := configs[ref.Name][ref.Key]; !found {
+					t.Errorf("%s/%s reads %s from ConfigMap %s, which is not rendered", object.GetName(), container.Name, ref.Key, ref.Name)
+				}
+			}
+			for _, from := range container.EnvFrom {
+				if from.ConfigMapRef == nil || optional(from.ConfigMapRef.Optional) {
+					continue
+				}
+				if _, found := configs[from.ConfigMapRef.Name]; !found {
+					t.Errorf("%s/%s reads ConfigMap %s, which is not rendered", object.GetName(), container.Name, from.ConfigMapRef.Name)
+				}
+			}
+		}
+		for _, volume := range spec.Volumes {
+			if volume.ConfigMap == nil || optional(volume.ConfigMap.Optional) {
+				continue
+			}
+			if _, found := configs[volume.ConfigMap.Name]; !found {
+				t.Errorf("%s mounts ConfigMap %s, which is not rendered", object.GetName(), volume.ConfigMap.Name)
+			}
+		}
+	}
+}
+
 func TestRenderPixieCloud(t *testing.T) {
 	cloud := testPixieCloud()
 	objects, err := renderPixieCloud(pixieCloudRender{Cloud: cloud, CertsHash: "abc", DatabaseHost: pixieDBHost()})
