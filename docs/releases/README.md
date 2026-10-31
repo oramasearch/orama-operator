@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.7](v0.11.7.md) — 2026-10-31. A patch: Pixie's metadata index is created once OpenSearch is ready, before the hub
+  is, so the indexer starts and the hubs can become Ready (#1098); how to reach the monitoring UIs (#1072).
 - [v0.11.6](v0.11.6.md) — 2026-10-31. A patch: the hub Prometheus owns its volume (`fsGroup`), a Pixie Postgres image must
   carry its tag (#1091); the Pixie prune spares objects another controller owns, and `pl-sentry-dsn-config` is rendered (#1092).
 - [v0.11.5](v0.11.5.md) — 2026-10-31. A patch: Pixie's release (#455), `config/clusters/observability-provider.yaml` naming
