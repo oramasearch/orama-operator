@@ -90,6 +90,35 @@ func newPixieTestClient(t *testing.T, scheme *runtime.Scheme, funcs interceptor.
 		WithInterceptorFuncs(funcs).Build()
 }
 
+// The prune removes what the operator rendered and no longer renders, never what CloudNativePG made
+// for the database: those objects inherit the pixie label but are the database Cluster's.
+func TestPixiePruneLeavesObjectsAnotherControllerOwns(t *testing.T) {
+	yes := true
+	labelled := func(name string, owner *metav1.OwnerReference) *corev1.ServiceAccount {
+		account := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: oramav1alpha1.PixieCloudNamespace, Labels: map[string]string{pixieManagedLabel: pixieManagedCloud},
+		}}
+		if owner != nil {
+			account.OwnerReferences = []metav1.OwnerReference{*owner}
+		}
+		return account
+	}
+	database := labelled(pixieDBCluster, &metav1.OwnerReference{APIVersion: "postgresql.cnpg.io/v1", Kind: "Cluster", Name: pixieDBCluster, UID: "db", Controller: &yes})
+	stale := labelled("stale", &metav1.OwnerReference{APIVersion: oramav1alpha1.GroupVersion.String(), Kind: "PixieCloud", Name: "pixie", UID: "cloud", Controller: &yes})
+	unowned := labelled("unowned", nil)
+	kube := newPixieTestClient(t, newPixieScheme(t), interceptor.Funcs{}, database, stale, unowned)
+
+	if err := prunePixieObjects(context.Background(), kube, oramav1alpha1.PixieCloudNamespace, pixieManagedCloud, map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{database.Name: true, stale.Name: false, unowned.Name: false} {
+		err := kube.Get(context.Background(), client.ObjectKey{Namespace: oramav1alpha1.PixieCloudNamespace, Name: name}, &corev1.ServiceAccount{})
+		if exists := err == nil; exists != want {
+			t.Errorf("ServiceAccount %s: exists %v after the prune, want %v (%v)", name, exists, want, err)
+		}
+	}
+}
+
 // monitoringRESTMapper is the fake client's default (empty) mapper with the platform layer's
 // monitoring kinds, as a cluster with kube-prometheus-stack serves them.
 func monitoringRESTMapper() apimeta.RESTMapper {
