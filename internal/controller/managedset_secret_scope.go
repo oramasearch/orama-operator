@@ -300,7 +300,7 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 		}
 		ref := agent.Spec.ImagePullSecretRef
 		if _, found := sources[ref.Namespace+"/"+ref.Name]; production && !found {
-			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of ObservabilityAgent " + agent.Name + " on production cluster " + agent.Spec.ClusterRef
+			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of ObservabilityAgent " + agent.Name + " on production cluster " + firstNonEmpty(agent.Spec.ClusterRef, managingClusterName)
 		}
 	}
 	return sources, nil

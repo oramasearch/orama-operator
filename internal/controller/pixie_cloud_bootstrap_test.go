@@ -160,7 +160,7 @@ func TestPixieBootstrapMatchesVendoredSchema(t *testing.T) {
 	if latest < pixieProfileMigrationNeeded {
 		t.Fatalf("the vendored profile schema stops at %d, before the adapter's %d", latest, pixieProfileMigrationNeeded)
 	}
-	columns := map[string]map[string]string{"orgs": {}, "users": {}}
+	columns := map[string]map[string]string{"orgs": {}, "users": {}, "user_attributes": {}, "user_settings": {}}
 	create := regexp.MustCompile(`(?is)CREATE TABLE (\w+) \((.*?)\n\);`)
 	add := regexp.MustCompile(`(?i)ALTER TABLE (\w+)\s+ADD COLUMN\s+(\w+)([^;]*);`)
 	drop := regexp.MustCompile(`(?i)ALTER TABLE (\w+)\s+DROP COLUMN\s+(\w+)`)
@@ -194,6 +194,13 @@ func TestPixieBootstrapMatchesVendoredSchema(t *testing.T) {
 	written := map[string][]string{
 		"orgs":  {"id", "org_name", "domain_name"},
 		"users": {"org_id", "first_name", "last_name", "email", "is_approved", "identity_provider", "auth_provider_id"},
+	}
+	for _, table := range pixieUserRowTables {
+		written[table] = []string{"user_id"}
+		// Keyed by user_id, so ON CONFLICT (user_id) has its unique index.
+		if !strings.Contains(columns[table]["user_id"], "UUID") {
+			t.Errorf("%s.user_id is not in the pinned schema", table)
+		}
 	}
 	for table, names := range written {
 		set := map[string]bool{}
