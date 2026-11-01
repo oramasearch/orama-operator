@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.12](v0.11.12.md) — 2026-10-31. A patch: production's Pixie hub takes the managing cluster and nonprod too, agents
+  may name their own alert receivers, and the bootstrap writes each user's settings rows (#1124).
 - [v0.11.11](v0.11.11.md) — 2026-10-31. A patch: Envoy's CORS allows the hub's domain, so the UI runs scripts; every Pixie
   pod template carries a fingerprint of the ConfigMaps it reads (#1117).
 - [v0.11.10](v0.11.10.md) — 2026-10-31. A patch: the UI fetches the PxL script bundle from its own origin and the API server

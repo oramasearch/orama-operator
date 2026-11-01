@@ -1609,13 +1609,15 @@ cluster counts as production) and serves production agents; a hub on a cluster t
 Short name `obsagent`. Lives on the managing cluster, which writes a `PixieVizier` onto the agent's
 cluster, links it to its hub (a `PeerConnection` pair and a `PeerLink`), and delivers the deploy key
 the hub issued for that cluster alone. An agent whose cluster's purpose may not report to its hub
-(production reports only to the managing cluster's hub, nonprod only to a nonprod hub) is
+(production reports only to the managing cluster's hub; nonprod to that hub or a nonprod hub, since
+2026-10-31) is
 `Refused`, and nothing of it is left on any cluster.
 
 | Field | Meaning |
 |---|---|
-| `spec.clusterRef` | The agent's `KubernetesCluster`. Immutable. |
-| `spec.hubRef` | The `ObservabilityHub`. |
+| `spec.clusterRef` | The agent's `KubernetesCluster`. Empty is the managing cluster itself, as for a hub: production, beside production's hub without a link, registered under the hub's name. Immutable. |
+| `spec.hubRef` | The `ObservabilityHub`: the managing cluster's for production and nonprod clusters, or a nonprod cluster's for a nonprod one. |
+| `spec.alerting` | Optional receivers for this cluster's alerts, instead of the hub's. A nonprod agent on the managing cluster's hub names its own; production's are never copied to it. |
 | `spec.imagePullSecretRef` | Registry credentials, copied as `pl/pixie-pull` under the production-credential rules. |
 | `spec.nodeMemory` | Each node agent's memory (default 2Gi, at least 1Gi); its data store is 60% of it. |
 | `status.phase` | `Pending \| Progressing \| Ready \| Degraded \| Refused`. `Ready` needs the agents ready and the hub seeing the cluster heartbeat. |

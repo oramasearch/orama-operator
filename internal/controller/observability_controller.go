@@ -150,14 +150,14 @@ func (o observabilityClusters) copySecret(
 	return nil
 }
 
-// alertRoutesOn copies the hub's receivers to one cluster's namespace and returns the routes that
-// name them.
-func (o observabilityClusters) alertRoutesOn(ctx context.Context, target client.Client, hub *oramav1alpha1.ObservabilityHub, clusterRef, namespace string, labels map[string]string) ([]oramav1alpha1.PixieAlertRoute, error) {
-	if hub.Spec.Alerting == nil {
+// alertRoutesOn copies the receivers to one cluster's namespace and returns the routes that name
+// them.
+func (o observabilityClusters) alertRoutesOn(ctx context.Context, target client.Client, alerting *oramav1alpha1.ObservabilityAlerting, clusterRef, namespace string, labels map[string]string) ([]oramav1alpha1.PixieAlertRoute, error) {
+	if alerting == nil {
 		return nil, nil
 	}
-	routes := make([]oramav1alpha1.PixieAlertRoute, 0, len(hub.Spec.Alerting.Receivers))
-	for _, receiver := range hub.Spec.Alerting.Receivers {
+	routes := make([]oramav1alpha1.PixieAlertRoute, 0, len(alerting.Receivers))
+	for _, receiver := range alerting.Receivers {
 		route := oramav1alpha1.PixieAlertRoute{Name: receiver.Name, Severities: receiver.Severities, SecretName: "alert-" + receiver.Name}
 		var ref oramav1alpha1.ObservabilitySecretKeyRef
 		switch {
@@ -420,7 +420,7 @@ func (r *ObservabilityHubReconciler) reconcile(ctx context.Context, hub *oramav1
 	// delivered once.
 	var routes []oramav1alpha1.PixieAlertRoute
 	if !hubClusterHasAgent {
-		if routes, err = view.alertRoutesOn(ctx, target, hub, hub.Spec.ClusterRef, oramav1alpha1.PixieCloudNamespace, labels); err != nil {
+		if routes, err = view.alertRoutesOn(ctx, target, hub.Spec.Alerting, hub.Spec.ClusterRef, oramav1alpha1.PixieCloudNamespace, labels); err != nil {
 			return status, err
 		}
 	}
@@ -489,7 +489,7 @@ func (r *ObservabilityHubReconciler) acceptedAgents(ctx context.Context, hub *or
 		if agentPurposeRefusal(agent.Spec.ClusterRef, purpose, hub.Spec.ClusterRef, hubPurpose) != "" {
 			continue
 		}
-		accepted = append(accepted, oramav1alpha1.PixieCloudAgent{Name: agent.Name, Cluster: agent.Spec.ClusterRef})
+		accepted = append(accepted, oramav1alpha1.PixieCloudAgent{Name: agent.Name, Cluster: agentClusterName(&agent, hub)})
 		if agent.Spec.ClusterRef == hub.Spec.ClusterRef {
 			local = true
 		}
@@ -659,7 +659,7 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 	}
 	// The cluster's alert routing goes with the PixieVizier, which is written as soon as the
 	// purposes match: a cluster pages before Pixie's release, its key or its hub exist.
-	routes, err := view.alertRoutesOn(ctx, agentCluster, &hub, agent.Spec.ClusterRef, oramav1alpha1.PixieVizierNamespace, labels)
+	routes, err := view.alertRoutesOn(ctx, agentCluster, agentAlerting(&agent.Spec, purpose, hubPurpose, hub.Spec.Alerting), agent.Spec.ClusterRef, oramav1alpha1.PixieVizierNamespace, labels)
 	if err != nil {
 		return status, err
 	}
@@ -709,7 +709,7 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 			Release:             release,
 			Agent:               agent.Name,
 			Purpose:             purpose,
-			ClusterName:         agent.Spec.ClusterRef,
+			ClusterName:         agentClusterName(agent, &hub),
 			CloudAddress:        cloudAddress,
 			CloudCASecretName:   pixieCloudCACopy,
 			DeployKeySecretName: vizierDeploySecret,

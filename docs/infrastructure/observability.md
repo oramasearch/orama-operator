@@ -18,7 +18,7 @@ operator, nonprod isolated), [#1059](https://github.com/oramasearch/orama-operat
 | Pixie for live tracing, installed by our operator: no Pixie operator, no OLM, versions pinned, auto-update off. | Steve, #15, #456 |
 | Pixie Cloud is self-hosted, for production and on nonprod for nonprod; never Pixie's or New Relic's hosted service, never Auth0. | Steve, #456 |
 | Production's hub (its Prometheus, Alertmanager routing, dashboards, Pixie Cloud and their databases) runs on the managing cluster. No separate support cluster is provisioned: *"let's put the observability databases and functionality on the management cluster instead of provisioning a prod support cluster"*. | Steve, 2026-10-29, #1059 |
-| Production agents report to the managing cluster's hub; nonprod agents and their hub stay on nonprod. The operator enforces it. | #456, #1059 |
+| ~~Production agents report to the managing cluster's hub; nonprod agents and their hub stay on nonprod.~~ **Replaced 2026-10-31: every cluster, nonprod included, reports to the managing cluster's hub**, so one hub shows them all: *"I told you to include nonprod ... change the earlier decision"*. Production still never reports to a nonprod hub, and production's alert receivers never reach nonprod. The operator enforces both. | #456, #1059; Steve, 2026-10-31, #1122 |
 | Agents reach a hub on another cluster only through #437's peer link (zetta-tunnel, mutual TLS 1.3, `PeerConnection` + `PeerLink`), with a deploy key of their own. | #456, #437 decision D6 |
 | Everything runs on-prem and air-gapped: images from our private registry, nothing calls out at run time. | #456 |
 
@@ -32,8 +32,18 @@ operator, nonprod isolated), [#1059](https://github.com/oramasearch/orama-operat
 
 | Hub on | Serves agents on |
 |---|---|
-| the managing cluster (no `clusterRef`) | `production` clusters |
-| a `nonprod` cluster | `nonprod` clusters |
+| the managing cluster (no `clusterRef`) | `production` and `nonprod` clusters, and the managing cluster itself |
+| a `nonprod` cluster | `nonprod` clusters (none today: nonprod's hub was retired on 2026-10-31) |
+
+An agent with no `clusterRef` runs on the managing cluster itself, like production's hub: it is
+production, reaches the hub without a link, and is registered under the hub's name
+(`orama-production-cluster-01`), the same name the hub already gives its own metrics
+(`config/clusters/observability-hub.yaml`).
+
+**A nonprod agent on the managing cluster's hub pages through its own receivers**
+(`spec.alerting` on the agent): the hub's receivers are production's, and their Secrets are never
+copied to a nonprod cluster. Nonprod's agent names `nonprod-alerts-slack` (`#monitoring-stg`). An
+agent of the hub's purpose that names none uses the hub's.
 
 Every controller runs on every cluster, from the same chart; a cluster is a hub or has agents only
 because the resources say so (the *one operator* rule). Prometheus, Alertmanager and Perses are the
@@ -96,9 +106,9 @@ could report to a hub without a `clusterRef`.
 | Rule | Enforced by |
 |---|---|
 | A hub runs only on the managing cluster (no `clusterRef`) or on a `nonprod` cluster, never on a production cluster beside customer workloads. | `ObservabilityHub` is `Refused`; nothing is written. |
-| An agent reports only to a hub of its purpose: production to the managing cluster's hub, nonprod to a nonprod cluster's hub. | `ObservabilityAgent` is `Refused` and anything it had placed is removed; the hub controller also leaves it out of the `PixieCloud`'s `agents`, so the hub never issues it a key. |
+| A production agent reports only to the managing cluster's hub; a nonprod agent to the managing cluster's hub or a nonprod cluster's hub. | `ObservabilityAgent` is `Refused` and anything it had placed is removed; the hub controller also leaves it out of the `PixieCloud`'s `agents`, so the hub never issues it a key. |
 | Production credentials never reach nonprod. The managing cluster's hub copies its Secrets within the managing cluster. | The production-credential rules of the sets and `OramaOperator` ([`crd-reference.md`](../crd-reference.md#production-credentials-never-reach-a-nonprod-member)), applied to every Secret the observability controllers copy. |
-| Nothing from production is reachable from nonprod. | A nonprod agent never gets a link to production's hub, and every Pixie namespace is default-deny. |
+| From nonprod, only the hub's agent endpoint is reachable. | Since 2026-10-31 a nonprod agent has a link to production's hub like a production cluster's: it carries vzconn only, authenticated by that cluster's own deploy key and the hub's certificate authority, and the hub reads back only its read-only metrics proxy. Nothing else of production is exported to it, and every Pixie namespace is default-deny. Before, nonprod had no link to production at all; this is the cost of one hub. |
 
 ## The link to the hub
 
@@ -131,7 +141,7 @@ it succeeds for the two addresses and fails for another name or another CA.
 | Vizier's CA, service certificates, signing key | the agent's operator | `pl/pixie-vizier-ca`, `pl/service-tls-certs`, `pl/pl-cluster-secrets` (the cloud connector adds `cluster-id` and `cluster-name` there after it registers; the operator never changes them). |
 | The hub's two CAs (services; what agents and people reach), certificates, JWT, session and Hydra secrets | the hub's operator | `plc/pixie-service-ca`, `plc/pixie-cloud-ca`, `plc/service-tls-*`, `plc/cloud-proxy-tls-certs`, `plc/cloud-auth-secrets`, `plc/cloud-session-secrets`, `plc/pl-hydra-secrets`. The public trust root is `PixieCloud.status.caCertificate`, copied to each agent as `pl/pixie-cloud-ca`. |
 | One Postgres role and database per Pixie service, each with its own encryption key | the hub's operator | `plc/pixie-db-<service>`; CloudNativePG managed roles, never superuser, 30 connections each. vzconn and the artifact tracker never open the database and get no credentials. |
-| The bootstrap role | the hub's operator | `plc/pixie-db-bootstrap`: may only read and insert `orgs` and `users` in the profile database (granted by their owner when missing), two connections. |
+| The bootstrap role | the hub's operator | `plc/pixie-db-bootstrap`: may only read and insert `orgs`, `users`, `user_attributes` and `user_settings` in the profile database (granted by their owner when missing), two connections. |
 | OpenSearch users | the hub's operator | `plc/pixie-search`: `pixie-indexer` writes the metadata indices, `pixie-api` only reads them; only bcrypt hashes reach OpenSearch. |
 | The administrator's password | the hub's operator | `plc/pixie-admin`. Upstream creates `admin@default.com` with password `admin`; that container is removed. |
 | Each user's password | the hub's operator | `plc/pixie-user-<email>`, keys `email` and `password`, one per email in the hub's `users`. |
@@ -197,6 +207,10 @@ the hub is Ready:
    (`src/cloud/auth/controllers/login.go`, `loginSimple`), with *"Our system found an issue with your
    account"*. Hubs bootstrapped before v0.11.8 had none and turned everyone away; the bootstrap sets
    it on them (the role may update `orgs.domain_name` and nothing else of an existing row).
+   **Each user also gets its `user_attributes` and `user_settings` rows**, which Pixie's own
+   `CreateUser` writes with every user. Pixie only ever updates them, so without them a setting saved
+   in the UI matches no row and is lost: the welcome tour came back on every page load. Users created
+   before v0.11.12 get them on the next reconcile.
 4. **Deploy keys, through Pixie's own API**: GraphQL `CreateDeploymentKey`, `deploymentKeys`,
    `DeleteDeploymentKey` and `clusters`, as the administrator, with a five-minute token the operator
    signs with the hub's signing key exactly as Pixie's auth service issues one
@@ -402,8 +416,8 @@ hub:  PeerConnection plc/pixie-agent-<agent> import metrics.<agent> = Service pe
   Prometheus API, admin endpoints and remote write are not reachable from the hub. The hub's own
   cluster is federated directly from its platform Prometheus.
 - **Only accepted clusters**: the jobs are built from the `PixieCloud`'s `agents`, which only the
-  managing cluster writes after the purpose check, so a production hub never reads nonprod and the
-  reverse (`TestObservabilityAgentsReportOnlyToTheirPurposesHub`).
+  managing cluster writes after the purpose check: the managing cluster's hub reads production and
+  nonprod, and a nonprod hub never reads production (`TestObservabilityAgentsReportToTheManagingHub`).
 - **Narrow**: `match[]` brings health (`up`, `ALERTS`), the operator's status (`orama_*`),
   readiness, restarts and node conditions, kube-prometheus-stack's per-container CPU and memory
   recording rules, the engine's latency histograms, control database lag and volume use; not raw
@@ -468,7 +482,7 @@ whose reason is the phase. Messages are coarse ("rolling out", "not running on e
 replica count never changes status. Status is written only when it differs (deep-compared); a steady
 hub or agent writes nothing (`TestPixieCloudBootstrapIssuesAndRevokesPerClusterKeys`,
 `TestPixieVizierReconcileIsDeterministicAndKeepsRegistration`,
-`TestObservabilityAgentsReportOnlyToTheirPurposesHub`).
+`TestObservabilityAgentsReportToTheManagingHub`).
 
 ## Failure and recovery
 
