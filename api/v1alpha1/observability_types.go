@@ -368,9 +368,8 @@ type ObservabilityAgentSpec struct {
 	// +optional
 	ClusterRef string `json:"clusterRef,omitempty"`
 
-	// HubRef names the ObservabilityHub the agents report to. It is refused unless the two
-	// clusters' purposes match: production to the managing cluster's hub, nonprod to a nonprod
-	// cluster's hub.
+	// HubRef names the ObservabilityHub the agents report to. The managing cluster's hub takes
+	// production and nonprod agents; a hub on a nonprod cluster takes only nonprod agents.
 	// +kubebuilder:validation:MinLength=1
 	HubRef string `json:"hubRef"`
 
@@ -383,6 +382,12 @@ type ObservabilityAgentSpec struct {
 	// +kubebuilder:default="2Gi"
 	// +optional
 	NodeMemory *resource.Quantity `json:"nodeMemory,omitempty"`
+
+	// Alerting is where this cluster's own alerts go, instead of the hub's receivers. A nonprod
+	// cluster reporting to the managing cluster's hub names its own: the hub's receivers are
+	// production's, and their Secrets are never copied to a nonprod cluster.
+	// +optional
+	Alerting *ObservabilityAlerting `json:"alerting,omitempty"`
 }
 
 // ObservabilityAgentStatus is what the managing cluster last read for one agent.

@@ -21,11 +21,16 @@ import (
 // own: an empty clusterRef names it, and it counts as production, because it already holds every
 // production credential and manages the production clusters.
 //
-// Which hub an agent reports to is decided from the two clusters' purposes, never from a field:
+// Which hub an agent may report to is decided from the two clusters' purposes:
 //
-//	agent cluster   reports to a hub on
+//	agent cluster   may report to a hub on
 //	production      the managing cluster (a hub with no clusterRef)
-//	nonprod         a nonprod cluster
+//	nonprod         the managing cluster, or a nonprod cluster
+//
+// Nonprod may report to the managing cluster's hub so one hub shows every cluster (Steve,
+// 2026-10-31: "I told you to include nonprod ... change the earlier decision", replacing #456's
+// one hub per purpose). Production still never reports to a nonprod hub. A nonprod agent there
+// pages through its own receivers (agentAlerting): production's are never copied to it.
 //
 // A hub runs only on the managing cluster or on a nonprod cluster, never on a production cluster
 // beside customer workloads. There is no separate support cluster (Steve, 2026-10-29: "let's put
@@ -76,7 +81,7 @@ func agentPurposeRefusal(agentCluster, agentPurpose, hubCluster, hubPurpose stri
 	default:
 		return fmt.Sprintf("KubernetesCluster %s has purpose %q, which reports to no hub", agentCluster, agentPurpose)
 	}
-	if hubPurpose != agentPurpose {
+	if hubPurpose != agentPurpose && !(agentPurpose == nonprodPurpose && hubCluster == "") {
 		return fmt.Sprintf("an agent on %s cluster %s reports only to a %s hub, and %s is %s: refused",
 			agentPurpose, agentCluster, agentPurpose, firstNonEmpty(hubCluster, managingClusterName), firstNonEmpty(hubPurpose, "untagged"))
 	}
@@ -92,4 +97,17 @@ func agentClusterName(agent *oramav1alpha1.ObservabilityAgent, hub *oramav1alpha
 		return agent.Spec.ClusterRef
 	}
 	return firstNonEmpty(hub.Spec.ClusterRef, hub.Name)
+}
+
+// agentAlerting is where an agent's cluster pages: its own receivers when it names them, otherwise
+// its hub's when the two are of one purpose, otherwise nowhere (a nonprod agent on the managing
+// cluster's hub naming none: production's receivers are never copied to a nonprod cluster).
+func agentAlerting(agent *oramav1alpha1.ObservabilityAgentSpec, purpose, hubPurpose string, hub *oramav1alpha1.ObservabilityAlerting) *oramav1alpha1.ObservabilityAlerting {
+	switch {
+	case agent.Alerting != nil:
+		return agent.Alerting
+	case purpose == hubPurpose:
+		return hub
+	}
+	return nil
 }
