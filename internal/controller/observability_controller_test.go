@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -462,5 +463,49 @@ func TestObservabilityManagingHubSecretsAreProduction(t *testing.T) {
 	}
 	if scope.refuse(oramav1alpha1.SetSecret{Namespace: "orama-system", Name: "hub-pull"}, pixiePullSecret, pullSecret("hub-pull", nil)) == nil {
 		t.Error("the managing cluster's hub pull Secret may be copied to a nonprod cluster")
+	}
+}
+
+// An agent with no clusterRef runs on the managing cluster, beside production's hub: it is
+// production, reaches the hub without a link, and is registered and federated under the hub's own
+// name, so the hub does not read its own cluster twice.
+func TestObservabilityAgentOnTheManagingCluster(t *testing.T) {
+	ctx := context.Background()
+	f := newObservabilityFixture(t, agentNamed("managing", "", "hub-pull"))
+	f.reconcileHub(t)
+	managing := f.cluster("")
+	var cloud oramav1alpha1.PixieCloud
+	if err := managing.Get(ctx, client.ObjectKey{Namespace: "plc", Name: pixieConcreteName}, &cloud); err != nil {
+		t.Fatal(err)
+	}
+	if len(cloud.Spec.Agents) != 1 || cloud.Spec.Agents[0] != (oramav1alpha1.PixieCloudAgent{Name: "managing", Cluster: "production"}) {
+		t.Fatalf("the hub lists %+v; want the managing cluster's agent under the hub's name", cloud.Spec.Agents)
+	}
+	if federated := hubFederatedClusters(&cloud); len(federated) != 1 || federated[0].Name != "production" || federated[0].Target != platformPrometheusTarget {
+		t.Fatalf("the hub federates %+v; want only its own cluster, read directly", federated)
+	}
+	if err := managing.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pixieDeployKeyPrefix + "managing", Namespace: "plc"},
+		Data: map[string][]byte{"deploy-key": []byte("px-dep-11111111-2222-3333-4444-555555555555")}}); err != nil {
+		t.Fatal(err)
+	}
+	cloud.Status.CACertificate = "-----BEGIN CERTIFICATE-----\nhub\n-----END CERTIFICATE-----\n"
+	cloud.Status.Agents = []oramav1alpha1.PixieCloudAgentStatus{{Name: "managing", Registered: true, Connected: true}}
+	if err := managing.Status().Update(ctx, &cloud); err != nil {
+		t.Fatal(err)
+	}
+	agent := f.reconcileAgent(t, "managing")
+	if agent.Status.Link != "local" || agent.Status.Purpose != productionPurpose || agent.Status.HubPurpose != productionPurpose {
+		t.Fatalf("agent status %+v", agent.Status)
+	}
+	var vizier oramav1alpha1.PixieVizier
+	if err := managing.Get(ctx, client.ObjectKey{Namespace: "pl", Name: pixieConcreteName}, &vizier); err != nil {
+		t.Fatal(err)
+	}
+	if vizier.Spec.ClusterName != "production" || vizier.Spec.CloudAddress != fmt.Sprintf("%s.plc.svc:%d", pixieVzconnService, pixieVzconnPort) {
+		t.Fatalf("PixieVizier spec %+v", vizier.Spec)
+	}
+	var links oramav1alpha1.PeerLinkList
+	if err := f.management.List(ctx, &links); err != nil || len(links.Items) != 0 {
+		t.Fatalf("an agent beside its hub got a PeerLink: %d (%v)", len(links.Items), err)
 	}
 }

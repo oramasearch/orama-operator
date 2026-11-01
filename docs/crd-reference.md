@@ -1614,7 +1614,7 @@ the hub issued for that cluster alone. An agent whose cluster's purpose may not 
 
 | Field | Meaning |
 |---|---|
-| `spec.clusterRef` | The agent's `KubernetesCluster`. Immutable. |
+| `spec.clusterRef` | The agent's `KubernetesCluster`. Empty is the managing cluster itself, as for a hub: production, beside production's hub without a link, registered under the hub's name. Immutable. |
 | `spec.hubRef` | The `ObservabilityHub`. |
 | `spec.imagePullSecretRef` | Registry credentials, copied as `pl/pixie-pull` under the production-credential rules. |
 | `spec.nodeMemory` | Each node agent's memory (default 2Gi, at least 1Gi); its data store is 60% of it. |

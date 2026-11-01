@@ -360,10 +360,13 @@ type ObservabilityHubList struct {
 
 // ObservabilityAgentSpec is the node agents of one cluster.
 type ObservabilityAgentSpec struct {
-	// ClusterRef is the KubernetesCluster the agents run on. Immutable.
+	// ClusterRef is the KubernetesCluster the agents run on. Empty is the managing cluster itself,
+	// as for a hub: it is production, reports to the managing cluster's hub over no link, and is
+	// registered under that hub's name. Immutable.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="clusterRef is immutable"
-	ClusterRef string `json:"clusterRef"`
+	// +optional
+	ClusterRef string `json:"clusterRef,omitempty"`
 
 	// HubRef names the ObservabilityHub the agents report to. It is refused unless the two
 	// clusters' purposes match: production to the managing cluster's hub, nonprod to a nonprod

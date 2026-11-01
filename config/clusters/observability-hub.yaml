@@ -33,3 +33,17 @@ spec:
         severities: [critical, warning]
         slack:
           urlSecretRef: {name: production-alerts-slack, namespace: orama-system, key: url}
+---
+# The managing cluster's own agent (no clusterRef: the managing cluster, which is production). It
+# runs beside the hub and reports to it without a link, so the hub's cluster, its databases and the
+# operator that manages every leaf are traced like any production cluster. Registered under the
+# hub's name, orama-production-cluster-01.
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityAgent
+metadata:
+  name: orama-production-cluster-01
+spec:
+  hubRef: orama-production-cluster-01
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system

@@ -489,7 +489,7 @@ func (r *ObservabilityHubReconciler) acceptedAgents(ctx context.Context, hub *or
 		if agentPurposeRefusal(agent.Spec.ClusterRef, purpose, hub.Spec.ClusterRef, hubPurpose) != "" {
 			continue
 		}
-		accepted = append(accepted, oramav1alpha1.PixieCloudAgent{Name: agent.Name, Cluster: agent.Spec.ClusterRef})
+		accepted = append(accepted, oramav1alpha1.PixieCloudAgent{Name: agent.Name, Cluster: agentClusterName(&agent, hub)})
 		if agent.Spec.ClusterRef == hub.Spec.ClusterRef {
 			local = true
 		}
@@ -709,7 +709,7 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 			Release:             release,
 			Agent:               agent.Name,
 			Purpose:             purpose,
-			ClusterName:         agent.Spec.ClusterRef,
+			ClusterName:         agentClusterName(agent, &hub),
 			CloudAddress:        cloudAddress,
 			CloudCASecretName:   pixieCloudCACopy,
 			DeployKeySecretName: vizierDeploySecret,

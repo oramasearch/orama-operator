@@ -82,3 +82,14 @@ func agentPurposeRefusal(agentCluster, agentPurpose, hubCluster, hubPurpose stri
 	}
 	return ""
 }
+
+// agentClusterName is the name an agent's cluster is registered under in Pixie and labelled with in
+// the hub's metrics: its KubernetesCluster, or, for an agent on the managing cluster (no clusterRef),
+// the hub's own name, which is what the hub already calls its own cluster (hubFederatedClusters).
+// An agent on the managing cluster reports only to the managing cluster's hub (the purpose rule).
+func agentClusterName(agent *oramav1alpha1.ObservabilityAgent, hub *oramav1alpha1.ObservabilityHub) string {
+	if agent.Spec.ClusterRef != "" {
+		return agent.Spec.ClusterRef
+	}
+	return firstNonEmpty(hub.Spec.ClusterRef, hub.Name)
+}

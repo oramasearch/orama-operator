@@ -65,8 +65,10 @@ spec:
             description: ObservabilityAgentSpec is the node agents of one cluster.
             properties:
               clusterRef:
-                description: ClusterRef is the KubernetesCluster the agents run on.
-                  Immutable.
+                description: |-
+                  ClusterRef is the KubernetesCluster the agents run on. Empty is the managing cluster itself,
+                  as for a hub: it is production, reports to the managing cluster's hub over no link, and is
+                  registered under that hub's name. Immutable.
                 minLength: 1
                 type: string
                 x-kubernetes-validations:
@@ -105,7 +107,6 @@ spec:
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
             required:
-            - clusterRef
             - hubRef
             - imagePullSecretRef
             type: object

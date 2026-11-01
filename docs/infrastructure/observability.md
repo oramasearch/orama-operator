@@ -35,6 +35,12 @@ operator, nonprod isolated), [#1059](https://github.com/oramasearch/orama-operat
 | the managing cluster (no `clusterRef`) | `production` clusters |
 | a `nonprod` cluster | `nonprod` clusters |
 
+An agent with no `clusterRef` runs on the managing cluster itself, like production's hub: it is
+production, reaches the hub without a link, and is registered under the hub's name
+(`orama-production-cluster-01`), the same name the hub already gives its own metrics. A hub's own
+cluster has an agent on both hubs: nonprod's names `orama-nonprod-cluster-01`, production's has no
+`clusterRef` (`config/clusters/observability-hub.yaml`).
+
 Every controller runs on every cluster, from the same chart; a cluster is a hub or has agents only
 because the resources say so (the *one operator* rule). Prometheus, Alertmanager and Perses are the
 same release with the same values everywhere (the *two installation paths* rule;
@@ -131,7 +137,7 @@ it succeeds for the two addresses and fails for another name or another CA.
 | Vizier's CA, service certificates, signing key | the agent's operator | `pl/pixie-vizier-ca`, `pl/service-tls-certs`, `pl/pl-cluster-secrets` (the cloud connector adds `cluster-id` and `cluster-name` there after it registers; the operator never changes them). |
 | The hub's two CAs (services; what agents and people reach), certificates, JWT, session and Hydra secrets | the hub's operator | `plc/pixie-service-ca`, `plc/pixie-cloud-ca`, `plc/service-tls-*`, `plc/cloud-proxy-tls-certs`, `plc/cloud-auth-secrets`, `plc/cloud-session-secrets`, `plc/pl-hydra-secrets`. The public trust root is `PixieCloud.status.caCertificate`, copied to each agent as `pl/pixie-cloud-ca`. |
 | One Postgres role and database per Pixie service, each with its own encryption key | the hub's operator | `plc/pixie-db-<service>`; CloudNativePG managed roles, never superuser, 30 connections each. vzconn and the artifact tracker never open the database and get no credentials. |
-| The bootstrap role | the hub's operator | `plc/pixie-db-bootstrap`: may only read and insert `orgs` and `users` in the profile database (granted by their owner when missing), two connections. |
+| The bootstrap role | the hub's operator | `plc/pixie-db-bootstrap`: may only read and insert `orgs`, `users`, `user_attributes` and `user_settings` in the profile database (granted by their owner when missing), two connections. |
 | OpenSearch users | the hub's operator | `plc/pixie-search`: `pixie-indexer` writes the metadata indices, `pixie-api` only reads them; only bcrypt hashes reach OpenSearch. |
 | The administrator's password | the hub's operator | `plc/pixie-admin`. Upstream creates `admin@default.com` with password `admin`; that container is removed. |
 | Each user's password | the hub's operator | `plc/pixie-user-<email>`, keys `email` and `password`, one per email in the hub's `users`. |
@@ -197,6 +203,10 @@ the hub is Ready:
    (`src/cloud/auth/controllers/login.go`, `loginSimple`), with *"Our system found an issue with your
    account"*. Hubs bootstrapped before v0.11.8 had none and turned everyone away; the bootstrap sets
    it on them (the role may update `orgs.domain_name` and nothing else of an existing row).
+   **Each user also gets its `user_attributes` and `user_settings` rows**, which Pixie's own
+   `CreateUser` writes with every user. Pixie only ever updates them, so without them a setting saved
+   in the UI matches no row and is lost: the welcome tour came back on every page load. Users created
+   before v0.11.12 get them on the next reconcile.
 4. **Deploy keys, through Pixie's own API**: GraphQL `CreateDeploymentKey`, `deploymentKeys`,
    `DeleteDeploymentKey` and `clusters`, as the administrator, with a five-minute token the operator
    signs with the hub's signing key exactly as Pixie's auth service issues one

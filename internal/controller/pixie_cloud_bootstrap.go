@@ -44,8 +44,9 @@ import (
 //     (src/cloud/auth/controllers/login.go, loginSimple), so the domain is what lets anyone sign in.
 //     Pixie has no API that creates the first organisation or user without someone signing in, so
 //     this one step is a schema adapter: it reads first and writes only what is missing, as a
-//     dedicated role ("bootstrap") that may only read and insert those two tables and set an
-//     organisation's domain, against the vendored, pinned profile schema
+//     dedicated role ("bootstrap") that may only read and insert those tables (and each user's
+//     user_attributes and user_settings rows, which Pixie's own CreateUser writes with the user and
+//     its settings updates need) and set an organisation's domain, against the vendored, pinned profile schema
 //     (TestPixieBootstrapMatchesVendoredSchema).
 //  4. Each agent cluster's deploy key is created, listed and deleted through Pixie Cloud's own API
 //     (GraphQL CreateDeploymentKey, deploymentKeys, DeleteDeploymentKey), as the administrator,
@@ -183,19 +184,22 @@ func (h *pixieHubClient) Ready(ctx context.Context) (bool, string, error) {
 	if err := h.profile.QueryRow(ctx, `SELECT version, dirty FROM profile_service_migrations LIMIT 1`).Scan(&version, &dirty); err != nil || dirty || version < pixieProfileMigrationNeeded {
 		return false, fmt.Sprintf("Pixie's profile migrations are not at %d yet", pixieProfileMigrationNeeded), nil
 	}
-	// The bootstrap role may read and insert organisations and users, and set an organisation's
-	// domain, nothing else. Granted by the tables' owner, only when missing.
+	// The bootstrap role may read and insert organisations, users and each user's attributes and
+	// settings rows, and set an organisation's domain, nothing else. Granted by the tables' owner,
+	// only when missing.
 	var granted bool
 	if err := h.profile.QueryRow(ctx,
 		`SELECT has_table_privilege($1, 'orgs', 'INSERT') AND has_table_privilege($1, 'users', 'INSERT')
 		    AND has_table_privilege($1, 'orgs', 'SELECT') AND has_table_privilege($1, 'users', 'SELECT')
+		    AND has_table_privilege($1, 'user_attributes', 'SELECT') AND has_table_privilege($1, 'user_attributes', 'INSERT')
+		    AND has_table_privilege($1, 'user_settings', 'SELECT') AND has_table_privilege($1, 'user_settings', 'INSERT')
 		    AND has_column_privilege($1, 'orgs', 'domain_name', 'UPDATE')`,
 		pixieBootstrapRole).Scan(&granted); err != nil {
 		return false, "", fmt.Errorf("read the bootstrap role's privileges: %w", err)
 	}
 	if !granted {
 		role := pgx.Identifier{pixieBootstrapRole}.Sanitize()
-		for _, grant := range []string{`GRANT SELECT, INSERT ON orgs, users TO ` + role, `GRANT UPDATE (domain_name) ON orgs TO ` + role} {
+		for _, grant := range []string{`GRANT SELECT, INSERT ON orgs, users, user_attributes, user_settings TO ` + role, `GRANT UPDATE (domain_name) ON orgs TO ` + role} {
 			if _, err := h.profile.Exec(ctx, grant); err != nil {
 				return false, "", fmt.Errorf("grant the bootstrap role: %w", err)
 			}
@@ -378,16 +382,39 @@ func (h *pixieHubClient) EnsureUser(ctx context.Context, orgID, email, identityI
 			orgID, firstName, lastName, email, identityID).Scan(&userID); err != nil {
 			return "", fmt.Errorf("create the user %s: %w", email, err)
 		}
-		return userID, nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return "", fmt.Errorf("read the user %s: %w", email, err)
-	}
-	if userOrg != orgID {
+	} else if userOrg != orgID {
 		return "", fmt.Errorf("user %s belongs to organisation %q, not %s: nothing is changed", email, userOrg, orgID)
+	}
+	if err := h.ensureUserRows(ctx, userID, email); err != nil {
+		return "", err
 	}
 	return userID, nil
 }
+
+// ensureUserRows gives the user the user_attributes and user_settings rows Pixie's own CreateUser
+// writes with every user (src/cloud/profile/datastore/datastore.go). Pixie only ever UPDATEs them,
+// so without them a setting saved in the UI, such as having seen the tour, matches no row and is
+// lost. Users created before v0.11.12 have neither; they get them here.
+func (h *pixieHubClient) ensureUserRows(ctx context.Context, userID, email string) error {
+	for _, table := range pixieUserRowTables {
+		var present bool
+		if err := h.bootstrap.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+table+` WHERE user_id = $1)`, userID).Scan(&present); err != nil {
+			return fmt.Errorf("read the %s row of %s: %w", table, email, err)
+		}
+		if present {
+			continue
+		}
+		if _, err := h.bootstrap.Exec(ctx, `INSERT INTO `+table+` (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+			return fmt.Errorf("create the %s row of %s: %w", table, email, err)
+		}
+	}
+	return nil
+}
+
+// pixieUserRowTables are the per-user tables Pixie creates a row in with each user, keyed by user_id.
+var pixieUserRowTables = []string{"user_attributes", "user_settings"}
 
 // pixieEmailDomain is the part of an email after the @, lowercased.
 func pixieEmailDomain(email string) string {
