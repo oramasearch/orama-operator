@@ -48,6 +48,7 @@ type PixieVizierReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=pixieviziers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=pixieviziers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=pixieviziers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=px.dev,resources=viziers,verbs=get;list;watch;create;update;patch;delete
 
 func (r *PixieVizierReconciler) now() time.Time {
 	if r.Now != nil {

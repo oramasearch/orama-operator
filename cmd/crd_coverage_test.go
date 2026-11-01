@@ -92,6 +92,14 @@ func registeredKinds(t *testing.T) []string {
 
 func chartKinds(t *testing.T) []string { return kindsIn(t, filepath.Join("..", "chart", "crds")) }
 
+// vendoredCRDs are the CRDs in chart/crds that are not this operator's own kinds, by file, with why
+// each is there. They are installed on every cluster like the operator's (one operator), but no
+// controller of ours reconciles them, so the coverage tests leave them out. Nothing else belongs here.
+var vendoredCRDs = map[string]string{
+	"px.dev_viziers.yaml": "Pixie's own Vizier kind, from the vendored oramasearch/pixie commit: the operator writes one per " +
+		"PixieVizier so Pixie's cloud connector reports each cluster's real health instead of \"degraded: non-operator version\" (#1127)",
+}
+
 func kindsIn(t *testing.T, dir string) []string {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
@@ -103,6 +111,9 @@ func kindsIn(t *testing.T, dir string) []string {
 	}
 	var kinds []string
 	for _, file := range files {
+		if _, vendored := vendoredCRDs[filepath.Base(file)]; vendored {
+			continue
+		}
 		manifest, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
@@ -206,6 +217,9 @@ func TestEveryChartCRDIsCoveredByChartRBAC(t *testing.T) {
 	}
 	var plurals []string
 	for _, file := range manifests {
+		if _, vendored := vendoredCRDs[filepath.Base(file)]; vendored {
+			continue
+		}
 		manifest, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)

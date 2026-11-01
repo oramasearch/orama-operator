@@ -508,6 +508,18 @@ rules:
   - patch
   - update
 - apiGroups:
+  - px.dev
+  resources:
+  - viziers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - rbac.authorization.k8s.io
   resourceNames:
   - karpenter

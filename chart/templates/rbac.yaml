@@ -351,6 +351,10 @@ rules:
   - apiGroups: ["monitoring.coreos.com"]
     resources: ["prometheusrules", "podmonitors", "alertmanagerconfigs", "prometheuses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pixie's own Vizier resource, one per PixieVizier in pl, so Pixie reports real health (#1127).
+  - apiGroups: ["px.dev"]
+    resources: ["viziers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Pixie's own RBAC, applied from the vendored Vizier and Cloud manifests (pixie_vizier_render.go
   # vizierObjects, pixie_cloud_render.go pixieCloudObjects). As for Karpenter, every write, bind and
   # escalate is scoped to exactly those names; TestChartPixieRBACMatchesBundle checks the lists.

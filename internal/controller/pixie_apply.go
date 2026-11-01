@@ -47,6 +47,7 @@ var pixiePrunedKinds = []schema.GroupVersionKind{
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
 	{Group: "policy", Version: "v1", Kind: "PodDisruptionBudget"},
+	{Group: "px.dev", Version: "v1alpha1", Kind: "Vizier"},
 }
 
 func pixieClusterScoped(kind string) bool {

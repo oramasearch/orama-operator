@@ -165,8 +165,17 @@ sets every value on the decoded objects, never as text. `TestPixieManifestCommit
 
 **Vizier**: Vizier with persistent metadata, x86-64, and its NATS. Not applied: the updater (it would
 change versions on its own), the cert provisioner Job (the operator mints the certificates), and the
-RBAC of Pixie's own `Vizier` resource (without Pixie's operator the cloud connector reads its address
-from `pl-cloud-config`). `PL_DISABLE_AUTO_UPDATE` is `true`.
+extra RBAC of Pixie's own `Vizier` resource. `PL_DISABLE_AUTO_UPDATE` is `true`.
+
+**Pixie's own `Vizier` resource** (`viziers.px.dev`, its CRD vendored from the pinned commit into
+`chart/crds/px.dev_viziers.yaml`, on every cluster like the operator's own): the operator renders one,
+`pl/pixie`, with `spec.cloudAddr`, `spec.clusterName` and `spec.version` and **no status** (#1127).
+Without it, Pixie's cloud connector reports every healthy cluster as *"degraded: You are running the
+non-operator version of Pixie"*, so a really degraded cluster looked the same. With it and an empty
+phase, the connector reports its own health check. It reads its cloud address from `spec.cloudAddr`
+when the resource exists, which is why that is the same address as `pl-cloud-config`. Nothing
+reconciles it: Pixie's operator is not installed. The chart's coverage tests list it in
+`vendoredCRDs`, the only CRD in `chart/crds` that is not this operator's own kind.
 
 **Cloud**, kept from upstream: the services and Ory Kratos and Hydra. Replaced or removed:
 
