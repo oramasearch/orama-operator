@@ -51,10 +51,10 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.11.11** (2026-10-31), a patch: the Pixie UI can run scripts (Envoy's CORS allows the hub's
-domain), and a configuration change rolls the Pixie pods that read it ([`docs/releases/v0.11.11.md`](docs/releases/v0.11.11.md)).
-Before it, **v0.11.10** (2026-10-31), a patch: the Pixie UI and the hub's API server load the PxL script bundle
-([`docs/releases/v0.11.10.md`](docs/releases/v0.11.10.md)).
+The current release is **v0.11.12** (2026-10-31), a patch: one Pixie hub shows every cluster (the managing cluster and nonprod
+join production's hub), and Pixie keeps each user's settings ([`docs/releases/v0.11.12.md`](docs/releases/v0.11.12.md)).
+Before it, **v0.11.11** (2026-10-31), a patch: the Pixie UI can run scripts, and a configuration change rolls the Pixie pods that
+read it ([`docs/releases/v0.11.11.md`](docs/releases/v0.11.11.md)).
 Before it, **v0.11.9** (2026-10-31), a patch: the hub Prometheus writes its configuration, so it federates every cluster
 and runs the hub's alert rules ([`docs/releases/v0.11.9.md`](docs/releases/v0.11.9.md)).
 Before that, **v0.11.8** (2026-10-31), a patch: people can sign in to the Pixie hubs. The organisation gets the
