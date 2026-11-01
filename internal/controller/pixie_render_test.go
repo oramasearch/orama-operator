@@ -6,11 +6,14 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"slices"
+
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"net"
 	"os"
 	"sort"
@@ -608,5 +611,41 @@ func TestPixieConfigChangeRollsThePodsThatReadIt(t *testing.T) {
 		if name != "cloud-proxy" && name != "api-server" && hash != after[name] {
 			t.Errorf("%s rolled for a ConfigMap it does not read", name)
 		}
+	}
+}
+
+// Every Vizier render carries one px.dev Vizier with no status: Pixie's cloud connector then reports
+// its own health check instead of "degraded: non-operator version", and reads the same cloud address
+// as pl-cloud-config from it (#1127).
+func TestRenderVizierCarriesPixiesVizierResource(t *testing.T) {
+	vz := testPixieVizier()
+	objects, err := renderVizier(vizierRender{Vizier: vz, CertsHash: "abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []*unstructured.Unstructured
+	for _, object := range objects {
+		if u, ok := object.(*unstructured.Unstructured); ok && u.GetAPIVersion() == "px.dev/v1alpha1" && u.GetKind() == "Vizier" {
+			found = append(found, u)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d px.dev Viziers rendered, want 1", len(found))
+	}
+	resource := found[0]
+	if resource.GetName() != pixieVizierResourceName || resource.GetNamespace() != "pl" {
+		t.Errorf("Vizier %s/%s", resource.GetNamespace(), resource.GetName())
+	}
+	if _, has := resource.Object["status"]; has {
+		t.Error("the Vizier carries a status: the connector would report it instead of its own health check")
+	}
+	for field, want := range map[string]string{"cloudAddr": vz.Spec.CloudAddress, "clusterName": vz.Spec.ClusterName, "version": vz.Spec.Release.VizierVersion} {
+		if got, _, _ := unstructured.NestedString(resource.Object, "spec", field); got != want || want == "" {
+			t.Errorf("spec.%s = %q, want %q", field, got, want)
+		}
+	}
+	// The cloud connector's own role may read it (vendored RBAC, kept in vizierObjects).
+	if !slices.Contains(vizierObjects, pixieObjectKey{"Role", "pl-cloud-connector-ns-role"}) {
+		t.Error("the cloud connector's namespace role, which reads viziers, is not applied")
 	}
 }

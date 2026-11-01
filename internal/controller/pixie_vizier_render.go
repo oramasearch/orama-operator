@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -168,7 +169,33 @@ func renderVizier(input vizierRender) ([]client.Object, error) {
 		}
 	}
 	stampPixieConfigHash(objects)
-	return objects, nil
+	resource := pixieVizierResource(vz)
+	stampPixieObject(resource, pixieManagedVizier, oramav1alpha1.PixieVizierNamespace, vz.Spec.PullSecretName)
+	return append(objects, resource), nil
+}
+
+// pixieVizierResourceName is the name of the px.dev Vizier the operator keeps in pl.
+const pixieVizierResourceName = "pixie"
+
+// pixieVizierResource is Pixie's own Vizier resource (px.dev, chart/crds/px.dev_viziers.yaml), with
+// no status. Pixie's cloud connector (src/vizier/services/cloud_connector/bridge/server.go,
+// generateHeartbeats) reports a healthy cluster as "degraded: non-operator version of Pixie" when
+// no Vizier exists in its namespace. With one whose phase is empty it reports its own health check
+// instead, so Pixie shows each cluster's real state (#1127). The connector also reads its cloud
+// address from spec.cloudAddr when a Vizier exists (bridge/vzconn_client.go), so it carries the
+// same address as pl-cloud-config. Nothing reconciles it: Pixie's operator is not installed.
+func pixieVizierResource(vz *oramav1alpha1.PixieVizier) client.Object {
+	resource := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "px.dev/v1alpha1",
+		"kind":       "Vizier",
+		"metadata":   map[string]any{"name": pixieVizierResourceName, "namespace": oramav1alpha1.PixieVizierNamespace},
+		"spec": map[string]any{
+			"cloudAddr":   vz.Spec.CloudAddress,
+			"clusterName": vz.Spec.ClusterName,
+			"version":     vz.Spec.Release.VizierVersion,
+		},
+	}}
+	return resource
 }
 
 func vizierConfigMaps(vz *oramav1alpha1.PixieVizier) []client.Object {
