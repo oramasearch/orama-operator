@@ -14,4 +14,4 @@ spec:
   imagePullSecretAs: oramasearch-dockerhub
   imageRepository: oramasearch/orama-operator
   namespace: orama-system
-  version: v0.11.11
+  version: v0.11.12
