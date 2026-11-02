@@ -300,6 +300,13 @@ Go services get `GOMEMLIMIT` at 90% of their memory limit; the node agent's tabl
 quarter of its memory limit in memory and 90% of its volume (`spec.storage.messaging`) on disk. The tables are
 `vizierBudgets` and `pixieCloudBudgets`; a vendored container without one fails rendering.
 
+The node agent runs with `--stirling_uprobe_opt_out=postgres`, on every cluster. Pixie attaches a
+new set of OpenSSL uprobes to `libssl.so.3` for every Postgres process and never detaches them, so
+each TLS call in Postgres runs all of them and its CPU climbs for as long as the agent runs
+([#1140](https://github.com/oramasearch/orama-operator/issues/1140)). The cost is that Pixie no
+longer sees Postgres's TLS traffic from inside Postgres; plaintext connections are traced as before.
+The fix in Pixie itself is [oramasearch/pixie#1](https://github.com/oramasearch/pixie/issues/1).
+
 | Per cluster | Requests | Limits |
 |---|---|---|
 | Vizier (2 GiB node agents) | about 2 GiB and 0.5 CPU, plus 2 GiB and 0.2 CPU per node; a 16 Gi metadata volume | about 4 GiB, plus 2 GiB per node |
