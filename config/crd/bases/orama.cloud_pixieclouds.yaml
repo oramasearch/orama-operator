@@ -242,6 +242,11 @@ spec:
                       Empty means the cluster's default.
                     type: string
                 type: object
+              uiPort:
+                description: UIPort is the port the browser reaches the UI on (ObservabilityHub.spec.uiPort);
+                  empty is 443.
+                format: int32
+                type: integer
               users:
                 description: |-
                   Users are the other people who sign in, as members of the organisation. Each gets a

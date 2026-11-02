@@ -620,3 +620,91 @@ func TestPixieConfigChangeRollsThePodsThatReadIt(t *testing.T) {
 		}
 	}
 }
+
+// TestPixieCloudUIPort: with spec.uiPort every address Pixie hands the browser keeps the port, so a
+// hub reached through `kubectl port-forward 8443:443` on a .localhost domain needs no browser flag;
+// the UI's script runs go through nginx to Envoy on the page's own origin either way (#1128).
+func TestPixieCloudUIPort(t *testing.T) {
+	render := func(port int32) map[pixieObjectKey]client.Object {
+		cloud := testPixieCloud()
+		cloud.Spec.Domain, cloud.Spec.UIPort = "pixie.production.localhost", port
+		objects, err := renderPixieCloud(pixieCloudRender{Cloud: cloud, CertsHash: "x", DatabaseHost: "db"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		byKey := map[pixieObjectKey]client.Object{}
+		for _, object := range objects {
+			byKey[keyOf(object)] = object
+		}
+		return byKey
+	}
+	workDomains := func(byKey map[pixieObjectKey]client.Object) (values []string, commands string) {
+		for _, object := range byKey {
+			spec, _ := podSpecOf(object)
+			if spec == nil {
+				continue
+			}
+			for _, c := range append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...) {
+				for _, env := range c.Env {
+					if env.Name == "PL_WORK_DOMAIN" {
+						values = append(values, object.GetName()+"="+env.Value)
+					}
+				}
+				commands += strings.Join(c.Command, " ") + strings.Join(c.Args, " ")
+			}
+		}
+		return values, commands
+	}
+
+	ported := render(8443)
+	nginx := ported[pixieObjectKey{"ConfigMap", pixieProxyNginxConfig}].(*corev1.ConfigMap)
+	for _, want := range []string{"return 307 https://work.$domain_name:8443$request_uri;", "return 307 https://$domain_name:8443?not_found=$uri;"} {
+		if !strings.Contains(nginx.Data["nginx.conf.tmpl"], want) {
+			t.Errorf("nginx does not keep the port: no %q", want)
+		}
+	}
+	if !strings.Contains(nginx.Data["pixie_api.conf"], pixieGRPCWebRoute) {
+		t.Error("gRPC-web from the UI is not routed to Envoy on the page's origin")
+	}
+	domain := ported[pixieObjectKey{"ConfigMap", pixieDomainConfig}].(*corev1.ConfigMap)
+	if domain.Data["PL_DOMAIN_NAME"] != "pixie.production.localhost" || domain.Data["PASSTHROUGH_PROXY_PORT"] != "" {
+		t.Errorf("pl-domain-config %v: the domain must stay bare and the UI call Envoy on its own origin", domain.Data)
+	}
+	values, commands := workDomains(ported)
+	if len(values) < 3 {
+		t.Fatalf("PL_WORK_DOMAIN found in %v; expected the API server, Hydra and Kratos", values)
+	}
+	for _, value := range values {
+		if !strings.HasSuffix(value, "=work.$(PL_DOMAIN_NAME):8443") {
+			t.Errorf("%s does not carry the UI's port", value)
+		}
+	}
+	for _, want := range []string{"https://${PL_DOMAIN_NAME}:8443/oauth/auth/callback", "https://work.${PL_DOMAIN_NAME}:8443/auth/callback"} {
+		if !strings.Contains(commands, want) {
+			t.Errorf("Hydra's client has no callback %s", want)
+		}
+	}
+	envoy := ported[pixieObjectKey{"ConfigMap", "proxy-envoy-config"}].(*corev1.ConfigMap)
+	found := false
+	for _, value := range envoy.Data {
+		found = found || strings.Contains(value, `- suffix: "pixie.production.localhost:8443"`)
+	}
+	if !found {
+		t.Error("Envoy's CORS origin does not carry the port")
+	}
+
+	plain := render(0)
+	nginx = plain[pixieObjectKey{"ConfigMap", pixieProxyNginxConfig}].(*corev1.ConfigMap)
+	if strings.Contains(nginx.Data["nginx.conf.tmpl"], ":8443") || !strings.Contains(nginx.Data["pixie_api.conf"], pixieGRPCWebRoute) {
+		t.Error("without uiPort the redirects must keep 443 and gRPC-web still go to Envoy")
+	}
+	values, commands = workDomains(plain)
+	for _, value := range values {
+		if !strings.HasSuffix(value, "=work.$(PL_DOMAIN_NAME)") {
+			t.Errorf("%s changed without uiPort", value)
+		}
+	}
+	if strings.Contains(commands, ":8443") {
+		t.Error("Hydra's callbacks changed without uiPort")
+	}
+}

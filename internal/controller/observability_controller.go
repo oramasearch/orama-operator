@@ -435,6 +435,7 @@ func (r *ObservabilityHubReconciler) reconcile(ctx context.Context, hub *oramav1
 			Cluster:          hub.Spec.ClusterRef,
 			MetricsRetention: hub.Spec.MetricsRetention,
 			Domain:           hub.Spec.Domain,
+			UIPort:           hub.Spec.UIPort,
 			Organization:     hub.Spec.Organization,
 			AdminEmail:       hub.Spec.AdminEmail,
 			Users:            hub.Spec.Users,
