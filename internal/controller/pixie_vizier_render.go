@@ -7,6 +7,7 @@ package controller
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -111,6 +112,13 @@ var vizierBudgets = map[string]pixieBudget{
 }
 
 const vizierPEMContainerName = "pem"
+
+// pemUProbeOptOut keeps Pixie's node agent from attaching uprobes to Postgres. Pixie attaches a
+// new set of OpenSSL uprobes for every Postgres process and never detaches them, so Postgres's
+// CPU grows for as long as the agent runs (orama-operator#1140, oramasearch/pixie#1). It is a
+// command-line flag: the flag has no environment variable form, and the image's entrypoint is
+// the PEM binary, so the container's args reach it.
+const pemUProbeOptOut = "--stirling_uprobe_opt_out=postgres"
 
 // pixieWaitBudget is the budget of an init container that only waits for a dependency with curl.
 var pixieWaitBudget = pixieBudget{CPURequest: "10m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "32Mi"}
@@ -246,6 +254,9 @@ func transformVizierObject(object client.Object, input vizierRender) error {
 		requirements, tableStore := pemBudget(vz.Spec.NodeMemory)
 		pem.Resources = requirements
 		setEnv(pem, "PL_TABLE_STORE_DATA_LIMIT_MB", tableStore)
+		if !slices.Contains(pem.Args, pemUProbeOptOut) {
+			pem.Args = append(pem.Args, pemUProbeOptOut)
+		}
 	}
 	return nil
 }

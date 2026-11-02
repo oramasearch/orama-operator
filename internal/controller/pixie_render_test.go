@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -263,6 +264,16 @@ func TestRenderVizier(t *testing.T) {
 		if env.Name == "PL_TABLE_STORE_DATA_LIMIT_MB" && env.Value != "1228" {
 			t.Errorf("table store %s MiB, want 60%% of 2Gi", env.Value)
 		}
+	}
+	if got := slices.Index(agent.Args, pemUProbeOptOut); got < 0 || slices.Index(agent.Args[got+1:], pemUProbeOptOut) >= 0 {
+		t.Errorf("node agent args %v, want %s exactly once", agent.Args, pemUProbeOptOut)
+	}
+	// Transforming an already rendered DaemonSet keeps the flag once.
+	if err := transformVizierObject(pem, vizierRender{Vizier: vz, CertsHash: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.Args; !slices.Equal(got, []string{pemUProbeOptOut}) {
+		t.Errorf("node agent args after a second transform %v, want only %s", got, pemUProbeOptOut)
 	}
 	broker := byKey[pixieObjectKey{"Deployment", "vizier-query-broker"}].(*appsv1.Deployment)
 	for _, volume := range broker.Spec.Template.Spec.Volumes {
