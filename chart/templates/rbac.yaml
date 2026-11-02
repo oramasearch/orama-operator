@@ -278,6 +278,11 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses/status"]
     verbs: ["get", "update", "patch"]
+  # The cluster's Service ranges, denied to every workspace egress gateway rule (operator#1136).
+  # Read only; read uncached, and a cluster that does not serve the kind has no list to read.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["servicecidrs"]
+    verbs: ["get", "list", "watch"]
   # Every NetworkSandbox requires an owner-scoped CiliumNetworkPolicy metadata deny.
   # The controller watches these policies for drift and deletion repair.
   - apiGroups: ["cilium.io"]

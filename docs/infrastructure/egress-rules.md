@@ -73,7 +73,7 @@ both to the gateway's 7445.
 **The rule snapshot** is the ConfigMap `zetta-tunnel-egress`, key `rules.json`, mounted at
 `/etc/zetta-tunnel/egress`. Each present name rule becomes one entry: its Lake id, the workspace
 namespace, the current IP addresses of its running source pods (the gateway excluded), its name and
-ports. The kubelet replaces the mounted file atomically; the operator also annotates the gateway
+ports, and `denied_cidrs` (below). The kubelet replaces the mounted file atomically; the operator also annotates the gateway
 pods with the ConfigMap version so the kubelet refreshes it promptly. The gateway reloads within two
 seconds, and a removed rule closes its sessions. The EgressRule controller watches pods, so a new
 or moved source pod is added to the snapshot.
@@ -85,12 +85,52 @@ some of them is `Failed` and names the rule it overlaps. A rule with more than 2
 pods is `Failed` (the gateway's limit). A rule with no running source pods yet is not in the
 snapshot and authorizes nobody.
 
+**Cluster addresses the gateway never reaches** ([#1136](https://github.com/oramasearch/orama-operator/issues/1136)).
+The gateway refuses private and special-use destinations by itself
+([zetta-tunnel#38](https://github.com/oramasearch/zetta-tunnel/pull/38)): it checks every address a
+lookup returns and refuses the whole lookup if one is forbidden. Each rule's `denied_cidrs` adds the
+cluster's own addresses that sit in otherwise public ranges. The operator fills it from what the API
+server reports, never from a Lake row or a tenant's field (`internal/controller/egress_gateway_denied.go`):
+
+| Source | Read from |
+|---|---|
+| The Kubernetes API server | the `default/kubernetes` Service's cluster IPs and its Endpoints (on AKS, the API server's public address) |
+| Nodes | every `Node.status.addresses` entry that is an IP |
+| Pod ranges | every `Node.spec.podCIDR` and `spec.podCIDRs` |
+| Service ranges | every `networking.k8s.io/v1` `ServiceCIDR`'s `spec.cidrs` (read unstructured and uncached; a cluster that does not serve the kind has none to read) |
+
+This is the inventory the policy's own exceptions use, plus the Service ranges. The list is the same
+on every rule and is written in the gateway's strict form: canonical CIDRs (host bits masked,
+IPv4-mapped IPv6 written as IPv4), sorted, with duplicates and nested ranges removed and sibling
+halves merged. Ranges inside what the gateway always refuses (`workspacePublicIPExceptions`, a
+subset of its own list) are left out, so on our AKS clusters, where nodes, pods and Services are
+private, the list is the API server's address alone, and a privately addressed node joining or
+leaving changes nothing. That matters because a changed list closes every session of every rule.
+
+The gateway accepts at most 256 entries per rule, and a longer or malformed list makes it refuse the
+whole snapshot. When the inventory is longer, the operator widens it instead of cutting it: it
+replaces the two neighbouring entries with the longest common prefix by that prefix, until the list
+fits. Every inventory address stays denied; some neighbouring public addresses are denied with them.
+When the inventory cannot be read the reconcile fails before anything is written, so the gateway
+keeps its last snapshot and a new gateway is not created. The controller watches nodes and
+re-renders every workspace's snapshot when a node comes, goes, or changes its addresses or pod
+ranges; Ready rules are also re-rendered every five minutes, which catches API server and Service
+range changes.
+
+What is not projected: pod ranges on clusters whose nodes carry no `spec.podCIDRs` (AKS Azure CNI
+overlay, whose pods are in the private `10.244.0.0/16`, which the gateway refuses anyway;
+[#764](https://github.com/oramasearch/orama-operator/issues/764)), and deployment-specific translation
+prefixes, for which the operator has no trusted source yet.
+
+`denied_cidrs` needs a zetta-tunnel image that contains #38; an older image rejects the unknown
+field and with it the whole snapshot.
+
 **What the gateway enforces**, by its own tests and by
 `TestEgressGatewayAgainstZettaTunnel` here: it authorizes the numeric source address, the exact
 name and the port before it forwards a byte; it resolves the name itself and connects to an
 address from that lookup; a name not allowed is refused before DNS, even when it resolves to the
 same address as an allowed name; an IP literal is always refused (only a CIDR rule allows an
-address).
+address); a name that resolves to an address in `denied_cidrs` is refused without a connection.
 
 **How a workload uses it.** HTTPS clients connect to `zetta-tunnel-egress.<namespace>.svc` on 443
 and send their ordinary ClientHello with the destination's name as SNI (for example
@@ -213,17 +253,23 @@ Tests: `TestWorkspaceZettaApprovesExactlyItsOwnServices`, `TestAWorkspaceWithNoS
 `Pending` (sandbox, source or gateway not ready), `Ready`, `Failed` (invalid, unreachable range, or
 an overlap) or `Deleted`. Absent rows remove every allowance and re-render the gateway snapshot in
 one reconcile before `Deleted`. Ready rules are re-rendered every five minutes so changed node, pod
-range and API addresses are excepted again.
+range and API addresses are excepted again; a node change also re-renders every gateway snapshot at
+once.
 
 ## Verification boundary
 
 Native tests cover the source-only-reaches-the-gateway policy, the gateway's exact arguments,
 image, security context and Service, the snapshot contents, removal in one reconcile, a workspace's
 last name rule removing the gateway, overlap resolution, CIDR exceptions and the refused metadata
-range, the internetEgress conversion against the legacy policy, Lake row intake and refusal, and
-nothing read before `network_guard`. The opt-in `TestEgressRulesPgxStoreAgainstPostgres` creates the
+range, the internetEgress conversion against the legacy policy, Lake row intake and refusal,
+nothing read before `network_guard`, and `denied_cidrs`: its inventory sources, canonical form,
+widening past 256, presence on every rule, and the node changes that re-render it
+(`egress_gateway_denied_test.go`). The opt-in `TestEgressRulesPgxStoreAgainstPostgres` creates the
 0084 egress tables itself. The opt-in `TestEgressGatewayAgainstZettaTunnel` runs the real
-zetta-tunnel binary (commit 933d6fc, the image's) with the operator's arguments and snapshot.
+zetta-tunnel binary (a commit with #38) with the operator's arguments and snapshot, including a
+destination refused once its address enters `denied_cidrs` and reachable again once it leaves. The
+gateway refuses loopback, so the test loads zetta-tunnel's `egress_network_fixture` into it (the
+test's header has the commands).
 
 The named acceptance probe on `orama-nonprod-cluster-01` is deferred to rollout: a workload with a
 name rule reaches the name through the gateway, is refused another name (including one resolving to

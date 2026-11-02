@@ -290,6 +290,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - networking.k8s.io
+  resources:
+  - servicecidrs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - orama.cloud
   resources:
   - aksclusters

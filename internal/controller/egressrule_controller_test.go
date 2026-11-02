@@ -243,6 +243,9 @@ func TestNameRuleAllowsTheSourceOnlyTheGateway(t *testing.T) {
 		SourceIPs: []string{testSourceIP},
 		DNSName:   "api.example.com",
 		Ports:     []int32{443, 8443},
+		// The API server's public address; the private node, pod and Service addresses are
+		// refused by the gateway itself.
+		DeniedCIDRs: []string{"20.237.72.161/32"},
 	}}}
 	if !found || !reflect.DeepEqual(snapshot, want) {
 		t.Fatalf("snapshot = %+v, want %+v", snapshot, want)
@@ -411,7 +414,7 @@ func TestSnapshotNeverAuthorizesOneTupleTwice(t *testing.T) {
 		{rule: same, ips: []string{"10.0.0.1"}},
 		{rule: wide, ips: []string{"10.0.0.1", "10.0.0.2"}},
 		{rule: idle, ips: nil},
-	})
+	}, nil)
 	if len(snapshot.Rules) != 1 || snapshot.Rules[0].ID != wide.Spec.RuleID {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}

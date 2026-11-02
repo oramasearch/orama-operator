@@ -76,7 +76,7 @@ func TestEgressGatewayAgainstZettaTunnel(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: lakeEgressRuleName(testEgressNameRuleID)},
 		Spec:       oramav1alpha1.EgressRuleSpec{RuleID: testEgressNameRuleID, DNSName: "localhost", Ports: []int32{destinationPort}},
 	}
-	snapshot, problems := buildEgressGatewaySnapshot("workspace-test", []egressGatewayEntry{{rule: rule, ips: []string{"127.0.0.1"}}})
+	snapshot, problems := buildEgressGatewaySnapshot("workspace-test", []egressGatewayEntry{{rule: rule, ips: []string{"127.0.0.1"}}}, nil)
 	if len(problems) != 0 {
 		t.Fatal(problems)
 	}

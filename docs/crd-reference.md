@@ -1452,7 +1452,7 @@ and, for a DNS name, keeps the workspace's zetta-tunnel egress gateway. Details:
 | `spec.customerId` / `.workspaceId` | Lake ownership UUIDs. |
 | `spec.sourceKind` / `.sourceId` | `app \| service \| agent` and its Lake UUID, set together. Unset: every workload in the workspace. |
 | `spec.cidr` | An outside range, enforced by policy. Loopback, link-local and cluster addresses inside it are always excepted; a range wholly inside them is refused. |
-| `spec.dnsName` | An exact lower-case host name, enforced by the egress gateway; the source may reach only the gateway. |
+| `spec.dnsName` | An exact lower-case host name, enforced by the egress gateway; the source may reach only the gateway. The gateway never connects to a private address or to the cluster's own (its snapshot's `denied_cidrs`, filled from the API server, node, pod and Service addresses). |
 | `spec.publicInternet` | Every public address, as `internetEgress` has always allowed. Only the operator's own rule. |
 | `spec.ports[]` | 1 to 64 distinct TCP ports. |
 | `spec.desired` | `present \| absent`. Absent removes every allowance and re-renders the gateway snapshot before `Deleted`. |
