@@ -260,6 +260,17 @@ spec:
                       Empty means the cluster's default.
                     type: string
                 type: object
+              uiPort:
+                description: |-
+                  UIPort is the port people reach the UI on, for example the local end of a
+                  `kubectl port-forward 8443:443`. Every address Pixie sends the browser to (its redirects, the
+                  sign-in's URLs, the OAuth callbacks) carries it. With a domain under .localhost, which the
+                  browser resolves to this machine by itself, the UI then needs no browser flag, no hosts entry and
+                  no sudo (#1128). Empty is 443.
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
               users:
                 description: |-
                   Users are the other people who sign in to the hub's UI, by email, as members of the

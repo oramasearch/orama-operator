@@ -1594,6 +1594,7 @@ cluster counts as production) and serves production agents; a hub on a cluster t
 | `spec.providerRef` | The `ObservabilityProvider`. |
 | `spec.clusterRef` | The hub's `KubernetesCluster`; omitted for the managing cluster, whose hub's own metrics are labelled with the hub's name. Immutable, including setting or removing it. |
 | `spec.domain` | The host name people reach the UI under (and `work.<domain>`). No DNS record or public exposure is created. |
+| `spec.uiPort` | The port people reach the UI on (the local end of a `kubectl port-forward 8443:443`). Every address Pixie hands the browser carries it; with a `.localhost` domain the UI needs no browser flag (#1128). Empty is 443. |
 | `spec.organization` / `.adminEmail` | The one organisation every agent's cluster is registered under, and its administrator. The password is generated into Secret `plc/pixie-admin` on the hub's cluster. The organisation's domain is the administrator's email domain (Pixie refuses sign-in to an organisation without one). |
 | `spec.users` | Everyone else who signs in to the hub's UI, by email (at most 50), as members of the organisation. Each password is generated into Secret `plc/pixie-user-<email>` on the hub's cluster; removing an email removes that sign-in. |
 | `spec.imagePullSecretRef` | Registry credentials on the managing cluster, copied as `plc/pixie-pull` under the production-credential rules. |

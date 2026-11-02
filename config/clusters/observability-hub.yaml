@@ -13,7 +13,12 @@ metadata:
   name: orama-production-cluster-01
 spec:
   providerRef: pixie
-  domain: pixie.production.orama.internal   # the UI's host, reached by port-forward; no DNS record is made
+  # The UI's host. Every browser resolves *.localhost to this machine, so with
+  # `kubectl port-forward svc/cloud-proxy-service 8443:443` the UI opens at
+  # https://pixie.production.localhost:8443/ with no browser flag, hosts entry or sudo (#1128).
+  # No DNS record is made and nothing is exposed.
+  domain: pixie.production.localhost
+  uiPort: 8443
   organization: orama
   adminEmail: juan@orama.com
   users:

@@ -306,6 +306,30 @@ func transformPixieCloudObject(object client.Object, input pixieCloudRender) err
 		setEnv(app, "STORAGE_EMULATOR_HOST", fmt.Sprintf("%s.%s.svc:%d", pixieScriptsService, oramav1alpha1.PixieCloudNamespace, pixieScriptsPort))
 		podTemplateAnnotations(object)["orama.cloud/pixie-script-bundle"] = string(cloud.Spec.Release.Images["script-bundle"])
 	}
+	// Kratos, Hydra and the services that build their browser URLs from work.<domain> carry the UI's
+	// port (#1128); the variable only builds URLs.
+	if port := pixieUIPortSuffix(cloud); port != "" {
+		for _, containers := range [][]corev1.Container{spec.InitContainers, spec.Containers} {
+			for i := range containers {
+				for j := range containers[i].Env {
+					if env := &containers[i].Env[j]; env.Name == "PL_WORK_DOMAIN" && env.ValueFrom == nil {
+						env.Value = "work.$(PL_DOMAIN_NAME)" + port
+					}
+				}
+				// Hydra matches the OAuth callback exactly, port included (its client is written by a
+				// shell command in the Hydra pod).
+				callbacks := strings.NewReplacer(
+					"https://${PL_DOMAIN_NAME}/oauth/auth/callback", "https://${PL_DOMAIN_NAME}"+port+"/oauth/auth/callback",
+					"https://work.${PL_DOMAIN_NAME}/auth/callback", "https://work.${PL_DOMAIN_NAME}"+port+"/auth/callback",
+				)
+				for _, words := range [][]string{containers[i].Command, containers[i].Args} {
+					for k := range words {
+						words[k] = callbacks.Replace(words[k])
+					}
+				}
+			}
+		}
+	}
 	pruneUnmountedVolumes(spec)
 	return nil
 }
@@ -414,6 +438,32 @@ location /pxl_scripts/ {
 }
 `
 
+// pixieUIPortSuffix is ":<port>" for a hub whose UI is reached on another port than 443, else
+// empty: what every address Pixie hands the browser needs after its host (#1128).
+func pixieUIPortSuffix(cloud *oramav1alpha1.PixieCloud) string {
+	if cloud.Spec.UIPort == 0 || cloud.Spec.UIPort == 443 {
+		return ""
+	}
+	return fmt.Sprintf(":%d", cloud.Spec.UIPort)
+}
+
+// pixieGRPCWebRoute sends the UI's script runs (gRPC-web) to Envoy beside nginx, on the page's own
+// origin; Pixie's CLI keeps native gRPC to the API server. Upstream has the UI call Envoy on
+// origin:4444 (PASSTHROUGH_PROXY_PORT), which fails once the origin carries a port
+// ("https://work.<domain>:8443:4444") and needs a second forward and CORS (#1128).
+const pixieGRPCWebRoute = `location ~ ^/px.api.* {
+     # Added by the Orama operator: gRPC-web from the UI goes to Envoy in this pod.
+     proxy_http_version 1.1;
+     proxy_buffering off;
+     proxy_request_buffering off;
+     proxy_read_timeout 3600s;
+     proxy_ssl_verify off;
+     if ($http_content_type ~* "^application/grpc-web") {
+         proxy_pass https://127.0.0.1:56004;
+     }`
+
+const pixieUpstreamAPIRoute = `location ~ ^/px.api.* {`
+
 func transformPixieCloudConfig(cm *corev1.ConfigMap, input pixieCloudRender) error {
 	cloud := input.Cloud
 	set := func(key, value string) error {
@@ -425,6 +475,10 @@ func transformPixieCloudConfig(cm *corev1.ConfigMap, input pixieCloudRender) err
 	}
 	switch cm.Name {
 	case pixieDomainConfig:
+		// The UI calls Envoy on its own origin (pixieGRPCWebRoute), never on a second port.
+		if err := set("PASSTHROUGH_PROXY_PORT", ""); err != nil {
+			return err
+		}
 		return set("PL_DOMAIN_NAME", cloud.Spec.Domain)
 	case "pl-db-config":
 		// Shared defaults only; every service overrides the database, role and host it uses.
@@ -464,7 +518,7 @@ func transformPixieCloudConfig(cm *corev1.ConfigMap, input pixieCloudRender) err
 		const upstream = `- suffix: "dev.withpixie.dev"`
 		for key, value := range cm.Data {
 			if strings.Contains(value, upstream) {
-				cm.Data[key] = strings.ReplaceAll(value, upstream, fmt.Sprintf("- suffix: %q", cloud.Spec.Domain))
+				cm.Data[key] = strings.ReplaceAll(value, upstream, fmt.Sprintf("- suffix: %q", cloud.Spec.Domain+pixieUIPortSuffix(cloud)))
 				return nil
 			}
 		}
@@ -498,7 +552,31 @@ func transformPixieCloudConfig(cm *corev1.ConfigMap, input pixieCloudRender) err
 			return fmt.Errorf("ConfigMap %s has no pixie_api.conf", cm.Name)
 		}
 		if !strings.Contains(api, "location /pxl_scripts/") {
-			cm.Data["pixie_api.conf"] = api + pixieScriptsLocation
+			api += pixieScriptsLocation
+		}
+		if !strings.Contains(api, pixieGRPCWebRoute) {
+			if strings.Count(api, pixieUpstreamAPIRoute) != 1 {
+				return fmt.Errorf("ConfigMap %s has no single px.api location to route gRPC-web from", cm.Name)
+			}
+			api = strings.Replace(api, pixieUpstreamAPIRoute, pixieGRPCWebRoute, 1)
+		}
+		cm.Data["pixie_api.conf"] = api
+		// The redirects to work.<domain> and back to <domain> keep the port the browser came on.
+		if port := pixieUIPortSuffix(cloud); port != "" {
+			tmpl, ok := cm.Data["nginx.conf.tmpl"]
+			if !ok {
+				return fmt.Errorf("ConfigMap %s has no nginx.conf.tmpl", cm.Name)
+			}
+			for _, redirect := range []struct{ upstream, ours string }{
+				{"return 307 https://work.$domain_name$request_uri;", "return 307 https://work.$domain_name" + port + "$request_uri;"},
+				{"return 307 https://$domain_name?not_found=$uri;", "return 307 https://$domain_name" + port + "?not_found=$uri;"},
+			} {
+				if strings.Count(tmpl, redirect.upstream) != 1 {
+					return fmt.Errorf("ConfigMap %s has no single redirect %q", cm.Name, redirect.upstream)
+				}
+				tmpl = strings.Replace(tmpl, redirect.upstream, redirect.ours, 1)
+			}
+			cm.Data["nginx.conf.tmpl"] = tmpl
 		}
 	}
 	return nil

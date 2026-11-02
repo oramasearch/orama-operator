@@ -380,13 +380,25 @@ kubectl --context $C -n monitoring port-forward svc/kube-prometheus-stack-alertm
 ```
 
 A Cloud v1 stack's dashboards are in its namespace's Perses project, on its own cluster. The hub's
-dashboards (project `observability-hub`) are in the Perses of the hub's cluster: the managing cluster
-for production, `orama-nonprod-cluster-01` for nonprod.
+dashboards (project `observability-hub`) are in the Perses of the managing cluster.
 
 The Pixie UI answers on the hub's `domain` and `work.<domain>` through `cloud-proxy-service` in `plc`
-(port 443). Script runs go to the proxy's Envoy on port **4444** (gRPC-web, from `work.<domain>`), whose CORS allows the hub's `domain` and its subdomains (upstream allows only `dev.withpixie.dev`, which refused every script run), so forward 4444 too. The browser must reach both names **on port 443**: the proxy redirects `<domain>` to
-`https://work.<domain>/` without the port, so a forward on any other local port breaks at the first
-redirect. Each person signs in with their own email: the hub's `adminEmail` (password in
+(port 443). Production's hub is `pixie.production.localhost` with `uiPort: 8443` (#1128):
+
+```sh
+kubectl --context orama-production-cluster-01 -n plc port-forward svc/cloud-proxy-service 8443:443
+open https://pixie.production.localhost:8443/
+```
+
+Every browser resolves `*.localhost` to this machine, so there is no browser flag, hosts entry or
+sudo. `spec.uiPort` is the port the browser comes on: the operator adds it to every address Pixie
+hands the browser (nginx's redirect to `work.<domain>` and its 404 redirect, `PL_WORK_DOMAIN` behind
+Kratos' and Hydra's URLs, Hydra's OAuth callbacks, Envoy's CORS origin), and keeps the domain itself
+bare (nginx matches its `server_name` without the port, and the certificate's names cannot hold one).
+Script runs (gRPC-web) go through nginx to the proxy's Envoy on the page's own origin
+(`PASSTHROUGH_PROXY_PORT` is empty), so there is no second port to forward. Pixie's CLI keeps native
+gRPC to the API server on the same path. Without `uiPort` the browser must reach both names on 443.
+Each person signs in with their own email: the hub's `adminEmail` (password in
 `plc/pixie-admin`) or one of its `users` (password in `plc/pixie-user-<email>`). The browser does not
 trust the hub's CA until `PixieCloud.status.caCertificate` is imported. The step-by-step, for every
 UI on every cluster, is techops-docs'

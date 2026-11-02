@@ -237,6 +237,16 @@ type ObservabilityHubSpec struct {
 	// +kubebuilder:validation:MaxLength=200
 	Domain string `json:"domain"`
 
+	// UIPort is the port people reach the UI on, for example the local end of a
+	// `kubectl port-forward 8443:443`. Every address Pixie sends the browser to (its redirects, the
+	// sign-in's URLs, the OAuth callbacks) carries it. With a domain under .localhost, which the
+	// browser resolves to this machine by itself, the UI then needs no browser flag, no hosts entry and
+	// no sudo (#1128). Empty is 443.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	UIPort int32 `json:"uiPort,omitempty"`
+
 	// Organization is the one organisation every agent's cluster is registered under, and which
 	// the hub's administrator belongs to.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`

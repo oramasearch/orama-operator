@@ -71,6 +71,9 @@ type PixieCloudSpec struct {
 	MetricsRetention string `json:"metricsRetention,omitempty"`
 	// +kubebuilder:validation:MinLength=1
 	Domain string `json:"domain"`
+	// UIPort is the port the browser reaches the UI on (ObservabilityHub.spec.uiPort); empty is 443.
+	// +optional
+	UIPort int32 `json:"uiPort,omitempty"`
 	// +kubebuilder:validation:MinLength=1
 	Organization string `json:"organization"`
 	// +kubebuilder:validation:MinLength=3
