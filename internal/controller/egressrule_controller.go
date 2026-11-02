@@ -19,9 +19,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -51,6 +54,7 @@ type EgressRuleReconciler struct {
 // +kubebuilder:rbac:groups="",resources=nodes;endpoints,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=servicecidrs,verbs=get;list;watch
 
 func (r *EgressRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var rule oramav1alpha1.EgressRule
@@ -263,6 +267,38 @@ func (r *EgressRuleReconciler) nameRulesForPod(ctx context.Context, object clien
 	return requests
 }
 
+// nameRulesForNode enqueues one DNS-name rule per namespace when a node comes, goes or changes its
+// addresses or pod ranges, because every gateway snapshot denies them (egress_gateway_denied.go).
+func (r *EgressRuleReconciler) nameRulesForNode(ctx context.Context, _ client.Object) []reconcile.Request {
+	var rules oramav1alpha1.EgressRuleList
+	if err := r.List(ctx, &rules); err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var requests []reconcile.Request
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		if rule.Spec.DNSName == "" || seen[rule.Namespace] {
+			continue
+		}
+		seen[rule.Namespace] = true
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(rule)})
+	}
+	return requests
+}
+
+// nodeInventoryChanged passes a node update only when what the gateway denies changed; a node's
+// status is rewritten often for other reasons.
+var nodeInventoryChanged = predicate.Funcs{
+	UpdateFunc: func(update event.UpdateEvent) bool {
+		before, beforeOK := update.ObjectOld.(*corev1.Node)
+		after, afterOK := update.ObjectNew.(*corev1.Node)
+		return !beforeOK || !afterOK || before.Spec.PodCIDR != after.Spec.PodCIDR ||
+			!apiequality.Semantic.DeepEqual(before.Spec.PodCIDRs, after.Spec.PodCIDRs) ||
+			!apiequality.Semantic.DeepEqual(before.Status.Addresses, after.Status.Addresses)
+	},
+}
+
 func (r *EgressRuleReconciler) rulesForApp(ctx context.Context, object client.Object) []reconcile.Request {
 	app, ok := object.(*oramav1alpha1.LakeApp)
 	if !ok || app.Spec.Sync == nil || app.Spec.Sync.WorkspaceNamespace == "" {
@@ -279,5 +315,6 @@ func (r *EgressRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.nameRulesForPod)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.nameRulesForPod)).
 		Watches(&oramav1alpha1.LakeApp{}, handler.EnqueueRequestsFromMapFunc(r.rulesForApp)).
+		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.nameRulesForNode), builder.WithPredicates(nodeInventoryChanged)).
 		Complete(r)
 }

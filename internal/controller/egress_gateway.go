@@ -50,13 +50,15 @@ const (
 	egressGatewayMaxSourceIPs = 256
 )
 
-// egressGatewayRule is one entry of the projected snapshot.
+// egressGatewayRule is one entry of the projected snapshot. DeniedCIDRs is the cluster's own
+// public-numbered addresses (egress_gateway_denied.go), the same list on every rule.
 type egressGatewayRule struct {
-	ID        string   `json:"id"`
-	Workspace string   `json:"workspace"`
-	SourceIPs []string `json:"source_ips"`
-	DNSName   string   `json:"dns_name"`
-	Ports     []int32  `json:"ports"`
+	ID          string   `json:"id"`
+	Workspace   string   `json:"workspace"`
+	SourceIPs   []string `json:"source_ips"`
+	DNSName     string   `json:"dns_name"`
+	Ports       []int32  `json:"ports"`
+	DeniedCIDRs []string `json:"denied_cidrs"`
 }
 
 type egressGatewaySnapshot struct {
@@ -115,8 +117,13 @@ type egressGatewayEntry struct {
 // a later rule (by id) gives up a source address that an earlier rule already authorizes for the
 // same name on every one of its ports. A partial overlap cannot be expressed and is reported for
 // the later rule, which then authorizes nothing for that address. A rule with no running source
-// pods is omitted (it authorizes nobody either way). Problems are keyed by rule name.
-func buildEgressGatewaySnapshot(namespace string, entries []egressGatewayEntry) (egressGatewaySnapshot, map[string]string) {
+// pods is omitted (it authorizes nobody either way). Every rule carries deniedCIDRs, which must
+// already be the gateway's canonical form (deniedCIDRList). Problems are keyed by rule name.
+func buildEgressGatewaySnapshot(namespace string, entries []egressGatewayEntry, deniedCIDRs []string) (egressGatewaySnapshot, map[string]string) {
+	if deniedCIDRs == nil {
+		// The gateway reads null as a malformed list.
+		deniedCIDRs = []string{}
+	}
 	sort.Slice(entries, func(i, j int) bool {
 		a, b := entries[i].rule, entries[j].rule
 		if (a.Spec.SourceKind == "") != (b.Spec.SourceKind == "") {
@@ -166,11 +173,12 @@ func buildEgressGatewaySnapshot(namespace string, entries []egressGatewayEntry) 
 			}
 		}
 		snapshot.Rules = append(snapshot.Rules, egressGatewayRule{
-			ID:        rule.Spec.RuleID,
-			Workspace: namespace,
-			SourceIPs: kept,
-			DNSName:   rule.Spec.DNSName,
-			Ports:     ports,
+			ID:          rule.Spec.RuleID,
+			Workspace:   namespace,
+			SourceIPs:   kept,
+			DNSName:     rule.Spec.DNSName,
+			Ports:       ports,
+			DeniedCIDRs: deniedCIDRs,
 		})
 	}
 	return snapshot, problems
@@ -226,7 +234,12 @@ func reconcileEgressGateway(
 	if len(entries) == 0 {
 		return egressGatewayState{}, deleteEgressGateway(ctx, kube, lake, namespace)
 	}
-	snapshot, problems := buildEgressGatewaySnapshot(namespace, entries)
+	// Read before anything is written: without the inventory the last published snapshot stays.
+	deniedCIDRs, err := egressGatewayDeniedCIDRs(ctx, kube)
+	if err != nil {
+		return egressGatewayState{}, err
+	}
+	snapshot, problems := buildEgressGatewaySnapshot(namespace, entries, deniedCIDRs)
 	encoded, err := encodeEgressGatewaySnapshot(snapshot)
 	if err != nil {
 		return egressGatewayState{}, err
