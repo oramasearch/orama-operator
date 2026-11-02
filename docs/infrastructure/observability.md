@@ -53,6 +53,18 @@ same release with the same values everywhere (the *two installation paths* rule;
 Lake's workspace metrics are not here: they live in each workspace's Zetta. This stack is for
 operating the clusters and the services Orama runs.
 
+**The leaf clusters have no agent while Pixie's probe leak is open** ([#1144](https://github.com/oramasearch/orama-operator/issues/1144),
+Steve, 2026-11-02). Pixie's node agent attaches another set of OpenSSL probes each time Postgres
+starts a process and never removes them, so the Lake control databases' CPU climbs
+([#1140](https://github.com/oramasearch/orama-operator/issues/1140), [pixie#1](https://github.com/oramasearch/pixie/issues/1)).
+`orama-production-cluster-02`, `-03` and `orama-nonprod-cluster-01` had their `ObservabilityAgent`
+deleted and their `observability.yaml` removed (nonprod's databases had the same leak). Until they
+return, the hub neither federates their metrics nor routes their alerts (nonprod's to `#monitoring-stg`
+included); each cluster's own Prometheus and Alertmanager keep running. Only the managing cluster keeps
+its agent. They come back by restoring the files from git history and applying them, once
+[#1142](https://github.com/oramasearch/orama-operator/pull/1142) or [pixie#2](https://github.com/oramasearch/pixie/pull/2)
+has run on nonprod for 24 hours.
+
 ## The kinds
 
 Principle 10: the abstract kinds name the thing, a provider resource names the vendor's release,
