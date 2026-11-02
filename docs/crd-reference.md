@@ -1636,7 +1636,7 @@ script server, minted certificates and keys, a default-deny sandbox, and the boo
 `agents[] {name, cluster}` (only agents the managing cluster accepted) and `alertRoutes[]`.
 It also runs the hub Prometheus (federating every cluster it serves over their peer links), its
 hub-scoped rules and dashboards. `status` has `phase`, `ready`, `components[]`, `agents[] {name,
-deployKeySecret, registered, connected, metricsConnected}`, `caCertificate` (the hub's public trust root) and the `Ready` and `Alerting` conditions.
+deployKeySecret, registered, clusterID, connected, metricsConnected}` (`clusterID`: the id the hub registered the cluster under), `caCertificate` (the hub's public trust root) and the `Ready` and `Alerting` conditions.
 
 ## `PixieVizier` (separate CRD, namespaced) — Pixie's agents on a cluster
 
@@ -1646,8 +1646,10 @@ NATS) with auto-update off and no updater, its own CA and signing key, and a def
 `spec`: `release` (empty while the provider is not installable: the alert routing and rules are
 written anyway and Vizier waits), `agent`, `purpose`, `clusterName`, `cloudAddress` (the hub's vzconn, never under
 `.svc.cluster.local`), `cloudCASecretName`, `deployKeySecretName`, `pullSecretName`, `nodeMemory`,
-`alertRoutes[]`. `status`: `phase`, `ready`, `components[]`, `clusterID` (what the hub registered),
-and the `Ready` and `Alerting` conditions.
+`alertRoutes[]`, `staleClusterID` (set by the managing cluster: an id the hub doesn't know, which the
+operator removes from `pl-cluster-secrets` so the cloud connector registers again; #1131). `status`:
+`phase`, `ready`, `components[]`, `clusterID` (what the hub registered), `clusterIDSeenAt`, and the
+`Ready` and `Alerting` conditions.
 
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 

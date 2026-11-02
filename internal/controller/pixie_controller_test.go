@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -254,8 +255,8 @@ func TestPixieVizierReconcileIsDeterministicAndKeepsRegistration(t *testing.T) {
 	if err := kube.Get(ctx, client.ObjectKeyFromObject(vz), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.ClusterID != "c0ffee00-0000-0000-0000-000000000001" {
-		t.Errorf("status.clusterID %q", got.Status.ClusterID)
+	if got.Status.ClusterID != "c0ffee00-0000-0000-0000-000000000001" || got.Status.ClusterIDSeenAt == nil {
+		t.Errorf("status.clusterID %q seen %v", got.Status.ClusterID, got.Status.ClusterIDSeenAt)
 	}
 	if got.Status.Phase != oramav1alpha1.ObservabilityPhaseProgressing || got.Status.Ready == "" {
 		t.Errorf("status %+v", got.Status)
@@ -743,5 +744,118 @@ func TestPixieCloudBootstrapLetsTheAdministratorAndEveryUserSignIn(t *testing.T)
 	}
 	if _, ok := backend.identities["ops@Support.Example"]; !ok {
 		t.Error("the administrator lost the sign-in")
+	}
+}
+
+// TestPixieVizierForgetsAStaleRegistration: a cluster id the managing cluster found its hub does not
+// know is removed, with its name, so the cloud connector registers again; Vizier's pods roll each
+// time the registration changes; any other id is kept (#1131).
+func TestPixieVizierForgetsAStaleRegistration(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPixieScheme(t)
+	vz := testPixieVizier()
+	vz.Name = pixieConcreteName
+	kube := newPixieTestClient(t, scheme, interceptor.Funcs{}, append(vizierSecrets(), vz)...)
+	r := &PixieVizierReconciler{Client: kube, Scheme: scheme}
+	reconcileTwice(t, r, "pl", pixieConcreteName)
+	rolled := func() string {
+		var connector appsv1.Deployment
+		if err := kube.Get(ctx, client.ObjectKey{Namespace: "pl", Name: "vizier-cloud-connector"}, &connector); err != nil {
+			t.Fatal(err)
+		}
+		return connector.Spec.Template.Annotations[pixieCertsAnnotation]
+	}
+	register := func(id string) {
+		var cluster corev1.Secret
+		if err := kube.Get(ctx, client.ObjectKey{Namespace: "pl", Name: vizierClusterSecret}, &cluster); err != nil {
+			t.Fatal(err)
+		}
+		cluster.Data["cluster-id"], cluster.Data["cluster-name"] = []byte(id), []byte("np")
+		if err := kube.Update(ctx, &cluster); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unregistered := rolled()
+	register("old-hub-id")
+	reconcileTwice(t, r, "pl", pixieConcreteName)
+	registered := rolled()
+	if registered == unregistered {
+		t.Fatal("a registration did not roll the pods that read the cluster id")
+	}
+
+	setStale := func(id string) {
+		var live oramav1alpha1.PixieVizier
+		if err := kube.Get(ctx, client.ObjectKeyFromObject(vz), &live); err != nil {
+			t.Fatal(err)
+		}
+		live.Spec.StaleClusterID = id
+		if err := kube.Update(ctx, &live); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setStale("some-other-id")
+	reconcileTwice(t, r, "pl", pixieConcreteName)
+	var cluster corev1.Secret
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: "pl", Name: vizierClusterSecret}, &cluster); err != nil {
+		t.Fatal(err)
+	}
+	if string(cluster.Data["cluster-id"]) != "old-hub-id" {
+		t.Fatal("an id other than the stale one was removed")
+	}
+
+	setStale("old-hub-id")
+	reconcileTwice(t, r, "pl", pixieConcreteName)
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(&cluster), &cluster); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cluster.Data["cluster-id"]; ok || len(cluster.Data["cluster-name"]) != 0 || len(cluster.Data["jwt-signing-key"]) == 0 {
+		t.Fatalf("the stale registration was not removed, or the signing key went with it: keys %v", keysOf(cluster.Data))
+	}
+	if rolled() == registered {
+		t.Error("removing the registration did not roll the cloud connector")
+	}
+	// The connector registers again under a new id; the stale one in the spec is inert.
+	register("new-hub-id")
+	reconcileTwice(t, r, "pl", pixieConcreteName)
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(&cluster), &cluster); err != nil {
+		t.Fatal(err)
+	}
+	if string(cluster.Data["cluster-id"]) != "new-hub-id" {
+		t.Fatal("the new registration was removed")
+	}
+}
+
+
+// TestStaleClusterID: only a Ready hub that lists the agent under another id, or none, for longer
+// than the grace makes the cluster's id stale (#1131).
+func TestStaleClusterID(t *testing.T) {
+	now := time.Date(2026, 11, 1, 20, 0, 0, 0, time.UTC)
+	seen := func(ago time.Duration) *metav1.Time { return &metav1.Time{Time: now.Add(-ago)} }
+	hub := func(phase, id string) *oramav1alpha1.PixieCloud {
+		return &oramav1alpha1.PixieCloud{Status: oramav1alpha1.PixieCloudStatus{Phase: phase, Agents: []oramav1alpha1.PixieCloudAgentStatus{{Name: "np", ClusterID: id}}}}
+	}
+	vizier := func(id string, at *metav1.Time) *oramav1alpha1.PixieVizier {
+		return &oramav1alpha1.PixieVizier{Status: oramav1alpha1.PixieVizierStatus{ClusterID: id, ClusterIDSeenAt: at}}
+	}
+	ready := oramav1alpha1.ObservabilityPhaseReady
+	for _, c := range []struct {
+		name   string
+		cloud  *oramav1alpha1.PixieCloud
+		agent  string
+		vizier *oramav1alpha1.PixieVizier
+		want   string
+	}{
+		{"unknown to the hub", hub(ready, ""), "np", vizier("old", seen(time.Hour)), "old"},
+		{"the hub has another id", hub(ready, "new"), "np", vizier("old", seen(time.Hour)), "old"},
+		{"the hub knows it", hub(ready, "old"), "np", vizier("old", seen(time.Hour)), ""},
+		{"seen within the grace", hub(ready, ""), "np", vizier("old", seen(time.Minute)), ""},
+		{"the hub is not Ready", hub(oramav1alpha1.ObservabilityPhaseProgressing, ""), "np", vizier("old", seen(time.Hour)), ""},
+		{"the hub does not list the agent", hub(ready, ""), "other", vizier("old", seen(time.Hour)), ""},
+		{"no hub read", &oramav1alpha1.PixieCloud{}, "np", vizier("old", seen(time.Hour)), ""},
+		{"not registered", hub(ready, ""), "np", vizier("", nil), ""},
+	} {
+		if got := staleClusterID(c.cloud, c.agent, c.vizier, now); got != c.want {
+			t.Errorf("%s: stale %q, want %q", c.name, got, c.want)
+		}
 	}
 }

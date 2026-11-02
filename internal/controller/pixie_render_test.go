@@ -255,6 +255,16 @@ func TestRenderVizier(t *testing.T) {
 		t.Errorf("a certificate change does not roll the cloud connector")
 	}
 	pem := byKey[pixieObjectKey{"DaemonSet", "vizier-pem"}].(*appsv1.DaemonSet)
+	if pem.Spec.Template.Spec.PriorityClassName != nodeAgentPriorityClass {
+		t.Errorf("the node agent has priority class %q: on a node whose CPU is fully requested it never runs (#1132)", pem.Spec.Template.Spec.PriorityClassName)
+	}
+	for _, object := range objects {
+		if set, ok := object.(*appsv1.StatefulSet); ok {
+			if policy := set.Spec.PersistentVolumeClaimRetentionPolicy; policy == nil || policy.WhenDeleted != appsv1.DeletePersistentVolumeClaimRetentionPolicyType {
+				t.Errorf("StatefulSet %s leaves its volumes behind when removed (#1133)", set.Name)
+			}
+		}
+	}
 	agent := containerNamed(&pem.Spec.Template.Spec, vizierPEMContainerName)
 	if got := agent.Resources.Limits.Memory().String(); got != "2Gi" {
 		t.Errorf("node agent memory limit %s, want spec.nodeMemory 2Gi", got)

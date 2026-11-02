@@ -75,6 +75,7 @@ type pixieDeployKey struct {
 
 // pixieAgentState is what the hub knows of one agent cluster.
 type pixieAgentState struct {
+	ID         string
 	Registered bool
 	Connected  bool
 }
@@ -534,18 +535,19 @@ var pixieConnectedStatuses = map[string]bool{"CS_HEALTHY": true, "CS_UNHEALTHY":
 func (h *pixieHubClient) Clusters(ctx context.Context, as pixieIdentity) (map[string]pixieAgentState, error) {
 	var out struct {
 		Clusters []struct {
+			ID              string  `json:"id"`
 			ClusterName     string  `json:"clusterName"`
 			Status          string  `json:"status"`
 			LastHeartbeatMs float64 `json:"lastHeartbeatMs"`
 		} `json:"clusters"`
 	}
-	if err := h.graphql(ctx, as, `query { clusters { clusterName status lastHeartbeatMs } }`, nil, &out); err != nil {
+	if err := h.graphql(ctx, as, `query { clusters { id clusterName status lastHeartbeatMs } }`, nil, &out); err != nil {
 		return nil, err
 	}
 	states := map[string]pixieAgentState{}
 	for _, cluster := range out.Clusters {
 		// lastHeartbeatMs is the time since the last heartbeat; five minutes is disconnected.
-		states[cluster.ClusterName] = pixieAgentState{Registered: true, Connected: pixieConnectedStatuses[cluster.Status] && cluster.LastHeartbeatMs < 5*60*1000}
+		states[cluster.ClusterName] = pixieAgentState{ID: cluster.ID, Registered: true, Connected: pixieConnectedStatuses[cluster.Status] && cluster.LastHeartbeatMs < 5*60*1000}
 	}
 	return states, nil
 }

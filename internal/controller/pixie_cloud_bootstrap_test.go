@@ -92,7 +92,7 @@ func fakePixieAPI(t *testing.T, keys map[string]string, fail string) *httptest.S
 			reply(map[string]any{"deploymentKeys": list})
 		case strings.Contains(req.Query, "clusters"):
 			reply(map[string]any{"clusters": []any{
-				map[string]any{"clusterName": "prod2", "status": "CS_HEALTHY", "lastHeartbeatMs": 1200.0},
+				map[string]any{"id": "id-prod2", "clusterName": "prod2", "status": "CS_HEALTHY", "lastHeartbeatMs": 1200.0},
 				map[string]any{"clusterName": "prod3", "status": "CS_DISCONNECTED", "lastHeartbeatMs": 900000.0},
 			}})
 		}
@@ -122,7 +122,7 @@ func TestPixieAPIDeployKeyLifecycle(t *testing.T) {
 		t.Error("deleting a key Pixie no longer has reported success")
 	}
 	states, err := hub.Clusters(ctx, as)
-	if err != nil || !states["prod2"].Connected || states["prod3"].Connected || !states["prod3"].Registered {
+	if err != nil || !states["prod2"].Connected || states["prod3"].Connected || !states["prod3"].Registered || states["prod2"].ID != "id-prod2" {
 		t.Fatalf("clusters: %+v %v", states, err)
 	}
 }

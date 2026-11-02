@@ -162,6 +162,12 @@ func (r *PixieVizierReconciler) reconcile(ctx context.Context, vz *oramav1alpha1
 	} else if found {
 		status.ClusterID = string(cluster.Data["cluster-id"])
 	}
+	if status.ClusterID != "" {
+		status.ClusterIDSeenAt = vz.Status.ClusterIDSeenAt
+		if vz.Status.ClusterID != status.ClusterID || status.ClusterIDSeenAt == nil {
+			status.ClusterIDSeenAt = &metav1.Time{Time: r.now()}
+		}
+	}
 	return status, alertingErr, nil
 }
 
@@ -212,16 +218,39 @@ func (r *PixieVizierReconciler) ensureSecrets(ctx context.Context, vz *oramav1al
 		return "", err
 	}
 	// cluster-id and cluster-name are written by the cloud connector when it registers; the
-	// operator only mints the signing key and never touches the rest.
-	if _, err := ensureMintedSecret(ctx, r.Client, r.Scheme, vz, vizierClusterSecret, corev1.SecretTypeOpaque, labels,
-		randomKey("jwt-signing-key", 32)); err != nil {
+	// operator mints the signing key and otherwise only removes an id the hub does not know.
+	if err := r.forgetStaleRegistration(ctx, vz); err != nil {
+		return "", err
+	}
+	cluster, err := ensureMintedSecret(ctx, r.Client, r.Scheme, vz, vizierClusterSecret, corev1.SecretTypeOpaque, labels,
+		randomKey("jwt-signing-key", 32))
+	if err != nil {
 		return "", err
 	}
 	var hubCA corev1.Secret
 	if err := r.Get(ctx, client.ObjectKey{Namespace: vz.Namespace, Name: vz.Spec.CloudCASecretName}, &hubCA); err != nil {
 		return "", err
 	}
-	return secretsHash(certs, &hubCA), nil
+	// The pods read the cluster id once, at start: a new registration, or a removed one, rolls them.
+	registration := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: vizierClusterSecret}, Data: map[string][]byte{"cluster-id": cluster.Data["cluster-id"]}}
+	return secretsHash(certs, &hubCA, registration), nil
+}
+
+// forgetStaleRegistration removes the cluster id the managing cluster found its hub does not know
+// (spec.staleClusterID), with its name. The cloud connector then registers again with the deploy
+// key, and the hub gives the cluster a new id under the same name (#1131).
+func (r *PixieVizierReconciler) forgetStaleRegistration(ctx context.Context, vz *oramav1alpha1.PixieVizier) error {
+	if vz.Spec.StaleClusterID == "" {
+		return nil
+	}
+	var cluster corev1.Secret
+	found, err := getIfExists(ctx, r.Client, vz.Namespace, vizierClusterSecret, &cluster)
+	if err != nil || !found || string(cluster.Data["cluster-id"]) != vz.Spec.StaleClusterID {
+		return err
+	}
+	delete(cluster.Data, "cluster-id")
+	delete(cluster.Data, "cluster-name")
+	return r.Update(ctx, &cluster)
 }
 
 // isPeerImportAddress reports whether the hub is reached through a PeerConnection import Service
