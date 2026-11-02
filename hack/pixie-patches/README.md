@@ -11,8 +11,9 @@ applies with `git apply` at that commit (checked with `git apply --check`).
 | `0002-k8s-name-every-image-pixie.patch` | Names every image `pixie-*` (`$(IMAGE_PREFIX)/pixie-vizier-pem_image`), so Pixie's images sit beside Orama's in `oramasearch` on Docker Hub, read as Pixie's, and `operator-operator_image` cannot collide with Orama's operator. |
 | `0003-licenses-record-the-Go-modules-pkg.go.dev-rate-limit.patch` | Adds 143 Go modules to `tools/licenses/manual_licenses.json`. A stamped build fails on any module whose licence it cannot fetch, and pkg.go.dev rate-limits the fetch, so each run missed a different 28 to 35 modules. With the licences recorded the build does not depend on pkg.go.dev. |
 | `0004-ui-quote-the-stamp-values-the-webpack-bundle-exports.patch` | The UI bundle exports Bazel's stamp values into its shell unquoted. Bazel 7's `FORMATTED_DATE` holds spaces, so a stamped build stopped with `export: '31': not a valid identifier`. The patch quotes each value. |
+| `0005-stirling-attach-uprobes-once-per-file.patch` | Stirling attached the 9 OpenSSL uprobes again for every new process that mapped a `libssl` file and never detached them, so the Postgres of the Lake control databases, which forks a backend per connection, climbed to about one core within two days ([#1140](https://github.com/oramasearch/orama-operator/issues/1140), [pixie#1](https://github.com/oramasearch/pixie/issues/1)). With the patch the OpenSSL, Go and gRPC-C uprobes attach once per file (device and inode), every new process still gets its per-process map entries, and a set that fails partway is detached. Not yet built or tested with Bazel. |
 
-`0001` changes what Pixie does; `0002` to `0004` change only how it is built and named.
+`0001` and `0005` change what Pixie does; `0002` to `0004` change only how it is built and named.
 
 ## Building (#455)
 
