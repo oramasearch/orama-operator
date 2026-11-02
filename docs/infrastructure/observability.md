@@ -300,6 +300,13 @@ Go services get `GOMEMLIMIT` at 90% of their memory limit; the node agent's tabl
 quarter of its memory limit in memory and 90% of its volume (`spec.storage.messaging`) on disk. The tables are
 `vizierBudgets` and `pixieCloudBudgets`; a vendored container without one fails rendering.
 
+The node agent (`vizier-pem`, a DaemonSet) runs with the chart's PriorityClass `orama-node-agent`
+(1000000000, the highest value a user class may hold). On a node whose CPU requests are full, it
+preempts an ordinary pod rather than stay Pending, which would leave that node untraced and the agent
+never Ready. It never preempts Kubernetes' own `system-cluster-critical` or `system-node-critical`
+pods ([#1132](https://github.com/oramasearch/orama-operator/issues/1132); seen on the managing
+cluster and nonprod on 2026-11-01).
+
 | Per cluster | Requests | Limits |
 |---|---|---|
 | Vizier (2 GiB node agents) | about 2 GiB and 0.5 CPU, plus 2 GiB and 0.2 CPU per node; a 16 Gi metadata volume | about 4 GiB, plus 2 GiB per node |
@@ -495,6 +502,7 @@ hub or agent writes nothing (`TestPixieCloudBootstrapIssuesAndRevokesPerClusterK
 | An agent removed | Its job and its rules go with it; its last series, still queryable for five minutes, page nothing. |
 | A Pixie credential deleted | Minted again. |
 | The hub's database lost | The organisation (its id is a function of its name) and the administrator are created again; every key Pixie no longer lists is issued again and delivered to its cluster, whose Vizier then registers anew. What is lost is people's saved scripts and settings, and the old cluster registrations. No backup is configured for it yet. |
+| An agent moved to another hub, or its hub rebuilt with an empty database | The cluster still holds the id its old registration gave it, which the hub refuses (`no such cluster`). Once the hub has been `Ready` for 15 minutes (three of its refreshes) without listing that id for the agent, the managing cluster sets `spec.staleClusterID` on the agent's `PixieVizier`. The cluster's operator then removes that id and its name from `pl-cluster-secrets`, and the pods that read the id roll. The cloud connector registers again with its deploy key, and the hub gives the cluster a new id under the same name ([#1131](https://github.com/oramasearch/orama-operator/issues/1131)). Any other id is never removed. |
 | A deploy key deleted in Pixie's UI | Issued again on the next pass and delivered to its cluster. |
 | Pixie's API or migrations not ready | The hub stays `Progressing` with the reason; nothing is written. |
 | A certificate near expiry | Reissued 30 days before, which rolls the pods that read it. |
@@ -503,7 +511,10 @@ hub or agent writes nothing (`TestPixieCloudBootstrapIssuesAndRevokesPerClusterK
 
 Deleting an `ObservabilityAgent` removes its `PixieVizier`, both link ends, the `PeerLink` and its
 delivered key, and the hub revokes the key. Deleting an `ObservabilityHub` removes its `PixieCloud`,
-which removes the hub's data with it (its database volumes).
+which removes the hub's data with it. Every StatefulSet the operator renders for Pixie (NATS, search,
+Vizier's metadata), and the hub Prometheus, has `persistentVolumeClaimRetentionPolicy.whenDeleted:
+Delete`, so their volumes go too. Before v0.11.13 they stayed behind: on 2026-11-01 nonprod kept
+150 GiB after its hub was deleted ([#1133](https://github.com/oramasearch/orama-operator/issues/1133)).
 
 ## Upgrading Pixie
 

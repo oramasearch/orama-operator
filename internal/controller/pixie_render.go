@@ -9,8 +9,8 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
-	"encoding/hex"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -474,6 +474,10 @@ func removeContainer(spec *corev1.PodSpec, name string) {
 
 // stampPixieObject labels an object as the operator's, sets its namespace when it has one, and
 // gives every pod the pull Secret and component label.
+// nodeAgentPriorityClass is the chart's PriorityClass for the per-node agents the operator runs
+// (chart/templates/priorityclass.yaml): above every workload, below Kubernetes' system classes.
+const nodeAgentPriorityClass = "orama-node-agent"
+
 func stampPixieObject(object client.Object, managed, namespace, pullSecret string) {
 	labels := object.GetLabels()
 	if labels == nil {
@@ -488,8 +492,18 @@ func stampPixieObject(object client.Object, managed, namespace, pullSecret strin
 	default:
 		object.SetNamespace(namespace)
 	}
-	if sa, ok := object.(*corev1.ServiceAccount); ok {
-		sa.ImagePullSecrets = []corev1.LocalObjectReference{{Name: pullSecret}}
+	switch o := object.(type) {
+	case *corev1.ServiceAccount:
+		o.ImagePullSecrets = []corev1.LocalObjectReference{{Name: pullSecret}}
+	case *appsv1.StatefulSet:
+		// The claims go with their StatefulSet: a removed hub or agent leaves no volume behind (#1133).
+		o.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+			WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+			WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+		}
+	case *appsv1.DaemonSet:
+		// A node agent runs on every node, a full one included: it may preempt ordinary pods (#1132).
+		o.Spec.Template.Spec.PriorityClassName = nodeAgentPriorityClass
 	}
 	spec, podLabels := podSpecOf(object)
 	if spec == nil {

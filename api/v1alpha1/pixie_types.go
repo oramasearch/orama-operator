@@ -104,6 +104,9 @@ type PixieCloudAgentStatus struct {
 	DeployKeySecret string `json:"deployKeySecret,omitempty"`
 	// Registered is true once a Vizier registered with the cluster's key.
 	Registered bool `json:"registered"`
+	// ClusterID is the id the hub registered the cluster under; empty while it is not registered.
+	// +optional
+	ClusterID string `json:"clusterID,omitempty"`
 	// Connected is true while that Vizier heartbeats.
 	Connected bool `json:"connected"`
 	// MetricsConnected is true while the hub Prometheus reads the cluster's metrics.
@@ -195,6 +198,12 @@ type PixieVizierSpec struct {
 	// AlertRoutes are this cluster's alert receivers.
 	// +optional
 	AlertRoutes []PixieAlertRoute `json:"alertRoutes,omitempty"`
+	// StaleClusterID is a cluster id this cluster registered under that its hub does not know, set
+	// by the managing cluster (an agent moved to another hub, or a hub rebuilt). While
+	// pl-cluster-secrets holds it, the operator removes it, so the cloud connector registers again
+	// with its deploy key (#1131).
+	// +optional
+	StaleClusterID string `json:"staleClusterID,omitempty"`
 }
 
 // PixieVizierStatus is Vizier's readiness, per component.
@@ -208,6 +217,9 @@ type PixieVizierStatus struct {
 	// ClusterID is the id Pixie Cloud registered the cluster under.
 	// +optional
 	ClusterID string `json:"clusterID,omitempty"`
+	// ClusterIDSeenAt is when the operator first saw ClusterID.
+	// +optional
+	ClusterIDSeenAt *metav1.Time `json:"clusterIDSeenAt,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`
 	// +optional

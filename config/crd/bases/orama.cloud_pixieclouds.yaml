@@ -267,6 +267,10 @@ spec:
                   description: PixieCloudAgentStatus is what the hub knows of one
                     agent cluster.
                   properties:
+                    clusterID:
+                      description: ClusterID is the id the hub registered the cluster
+                        under; empty while it is not registered.
+                      type: string
                     connected:
                       description: Connected is true while that Vizier heartbeats.
                       type: boolean

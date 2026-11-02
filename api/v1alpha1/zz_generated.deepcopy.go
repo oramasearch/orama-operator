@@ -7616,6 +7616,10 @@ func (in *PixieVizierStatus) DeepCopyInto(out *PixieVizierStatus) {
 		*out = make([]ObservabilityComponentStatus, len(*in))
 		copy(*out, *in)
 	}
+	if in.ClusterIDSeenAt != nil {
+		in, out := &in.ClusterIDSeenAt, &out.ClusterIDSeenAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]metav1.Condition, len(*in))

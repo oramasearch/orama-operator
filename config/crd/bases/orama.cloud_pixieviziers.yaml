@@ -185,6 +185,13 @@ spec:
                 - images
                 - vizierVersion
                 type: object
+              staleClusterID:
+                description: |-
+                  StaleClusterID is a cluster id this cluster registered under that its hub does not know, set
+                  by the managing cluster (an agent moved to another hub, or a hub rebuilt). While
+                  pl-cluster-secrets holds it, the operator removes it, so the cloud connector registers again
+                  with its deploy key (#1131).
+                type: string
             required:
             - agent
             - cloudAddress
@@ -201,6 +208,10 @@ spec:
               clusterID:
                 description: ClusterID is the id Pixie Cloud registered the cluster
                   under.
+                type: string
+              clusterIDSeenAt:
+                description: ClusterIDSeenAt is when the operator first saw ClusterID.
+                format: date-time
                 type: string
               components:
                 items:

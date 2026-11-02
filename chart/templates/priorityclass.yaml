@@ -1,0 +1,14 @@
+# The per-node agents the operator runs (Pixie's vizier-pem) must run on every node, a node whose
+# CPU is fully requested included, or that node goes unobserved (#1132). This class lets them
+# preempt ordinary pods. It is the largest value a user class may hold, below Kubernetes' own
+# system-cluster-critical and system-node-critical, so they never preempt a system pod.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: orama-node-agent
+  labels:
+    {{- include "operator.labels" . | nindent 4 }}
+value: 1000000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: Per-node agents the Orama operator runs (Pixie's vizier-pem); preempt ordinary pods, never system pods.

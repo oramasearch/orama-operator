@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -564,6 +565,36 @@ type ObservabilityAgentReconciler struct {
 	Scheme *runtime.Scheme
 	// Clusters is injected for tests; nil reaches managed clusters by their kubeconfig.
 	Clusters PeerClusterClients
+	// Now is injected for tests; nil is the wall clock.
+	Now func() time.Time
+}
+
+func (r *ObservabilityAgentReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+// pixieRegistrationGrace is how long a cluster's id must go unknown to its Ready hub before it is
+// stale: three of the hub's refreshes (pixieRequeue), so a registration still on its way to the
+// hub's status is never taken for one.
+const pixieRegistrationGrace = 15 * time.Minute
+
+// staleClusterID is the cluster id the agent's cluster holds when its hub, Ready and listing the
+// agent, has registered it under another id or none, and has for longer than the grace: the agent
+// moved from another hub, or the hub was rebuilt (#1131). Otherwise empty.
+func staleClusterID(cloud *oramav1alpha1.PixieCloud, agent string, vizier *oramav1alpha1.PixieVizier, now time.Time) string {
+	id, seen := vizier.Status.ClusterID, vizier.Status.ClusterIDSeenAt
+	if id == "" || seen == nil || now.Sub(seen.Time) < pixieRegistrationGrace || cloud.Status.Phase != oramav1alpha1.ObservabilityPhaseReady {
+		return ""
+	}
+	for _, a := range cloud.Status.Agents {
+		if a.Name == agent && a.ClusterID != id {
+			return id
+		}
+	}
+	return ""
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=observabilityagents,verbs=get;list;watch;create;update;patch;delete
@@ -702,6 +733,13 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 			waitingFor = append(waitingFor, message)
 		}
 	}
+	// A registration the hub does not know is handed to the cluster to forget; the last one found is
+	// kept, and is inert once the cluster holds another id.
+	var previous oramav1alpha1.PixieVizier
+	if _, err := getIfExists(ctx, agentCluster, oramav1alpha1.PixieVizierNamespace, pixieConcreteName, &previous); err != nil {
+		return status, err
+	}
+	stale := firstNonEmpty(staleClusterID(&cloud, agent.Name, &previous, r.now()), previous.Spec.StaleClusterID)
 	vizier := &oramav1alpha1.PixieVizier{
 		TypeMeta:   metav1.TypeMeta{APIVersion: oramav1alpha1.GroupVersion.String(), Kind: "PixieVizier"},
 		ObjectMeta: metav1.ObjectMeta{Name: pixieConcreteName, Namespace: oramav1alpha1.PixieVizierNamespace},
@@ -716,6 +754,7 @@ func (r *ObservabilityAgentReconciler) reconcile(ctx context.Context, agent *ora
 			PullSecretName:      pixiePullSecret,
 			NodeMemory:          quantityOr(agent.Spec.NodeMemory, "2Gi"),
 			AlertRoutes:         routes,
+			StaleClusterID:      stale,
 		},
 	}
 	if err := applyConcrete(ctx, agentCluster, vizier, observabilityAgentLbl, agent.Name); err != nil {

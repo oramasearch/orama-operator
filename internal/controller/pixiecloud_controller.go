@@ -478,7 +478,7 @@ func (r *PixieCloudReconciler) bootstrap(ctx context.Context, cloud *oramav1alph
 		}
 		statuses[i].DeployKeySecret = pixieDeployKeyPrefix + agent.Name
 		state := clusters[agent.Cluster]
-		statuses[i].Registered, statuses[i].Connected = state.Registered, state.Connected
+		statuses[i].Registered, statuses[i].Connected, statuses[i].ClusterID = state.Registered, state.Connected, state.ID
 	}
 	return "", nil
 }
