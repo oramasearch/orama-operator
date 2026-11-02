@@ -91,7 +91,7 @@ What the operator writes:
 
 | Next to | Scrape | Rules | Dashboards |
 |---|---|---|---|
-| Each `OramaCloudV1` | PodMonitors: the writer's and readers' `/metrics` on :8080 (by number: a reader's Envoy also names a port `http`), and the control database's exporter (:9187). The stack's sandbox admits only the platform's Prometheus pods, on those two ports. | A critical component (writer, reader, broker, control database, cache, dashboard) not ready for 10 minutes; the rest after 30 minutes as a warning. The engine's or control database's metrics gone for 5 minutes; search p95 over 0.5 s for 15 minutes; replica lag over 5 minutes. | `<stack>-overview` (health, traffic, resources) and one per component, in the namespace's Perses project. |
+| Each `OramaCloudV1` | PodMonitors: the writer's and readers' `/metrics` on :8080 (by number: a reader's Envoy also names a port `http`), and the control database's exporter (:9187). The stack's sandbox admits only the platform's Prometheus pods, on those two ports. | A critical component (writer, reader, broker, control database, cache, dashboard) not ready for 10 minutes; the rest after 30 minutes as a warning. The engine's or control database's metrics gone for 5 minutes; search p95 over 0.5 s for 15 minutes; replica lag over 5 minutes. With the analytics import enabled, its CronJob's last success over 30 minutes old, unless suspended (`OramaAnalyticsStale`, [components](../components.md#analytics-import-gapsgo)). | `<stack>-overview` (health, traffic, resources) and one per component, in the namespace's Perses project. |
 
 Not scraped yet: the broker. RabbitMQ's Prometheus plugin is not enabled on the broker, and enabling
 it restarts the broker, so it waits for a planned window; until then the broker is covered by its
@@ -104,8 +104,8 @@ without the monitoring CRDs it writes no monitoring object, dashboard or sandbox
 installed in part gets nothing written.
 
 Rules on metrics that may be absent have an `absent()` companion, so a missing target is an alert,
-never a silent pass: `OramaEngineTargetsMissing` and `OramaControlDBTargetsMissing` (critical) and
-`OramaStackStatusMetricsMissing`.
+never a silent pass: `OramaEngineTargetsMissing` and `OramaControlDBTargetsMissing` (critical),
+`OramaStackStatusMetricsMissing` and `OramaAnalyticsImportMetricsMissing`.
 
 ### Alert delivery
 

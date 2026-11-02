@@ -5,6 +5,10 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -137,5 +141,117 @@ func TestOramaCloudV1MonitoringWaitsForThePlatformLayer(t *testing.T) {
 	monitor.SetGroupVersionKind(podMonitorGVK)
 	if err := with.Get(context.Background(), client.ObjectKey{Namespace: "v1-eu", Name: "v1-eu-engine"}, monitor); err != nil {
 		t.Fatalf("no engine PodMonitor once the CRDs exist: %v", err)
+	}
+}
+
+// stackRules is the alerting rules of oc's <cr>-alerts PrometheusRule, by alert name.
+func stackRules(t *testing.T, oc *oramav1alpha1.OramaCloudV1) (*unstructured.Unstructured, map[string]map[string]any) {
+	t.Helper()
+	objects, err := v1MonitoringObjects(oc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := hubObject(t, objects, "PrometheusRule")
+	groups, _, _ := unstructured.NestedSlice(rule.Object, "spec", "groups")
+	byAlert := map[string]map[string]any{}
+	for _, r := range groups[0].(map[string]any)["rules"].([]any) {
+		byAlert[r.(map[string]any)["alert"].(string)] = r.(map[string]any)
+	}
+	return rule, byAlert
+}
+
+func analyticsImportStack(processor, imports bool) *oramav1alpha1.OramaCloudV1 {
+	oc := &oramav1alpha1.OramaCloudV1{ObjectMeta: metav1.ObjectMeta{Name: "v1-eu", Namespace: "v1-eu"}}
+	oc.Spec.Components.AnalyticsProcessor.Enabled = processor
+	oc.Spec.Components.AnalyticsProcessor.Import.Enabled = imports
+	return oc
+}
+
+// The analytics alerts exist only for a stack whose processor runs the import CronJob, and read
+// that CronJob's kube-state-metrics series.
+func TestOramaCloudV1AnalyticsAlertsFollowTheImport(t *testing.T) {
+	analyticsAlerts := []string{"OramaAnalyticsStale", "OramaAnalyticsImportMetricsMissing"}
+	_, rules := stackRules(t, analyticsImportStack(true, true))
+	for _, alert := range analyticsAlerts {
+		rule := rules[alert]
+		if rule == nil {
+			t.Fatalf("no %s with the import enabled", alert)
+		}
+		if expr := rule["expr"].(string); !strings.Contains(expr, `cronjob="v1-eu-analytics-import"`) || !strings.Contains(expr, `namespace="v1-eu"`) {
+			t.Errorf("%s does not name the stack's import CronJob: %s", alert, expr)
+		}
+	}
+	for _, off := range []*oramav1alpha1.OramaCloudV1{analyticsImportStack(true, false), analyticsImportStack(false, true)} {
+		_, rules := stackRules(t, off)
+		for _, alert := range analyticsAlerts {
+			if rules[alert] != nil {
+				t.Errorf("%s rendered with processor=%v import=%v", alert,
+					off.Spec.Components.AnalyticsProcessor.Enabled, off.Spec.Components.AnalyticsProcessor.Import.Enabled)
+			}
+		}
+	}
+}
+
+// In real Prometheus: a healthy import is silent, one whose last success is over 30 minutes old
+// fires, the same import suspended does not, and a CronJob kube-state-metrics never saw succeed
+// fires the missing-metrics alert.
+func TestOramaCloudV1AnalyticsAlertsInPrometheus(t *testing.T) {
+	_, promtool := prometheusBinaries(t)
+	rule, _ := stackRules(t, analyticsImportStack(true, true))
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rules.yaml"), rulesFile(t, rule), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// series is one input series of v1-eu's import CronJob, as kube-state-metrics labels it.
+	series := func(metric, values string) string {
+		return fmt.Sprintf("      - {series: '%s{namespace=\"v1-eu\", cronjob=\"v1-eu-analytics-import\"}', values: '%s'}\n", metric, values)
+	}
+	tests := `rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  # Healthy: the last success follows the clock.
+  - interval: 1m
+    input_series:
+` + series("kube_cronjob_status_last_successful_time", "0+60x60") +
+		series("kube_cronjob_spec_suspend", "0x60") + `
+    alert_rule_test:
+      - {eval_time: 60m, alertname: OramaAnalyticsStale, exp_alerts: []}
+      - {eval_time: 60m, alertname: OramaAnalyticsImportMetricsMissing, exp_alerts: []}
+  # Stalled: the last success stays at 0 s; it is 30 minutes old at 30m and pending for 5 more.
+  - interval: 1m
+    input_series:
+` + series("kube_cronjob_status_last_successful_time", "0x60") +
+		series("kube_cronjob_spec_suspend", "0x60") + `
+    alert_rule_test:
+      - {eval_time: 34m, alertname: OramaAnalyticsStale, exp_alerts: []}
+      - eval_time: 37m
+        alertname: OramaAnalyticsStale
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: v1-eu, cronjob: v1-eu-analytics-import}
+            exp_annotations: {summary: "Orama Cloud v1 v1-eu: analytics have not been imported and aggregated for 30 minutes; the dashboard's analytics are going stale."}
+  # Stalled but suspended: expected, silent.
+  - interval: 1m
+    input_series:
+` + series("kube_cronjob_status_last_successful_time", "0x60") +
+		series("kube_cronjob_spec_suspend", "1x60") + `
+    alert_rule_test:
+      - {eval_time: 60m, alertname: OramaAnalyticsStale, exp_alerts: []}
+  # Never succeeded: no last-success series at all.
+  - interval: 1m
+    input_series:
+` + series("kube_cronjob_spec_suspend", "0x60") + `
+    alert_rule_test:
+      - {eval_time: 29m, alertname: OramaAnalyticsImportMetricsMissing, exp_alerts: []}
+      - eval_time: 32m
+        alertname: OramaAnalyticsImportMetricsMissing
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: v1-eu, cronjob: v1-eu-analytics-import}
+            exp_annotations: {summary: "kube-state-metrics reports no successful run of v1-eu-analytics-import: OramaAnalyticsStale cannot fire."}
+`
+	if err := os.WriteFile(filepath.Join(dir, "tests.yaml"), []byte(tests), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(promtool, "test", "rules", filepath.Join(dir, "tests.yaml")).CombinedOutput(); err != nil {
+		t.Fatalf("promtool test rules: %v\n%s", err, out)
 	}
 }

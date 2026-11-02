@@ -573,24 +573,34 @@ func resourceReqs(memReq, cpuReq, memLimit string) *corev1.ResourceRequirements 
 	}
 }
 
-// clickhouseMemoryXML instructs ClickHouse to respect its container limit (#42, #16).
+// clickhouseMemoryXML instructs ClickHouse to respect its container's memory limit (#42, #16).
 //
 // The `*_to_ram_ratio` knob reads the **host's** physical RAM, NOT the cgroup limit — on our 30 GiB
 // AKS node it computed a ~24 GiB ceiling and ClickHouse was OOMKilled at startup (exit 137) inside its
 // 2Gi pod, crashlooping. The correct binary-aware cap (principle #8) is an ABSOLUTE
-// `max_server_memory_usage` in bytes, derived from the SAME number as the pod's memory limit, so it
-// holds regardless of host RAM. Keep it ~25% under the pod limit for untracked allocations at boot.
+// `max_server_memory_usage` in bytes, derived from the pod's memory limit, so it holds regardless of
+// host RAM: three quarters of the limit, leaving a quarter for UNTRACKED RSS (mmap'd parts, jemalloc
+// arenas, thread stacks) that `max_server_memory_usage` does NOT bound. ClickHouse ran fine at 2Gi
+// steady-state but OOMed on restart because loading the accumulated analytics parts' metadata spikes
+// RSS past 2Gi, so the pod floor is ~4Gi (cap 3 GiB). The default 4Gi renders the same file as when the
+// cap was a fixed 3 GiB, so it does not roll ClickHouse; a larger limit raises the cap with it (#1139).
 //
 // Also (#16): enable console logging so `kubectl logs` shows ClickHouse's own logs (it otherwise logs
 // only to files under /var/log/clickhouse-server, making OOMs/crashes invisible to the log stream).
-//
-// Sized against the 4Gi pod limit (below): server cap 3 GiB, leaving ~1 GiB for UNTRACKED startup RSS
-// (mmap'd parts, jemalloc arenas, thread stacks) that `max_server_memory_usage` does NOT bound.
-// ClickHouse ran fine at 2Gi steady-state but OOMed on restart because loading the accumulated
-// analytics parts' metadata spikes RSS past 2Gi — so the pod floor is ~4Gi, not 2Gi. Keep in lockstep.
-const clickhouseMemoryXML = `<clickhouse>
-    <!-- ABSOLUTE cap (bytes) = 3 GiB, derived from the 4Gi pod limit. NOT the host-relative ratio. -->
-    <max_server_memory_usage>3221225472</max_server_memory_usage>
+func clickhouseMemoryXML(memoryLimit resource.Quantity) string {
+	limit := memoryLimit.Value()
+	serverCap := limit / 4 * 3
+	shown := resource.NewQuantity(serverCap, resource.BinarySI).String()
+	if serverCap%(1<<30) == 0 {
+		shown = fmt.Sprintf("%d GiB", serverCap>>30)
+	}
+	return fmt.Sprintf(clickhouseMemoryXMLTemplate, shown, memoryLimit.String(), serverCap)
+}
+
+// clickhouseMemoryXMLTemplate takes the cap as shown, the pod limit and the cap in bytes.
+const clickhouseMemoryXMLTemplate = `<clickhouse>
+    <!-- ABSOLUTE cap (bytes) = %s, derived from the %s pod limit. NOT the host-relative ratio. -->
+    <max_server_memory_usage>%d</max_server_memory_usage>
     <!-- Default mark cache is 5 GiB — far too large for a small pod. -->
     <mark_cache_size>268435456</mark_cache_size>
     <!-- Uncompressed cache is rarely useful for analytics; disable it. -->
@@ -619,11 +629,24 @@ const clickhouseMemoryXML = `<clickhouse>
 </clickhouse>
 `
 
+// clickhouseDefaultMemoryLimit is the analytics ClickHouse pod's memory limit when the CR sets none.
+const clickhouseDefaultMemoryLimit = "4Gi"
+
 // clickhouseImage is the analytics ClickHouse server's default image. The analytics retention Job
 // runs its clickhouse-client (reconcileAnalyticsRetention).
 const clickhouseImage = "clickhouse/clickhouse-server:24.8@sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b"
 
 func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	// Right-size ClickHouse (#42): cap the pod AND derive its own config from that cap so it
+	// stops grabbing the whole node (default 5 GiB mark cache + 90% RAM target). 4Gi is the real
+	// floor — 2Gi OOMed on restart when loading accumulated part metadata (see clickhouseMemoryXML).
+	// Override it via spec.components.analytics.resources; an override without a memory limit keeps
+	// the 4Gi default's 3 GiB cap.
+	resources := resourcesOr(oc.Spec.Components.Analytics.Resources, resourceCaps(clickhouseDefaultMemoryLimit, "1", "1Gi", "100m"))
+	memoryLimit := resource.MustParse(clickhouseDefaultMemoryLimit)
+	if limit, ok := resources.Limits[corev1.ResourceMemory]; ok && !limit.IsZero() {
+		memoryLimit = limit
+	}
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Analytics, dataStoreDef{
 		component:         "analytics",
 		env:               []corev1.EnvVar{clickhousePasswordEnv(oc)},
@@ -633,15 +656,10 @@ func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *ora
 			{Name: "http", ContainerPort: 8123},
 			{Name: "native", ContainerPort: 9000},
 		},
-		dataPath: "/var/lib/clickhouse",
-		// Right-size ClickHouse (#42): cap the pod AND derive its own config from that cap so it
-		// stops grabbing the whole node (default 5 GiB mark cache + 90% RAM target). 4Gi is the real
-		// floor — 2Gi OOMed on restart when loading accumulated part metadata (see clickhouseMemoryXML).
-		// The clickhouseMemoryXML absolute cap is derived from this 4Gi — keep them in lockstep if the
-		// CR overrides it (spec.components.analytics.resources).
-		resources:   resourcesOr(oc.Spec.Components.Analytics.Resources, resourceCaps("4Gi", "1", "1Gi", "100m")),
+		dataPath:    "/var/lib/clickhouse",
+		resources:   resources,
 		configMount: "/etc/clickhouse-server/config.d",
-		configFiles: map[string]string{"orama-memory.xml": clickhouseMemoryXML},
+		configFiles: map[string]string{"orama-memory.xml": clickhouseMemoryXML(memoryLimit)},
 	})
 }
 

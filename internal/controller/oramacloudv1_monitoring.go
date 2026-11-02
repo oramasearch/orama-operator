@@ -179,6 +179,30 @@ func v1MonitoringObjects(oc *oramav1alpha1.OramaCloudV1) ([]*unstructured.Unstru
 			Summary:  "A control database replica has been over 5 minutes behind for 15 minutes.",
 		},
 	}
+	if p := oc.Spec.Components.AnalyticsProcessor; p.Enabled && p.Import.Enabled {
+		importJob := analyticsImportName(oc)
+		rules = append(rules,
+			alertRule{
+				// The import CronJob runs every five minutes and fails when either /import or /aggregate2
+				// does, so its last success is the age of the stack's analytics. A suspended import is
+				// expected to stop and does not fire.
+				Alert: "OramaAnalyticsStale",
+				Expr: fmt.Sprintf(`(time() - kube_cronjob_status_last_successful_time{namespace=%[1]q, cronjob=%[2]q}) > 1800
+  and on(namespace, cronjob) kube_cronjob_spec_suspend{namespace=%[1]q, cronjob=%[2]q} == 0`, ns, importJob),
+				For:      "5m",
+				Severity: "warning",
+				Summary:  "Orama Cloud v1 " + oc.Name + ": analytics have not been imported and aggregated for 30 minutes; the dashboard's analytics are going stale.",
+			},
+			alertRule{
+				// The metric is absent until the CronJob's first success, hence the 30 minutes.
+				Alert:    "OramaAnalyticsImportMetricsMissing",
+				Expr:     fmt.Sprintf(`absent(kube_cronjob_status_last_successful_time{namespace=%q, cronjob=%q})`, ns, importJob),
+				For:      "30m",
+				Severity: "warning",
+				Summary:  "kube-state-metrics reports no successful run of " + importJob + ": OramaAnalyticsStale cannot fire.",
+			},
+		)
+	}
 	ruleObject := prometheusRuleObject(ns, oc.Name+"-alerts", labelsFor(oc, "monitoring"), "orama.cloud-v1."+oc.Name, rules)
 
 	dashboards, err := v1Dashboards(oc)
