@@ -485,9 +485,10 @@ the operator creates, so a component is run *well*, not just *running*. The help
   a **memory limit** — but **no CPU limit** (a CPU limit throttles rather than protects; the request
   suffices). Limits are sized **per component** (a blanket small one OOM-kills the heavy ones):
   light apps `512Mi`, dashboard/disco/keycloak/stores `~1Gi`, Selenium `1.5Gi`, ClickHouse `4Gi`
-  (kept in lockstep with `clickhouseMemoryXML`), embeddings `4Gi`. The engine keeps its cgroup-aware
-  `resourceCaps` (CPU limit included — tokio tolerates it). Every component's `resources` is
-  **overridable on the CR** (`spec.components.<x>.resources`, `spec.idp.resources`,
+  (kept in lockstep with `clickhouseMemoryXML`), embeddings `5Gi` over a `4Gi` request (the loaded
+  models hold about 3.4Gi, so the request reserves what the pod really uses). The engine keeps its
+  cgroup-aware `resourceCaps` (CPU limit included — tokio tolerates it). Every component's
+  `resources` is **overridable on the CR** (`spec.components.<x>.resources`, `spec.idp.resources`,
   `spec.components.ingestion.resources`) — like the engine writer/reader already were.
 - **SecurityContext baseline.** A conservative **per-container** `securityContext`
   (`allowPrivilegeEscalation: false`, drop **ALL** capabilities, seccomp `RuntimeDefault`) on every
