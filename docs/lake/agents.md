@@ -43,7 +43,7 @@ lake learns where they are through its own environment:
 | `LAKE_AGENT_ENDPOINTS` | `key=http://<lake>-<key>.<ns>.svc.cluster.local:8080,...`, sorted |
 | `LAKE_INTERNAL_URL` | lake's in-cluster address, handed to agents |
 | `LAKE_AGENT_MODEL` | `spec.agents.model` |
-| `LAKE_AGENT_SERVICE_TOKEN` | from Secret `lake-<lake>-agent-service-token` (key `token`, 32 random bytes, minted once), the bearer lake presents to every agent service |
+| `LAKE_AGENT_SERVICE_TOKEN` | from Secret `lake-<lake>-agent-service-token` (key `token`, 32 random bytes, minted once), the bearer lake presents to the library agents. To a person's service launch lake presents that launch's own token, derived from this one ([below](#launches)) |
 | `LAKE_AGENT_BUS_DIR` | `/var/run/lake/agent-bus`, where Secret `lake-<lake>-agent-bus` is mounted: one file per library agent, its bus credential |
 
 **The agent bus** (lake `docs/api/agent-bus.md`). Library agents take their tasks from lake over
@@ -51,8 +51,8 @@ Zetta pub/sub on lake's own Zetta (`spec.zetta`, which needs a Zetta image with 
 library agent authenticates to lake with **its own** credential. Secret `lake-<lake>-agent-bus`
 holds one key per `library` entry (32 random bytes, hex, minted when the agent is added, kept
 across reconciles, removed with the agent). Lake mounts the whole Secret; each agent pod gets only
-its own key. The service token is never a bus credential, because user-created service launches
-on `runtimeImage` hold it too. The operator runs no task loop: tasks, claims and results travel on
+its own key. The service token is never a bus credential, and no user-created launch holds it
+(agent-runtime#14). The operator runs no task loop: tasks, claims and results travel on
 the bus.
 
 ## Launches
@@ -67,8 +67,9 @@ fallback. For each present launch:
    `orama.cloud/agent-launch-id`. The operator writes only its **SHA-256** into
    `agent_launch_status.credential_sha256`; lake resolves the credential by comparing digests and
    never stores it. The pod reads it as `LAKE_TOKEN` through a Secret reference, never a plain value.
-   The pull credential, and for a service launch the agent service token, are copied into the
-   workspace namespace. **Orama's provider key is not** ([below](#oramas-provider-key-never-reaches-a-workspace)).
+   The pull credential is copied into the workspace namespace. **The Lake's agent service token
+   is not** (agent-runtime#14): the person's own code runs in a launch's pod, and every library
+   agent accepts that token. A copy an earlier operator made is deleted on every Lake reconcile. **Orama's provider key is not** ([below](#oramas-provider-key-never-reaches-a-workspace)).
 2. **`job`** — a Job `<lake>-<slug>` from `runtimeImage` with `backoffLimit: 0` (an agent run is never
    retried behind the person's back), `activeDeadlineSeconds` = `jobDeadlineSeconds`,
    `ttlSecondsAfterFinished: 3600`, `AGENT_MODE=job` and the launch's `input` as `AGENT_INPUT`.
@@ -77,7 +78,12 @@ fallback. For each present launch:
    `credential_sha256` is cleared, so its credential stops resolving; its outcome is kept after the
    Job is garbage-collected.
 3. **`service`** — a Deployment and Service `<lake>-<slug>` from `runtimeImage`, `AGENT_MODE=service`,
-   `AGENT_SERVICE_TOKEN`. `Ready` with `endpoint = http://<lake>-<slug>.<ns>.svc.cluster.local:8080` once a replica is
+   and `AGENT_SERVICE_TOKEN` from the launch's own Secret `<lake>-<slug>-service-token` (key `token`,
+   labelled with the launch id, deleted with the launch). Its value is
+   `hex(HMAC-SHA256(key = the Lake's agent service token, "agent-launch:<launch id>"))`. Lake computes
+   the same value when it calls the launch, so it needs nothing new; no library agent accepts it, and
+   one launch's token does not open another (agent-runtime#14). Lake and the operator must roll
+   together: until both run this rule, a person's service launch answers `401` to lake. `Ready` with `endpoint = http://<lake>-<slug>.<ns>.svc.cluster.local:8080` once a replica is
    available; `Pending` until then.
 
 **Agent pods never carry the Lake's `app.kubernetes.io/name` and `instance`**: those are the selector

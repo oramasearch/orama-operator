@@ -117,7 +117,7 @@ func (r *LakeReconciler) reconcileAgentSchedule(ctx context.Context, lake *orama
 		status.Phase, status.Message = AgentPhaseFailed, "workspace_id and its reconciled namespace are required"
 		return status, false, nil
 	}
-	if err := r.reconcileAgentWorkspaceSecrets(ctx, lake, namespace, labels, schedule.WorkspaceID, false); err != nil {
+	if err := r.reconcileAgentWorkspaceSecrets(ctx, lake, namespace, labels, schedule.WorkspaceID); err != nil {
 		return status, true, err
 	}
 	credential, err := r.reconcileAgentCredential(ctx, lake, namespace, labels,
@@ -140,7 +140,7 @@ func (r *LakeReconciler) reconcileAgentSchedule(ctx context.Context, lake *orama
 		}
 		deadline, starting := agentJobDeadline(lake), agentScheduleStartingDeadline
 		backoff, history := int32(0), agentScheduleHistory
-		env := agentRunEnv(lake, agentScheduleCredentialSecret(lake.Name, schedule.Slug),
+		env := agentRunEnv(lake, agentScheduleCredentialSecret(lake.Name, schedule.Slug), "",
 			schedule.CustomerID, schedule.WorkspaceID, schedule.AgentID, agentLaunchModeJob, schedule.Input)
 		cron.Labels = scheduleLabels
 		cron.Spec.Schedule = schedule.Cron
