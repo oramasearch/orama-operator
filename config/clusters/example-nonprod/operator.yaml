@@ -1,13 +1,12 @@
+# An example, in the shape of a real deployment. The values are not Orama's: every name,
+# host and id is a placeholder. See README.md in this folder.
 apiVersion: orama.cloud/v1alpha1
 kind: OramaOperator
 metadata:
-  name: orama-nonprod-cluster-01
+  name: example-nonprod
 spec:
   chartRepository: registry-1.docker.io/oramasearch/orama-operator-chart
-  clusterRef: orama-nonprod-cluster-01
-  # Nonprod's own Docker Hub token, never production's (orama-operator#832). Copied to the cluster
-  # as oramasearch-dockerhub, the name its operator already pulls with, so the copy of production's
-  # token there is overwritten in place.
+  clusterRef: example-nonprod
   imagePullSecretRef:
     name: oramasearch-dockerhub-nonprod
     namespace: orama-system

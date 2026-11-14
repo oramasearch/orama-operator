@@ -237,7 +237,7 @@ func TestHelmfileAndEveryLeafInstallTheSamePlatform(t *testing.T) {
 	if len(management) == 0 {
 		t.Fatal("found no third-party releases in helmfile.yaml; the format this test reads changed")
 	}
-	leaves, err := filepath.Glob(filepath.Join("..", "config", "clusters", "*", "platform.yaml"))
+	leaves, err := filepath.Glob(filepath.Join(clustersDir(), "*", "platform.yaml"))
 	if err != nil || len(leaves) == 0 {
 		t.Fatalf("found no config/clusters/*/platform.yaml: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestHelmfileAndEveryLeafInstallTheSamePlatform(t *testing.T) {
 // other. (The management cluster's own version is whatever was last rolled onto it from the
 // helmfile path; it is not in a file yet, which docs/infrastructure/README.md records as a gap.)
 func TestEveryLeafRunsTheSameOperatorVersion(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("..", "config", "clusters", "*", "operator.yaml"))
+	files, err := filepath.Glob(filepath.Join(clustersDir(), "*", "operator.yaml"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("found no config/clusters/*/operator.yaml: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestIngressTrustsCloudflaresClientAddressOnlyFromCloudflare(t *testing.T) {
 		}
 	}
 	check("helmfile.yaml", helmfilePlatform(t)["ingress-nginx"])
-	paths, err := filepath.Glob("../config/clusters/*/platform.yaml")
+	paths, err := filepath.Glob(filepath.Join(clustersDir(), "*", "platform.yaml"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no leaf platform files (%v)", err)
 	}

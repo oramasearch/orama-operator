@@ -1,5 +1,10 @@
 # Paid lake.live orders: `LakeOrderSource`
 
+> **Where the files this page names are.** Orama's own cluster resources, named on this page as
+> `config/clusters/...`, are in the private [`orama-infra`](https://github.com/oramasearch/orama-infra) repository, at the
+> same paths. This repository's [`config/clusters/`](../../config/clusters/README.md) is an example of the same shape, with
+> placeholder values.
+
 Steve, 2026-10-18: *"this should be hooked into stripe and will deploy with the mgmt server
 (operator) upon successful purchase"*
 ([operator#634](https://github.com/oramasearch/orama-operator/issues/634), part of

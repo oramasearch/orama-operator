@@ -5,6 +5,11 @@ architecture as decided so far. It is early: the first kinds exist, most of it i
 this is the design the work follows. The running discussion and the open questions are in
 [#351](https://github.com/oramasearch/orama-operator/issues/351).
 
+> **Where the files this page names are.** Orama's own cluster resources, named on this page as
+> `config/clusters/...`, are in the private [`orama-infra`](https://github.com/oramasearch/orama-infra) repository, at the
+> same paths. This repository's [`config/clusters/`](../../config/clusters/README.md) is an example of the same shape, with
+> placeholder values.
+
 **Status, 2026-10-12:** decided in outline. The first three kinds are implemented and tested
 against a fake Azure API ([#354](https://github.com/oramasearch/orama-operator/issues/354)); no
 real cluster has been created with them yet. The first step is one non-production AKS cluster

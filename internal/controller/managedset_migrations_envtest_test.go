@@ -39,7 +39,7 @@ func TestSetCRDsAcceptTheCommittedSetsAndRefuseMigrationsIntoNoMember(t *testing
 	}
 	ctx := context.Background()
 
-	files, err := filepath.Glob(filepath.Join("..", "..", "config", "clusters", "sets", "*.yaml"))
+	files, err := filepath.Glob(filepath.Join(clustersDir(), "sets", "*.yaml"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no set files: %v", err)
 	}

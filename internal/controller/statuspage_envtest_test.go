@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,11 +20,15 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-const lakeLiveStatusFile = "../../config/clusters/status/lake-live.yaml"
-
-func lakeLiveStatusDocuments(t *testing.T) [][]byte {
+// statusPageDocuments reads the one status page file of the cluster resources: the bucket the
+// page is served from, then the page.
+func statusPageDocuments(t *testing.T) [][]byte {
 	t.Helper()
-	raw, err := os.ReadFile(lakeLiveStatusFile)
+	files, err := filepath.Glob(filepath.Join(clustersDir(), "status", "*.yaml"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("want one status page file in %s/status, got %v (%v)", clustersDir(), files, err)
+	}
+	raw, err := os.ReadFile(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,11 +41,11 @@ func lakeLiveStatusDocuments(t *testing.T) [][]byte {
 	return docs
 }
 
-// The committed lake.live page decodes strictly (no misspelt field silently dropped), runs every
-// check the umbrella's gate asks of a production Lake in both regions, and publishes to the bucket
-// the same file creates.
-func TestCommittedLakeLiveStatusPage(t *testing.T) {
-	docs := lakeLiveStatusDocuments(t)
+// The committed status page decodes strictly (no misspelt field silently dropped), runs every check
+// a production gate asks of a Lake in both regions, checks only hosts of its own deployment, and
+// publishes to the bucket the same file creates.
+func TestCommittedStatusPage(t *testing.T) {
+	docs := statusPageDocuments(t)
 	if len(docs) != 2 {
 		t.Fatalf("%d documents, want the bucket and the page", len(docs))
 	}
@@ -56,26 +61,30 @@ func TestCommittedLakeLiveStatusPage(t *testing.T) {
 		bucket.Namespace != page.Namespace || bucket.Spec.CustomDomain == nil || "https://"+bucket.Spec.CustomDomain.Domain != page.Spec.Publish.PublicURL {
 		t.Fatalf("the page must publish to the bucket this file creates, on its public host: %+v %+v", bucket.Spec, page.Spec.Publish)
 	}
-	if !strings.HasSuffix(bucket.Spec.CustomDomain.Domain, ".lake.live") {
-		t.Fatal("lake.live's page is a production host, under lake.live")
+	// The page is served on status.<apex>, and every check is of a host under that apex: a page for
+	// production never checks a nonprod host.
+	apex, ok := strings.CutPrefix(bucket.Spec.CustomDomain.Domain, "status.")
+	if !ok {
+		t.Fatalf("the page is served on status.<apex>, not %s", bucket.Spec.CustomDomain.Domain)
 	}
 	urls := map[string]bool{}
 	for _, component := range page.Spec.Components {
 		for _, check := range component.Checks {
 			urls[strings.SplitN(check.URL, "?", 2)[0]] = true
-			if strings.Contains(check.URL, "oramadev.net") {
-				t.Fatalf("%s/%s: a nonprod host on the production page", component.Name, check.Name)
+			host := strings.SplitN(strings.TrimPrefix(check.URL, "https://"), "/", 2)[0]
+			if host != apex && !strings.HasSuffix(host, "."+apex) {
+				t.Fatalf("%s/%s checks %s, outside the page's deployment %s", component.Name, check.Name, host, apex)
 			}
 		}
 	}
 	for _, region := range []string{"eu", "us"} {
 		for _, path := range []string{"/readyz", "/v1/server_info", "/v1/workspace_engine_info", "/v1/receive_agent_tasks", "/", "/sign-in"} {
-			if !urls["https://"+region+".lake.live"+path] {
-				t.Errorf("no check of https://%s.lake.live%s", region, path)
+			if !urls["https://"+region+"."+apex+path] {
+				t.Errorf("no check of https://%s.%s%s", region, apex, path)
 			}
 		}
 	}
-	if !urls["https://lake.live/"] {
+	if !urls["https://"+apex+"/"] {
 		t.Error("no check of the apex")
 	}
 }
@@ -111,7 +120,12 @@ func TestStatusPageCRDAdmission(t *testing.T) {
 	if err := kube.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "orama-system"}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, doc := range lakeLiveStatusDocuments(t) {
+	docs := statusPageDocuments(t)
+	var committed oramav1alpha1.StatusPage
+	if err := yaml.Unmarshal(docs[1], &committed); err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range docs {
 		var object unstructured.Unstructured
 		if err := yaml.Unmarshal(doc, &object.Object); err != nil {
 			t.Fatal(err)
@@ -121,7 +135,7 @@ func TestStatusPageCRDAdmission(t *testing.T) {
 		}
 	}
 	var page oramav1alpha1.StatusPage
-	if err := kube.Get(ctx, client.ObjectKey{Namespace: "orama-system", Name: "lake-live"}, &page); err != nil {
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: committed.Namespace, Name: committed.Name}, &page); err != nil {
 		t.Fatal(err)
 	}
 	if page.Spec.Components[0].Checks[0].Method != "GET" || page.Spec.Components[0].Checks[0].Expect.Status != 200 {

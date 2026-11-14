@@ -36,7 +36,7 @@ func TestIngressDisablesAdmissionWebhooksAndSnippetAnnotations(t *testing.T) {
 		})
 	}
 	check("helmfile.yaml", helmfilePlatform(t))
-	paths, err := filepath.Glob("../config/clusters/*/platform.yaml")
+	paths, err := filepath.Glob(filepath.Join(clustersDir(), "*", "platform.yaml"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no leaf platform files (%v)", err)
 	}

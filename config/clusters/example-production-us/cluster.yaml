@@ -1,9 +1,11 @@
+# An example, in the shape of a real deployment. The values are not Orama's: every name,
+# host and id is a placeholder. See README.md in this folder.
 apiVersion: orama.cloud/v1alpha1
 kind: KubernetesCluster
 metadata:
-  name: orama-nonprod-cluster-01
+  name: example-production-us
 spec:
-  deletionPolicy: Delete
+  deletionPolicy: Retain
   kubernetesVersion: '1.35'
   nodePools:
   - count: 1
@@ -25,9 +27,9 @@ spec:
     - '1'
     - '2'
     - '3'
-  providerRef: azure-orama
-  region: westus2
+  providerRef: azure-example
+  region: eastus
   tags:
     managed-by: orama-operator
-    purpose: nonprod
+    purpose: production
     role: leaf
