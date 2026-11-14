@@ -194,6 +194,10 @@ func TestAServiceLaunchHoldsItsOwnServiceTokenNeverTheLakes(t *testing.T) {
 	if launchServiceToken("k", "a") == launchServiceToken("k", "b") {
 		t.Fatal("two launches share a service token")
 	}
+	// Lake derives the same value (lake agent_launch_service_token); the same vector is in lake's test.
+	if got := launchServiceToken("k", "al-1"); got != "c5447490ca4b85399ec15e9025cdf93a5390197f3e3aea8bf66120e91411da6c" {
+		t.Fatalf("launchServiceToken(k, al-1) = %s", got)
+	}
 }
 
 // The library agents are Orama's own code in the Lake's namespace; they keep the key, and the run
