@@ -100,6 +100,15 @@ func (s *fakeAppsStore) UpdateAppTokenHashes(_ context.Context, row *LakeAppRow,
 	if current == nil {
 		return false, nil
 	}
+	// With 0112 the write also records the generation, and only while Lake's is the one read
+	// (lake#1070).
+	if row.TokenGenerationKnown {
+		if current.TokenGeneration != row.TokenGeneration {
+			return false, nil
+		}
+		generation := row.TokenGeneration
+		current.TokenHashesGeneration = &generation
+	}
 	s.hashWrites++
 	current.TokenHashes = hashes.DeepCopy()
 	return true, nil

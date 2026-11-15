@@ -33,6 +33,15 @@ type LakeAppRow struct {
 	RestartGeneration int64
 	Status            LakeAppRowStatus
 	TokenHashes       *oramav1alpha1.LakeAppTokenHashes
+	// TokenGenerationKnown is whether Lake's schema has apps.token_generation and
+	// apps.token_hashes_generation (lake#1070, 0112_app_token_generation). Without them the
+	// operator writes the hashes alone, as before.
+	TokenGenerationKnown bool
+	// TokenGeneration is apps.token_generation, which Lake writes (desired): 0 without the column.
+	TokenGeneration int64
+	// TokenHashesGeneration is apps.token_hashes_generation, which only the operator writes
+	// (observed): the generation the registered hashes were minted for, nil while unset.
+	TokenHashesGeneration *int64
 }
 
 type LakeAppRowStatus struct {
@@ -79,7 +88,10 @@ const listAppsSQL = `SELECT a.id::text, a.customer_id::text, a.workspace_id::tex
  COALESCE(a.secret_env_refs, '{}'::jsonb)::text, a.desired, a.generation,
  COALESCE(a.phase, 'Pending'), COALESCE(a.url, ''), COALESCE(a.ready, false), COALESCE(a.message, ''),
  COALESCE(a.observed_generation, 0), COALESCE(a.token_hashes_json, 'null'::jsonb)::text,
- COALESCE((to_jsonb(a)->>'restart_generation')::bigint, 0)
+ COALESCE((to_jsonb(a)->>'restart_generation')::bigint, 0),
+ (to_jsonb(a) ? 'token_generation'),
+ COALESCE((to_jsonb(a)->>'token_generation')::bigint, 0),
+ (to_jsonb(a)->>'token_hashes_generation')::bigint
  FROM apps a
  JOIN workspaces w ON w.id = a.workspace_id
  ORDER BY a.id`
@@ -99,7 +111,8 @@ func (s *pgxAppsStore) ListApps(ctx context.Context) ([]LakeAppRow, error) {
 			&app.Image, &app.Framework, &app.Port, &app.Replicas, &app.Host, &app.Auth,
 			&app.BindingsJSON, &app.EnvJSON, &app.SecretEnvRefs, &app.Desired, &app.Generation,
 			&app.Status.Phase, &app.Status.URL, &app.Status.Ready, &app.Status.Message,
-			&app.Status.ObservedGeneration, &hashes, &app.RestartGeneration)
+			&app.Status.ObservedGeneration, &hashes, &app.RestartGeneration,
+			&app.TokenGenerationKnown, &app.TokenGeneration, &app.TokenHashesGeneration)
 		if err != nil {
 			return nil, errors.New("cannot decode apps row")
 		}
@@ -135,10 +148,21 @@ func (s *pgxAppsStore) UpdateAppStatus(ctx context.Context, app *LakeAppRow, sta
 const updateAppTokenHashesSQL = `UPDATE apps SET token_hashes_json=$5::jsonb
  WHERE id=$1::uuid AND customer_id=$2::uuid AND generation=$3 AND desired=$4`
 
+// updateAppTokenHashesGenerationSQL registers hashes with the token generation they were minted
+// for (lake#1070). It matches only while apps.token_generation is still the one read: a rotation
+// Lake asked for in between matches nothing, and the tokens are minted again on the next pass.
+const updateAppTokenHashesGenerationSQL = `UPDATE apps SET token_hashes_json = $5::jsonb, token_hashes_generation = $6
+ WHERE id = $1::uuid AND customer_id = $2::uuid AND generation = $3 AND desired = $4 AND token_generation = $6`
+
 func (s *pgxAppsStore) UpdateAppTokenHashes(ctx context.Context, app *LakeAppRow, hashes *oramav1alpha1.LakeAppTokenHashes) (bool, error) {
 	encoded, err := json.Marshal(hashes)
 	if err != nil {
 		return false, errors.New("cannot encode app token hashes")
+	}
+	if app.TokenGenerationKnown {
+		result, err := s.db.Exec(ctx, updateAppTokenHashesGenerationSQL, app.ID, app.CustomerID, app.Generation, app.Desired,
+			string(encoded), app.TokenGeneration)
+		return appRowWriteResult(result, err)
 	}
 	result, err := s.db.Exec(ctx, updateAppTokenHashesSQL, app.ID, app.CustomerID, app.Generation, app.Desired, string(encoded))
 	return appRowWriteResult(result, err)

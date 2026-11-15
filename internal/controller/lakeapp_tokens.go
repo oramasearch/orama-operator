@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,7 +29,19 @@ import (
 const (
 	lakeAppTokensSecretName = "app-tokens"
 	lakeAppUIDAnnotation    = "orama.cloud/lake-app-uid"
+	// lakeAppTokenGenerationAnnotation is the token generation (apps.token_generation, lake#1070)
+	// the Secret's tokens were minted for; missing means 0.
+	lakeAppTokenGenerationAnnotation = "orama.cloud/token-generation"
 )
+
+// lakeAppTokensGeneration is the generation an app-tokens Secret was minted for.
+func lakeAppTokensGeneration(secret *corev1.Secret) int64 {
+	generation, err := strconv.ParseInt(secret.Annotations[lakeAppTokenGenerationAnnotation], 10, 64)
+	if err != nil || generation < 0 {
+		return 0
+	}
+	return generation
+}
 
 // Tokens are persisted before their hashes are acknowledged by the apps sync. Retrying a
 // database write never mints another token, and a missing Secret recovers with new credentials.
@@ -48,6 +61,17 @@ func (r *LakeAppReconciler) reconcileLakeAppTokens(ctx context.Context, app *ora
 			keys = append(keys, "zetta")
 		} else {
 			delete(secret.Data, "zetta")
+		}
+		// Lake asked for a rotation (lake#1070): every token is minted again for the new
+		// generation. The old ones stop verifying in Lake at once, since their hashes' generation
+		// no longer matches; the new hashes are registered by the apps sync.
+		if app.Spec.Sync != nil && lakeAppTokensGeneration(secret) < app.Spec.Sync.TokenGeneration {
+			for _, key := range keys {
+				delete(secret.Data, key)
+			}
+		}
+		if app.Spec.Sync != nil && app.Spec.Sync.TokenGeneration > lakeAppTokensGeneration(secret) {
+			secret.Annotations[lakeAppTokenGenerationAnnotation] = strconv.FormatInt(app.Spec.Sync.TokenGeneration, 10)
 		}
 		for _, key := range keys {
 			if len(secret.Data[key]) != 0 {
