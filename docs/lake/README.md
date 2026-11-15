@@ -297,9 +297,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    Lake's public host ([the row contract](environments.md#the-row-contract-lakes-format-the-operator-conforms)).
    Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
    `LakeSealedSecret` resources must be current and Ready; their produced Secrets are copied into the
-   isolated Namespace before the workload starts. A custom domain belongs to the first claim, never
-   to a platform host or a host something else serves, and no certificate is shared across owners
-   ([#776](https://github.com/oramasearch/orama-operator/issues/776)). See
+   isolated Namespace before the workload starts. A custom domain is applied only with a verified
+   claim in lake's `domain_claims` ([lake#949](https://github.com/oramasearch/lake/issues/949)), belongs
+   to the first claim, never to a platform host or a host something else serves, and no certificate is
+   shared across owners ([#776](https://github.com/oramasearch/orama-operator/issues/776)). See
    [`environments.md`](environments.md). Liquid creates, lists, rolls back, and reads these deployments
    through the operator's authenticated [deployment control plane](../control-plane/README.md).
 14. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,

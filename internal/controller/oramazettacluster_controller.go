@@ -115,6 +115,10 @@ type OramaZettaClusterReconciler struct {
 	// may own the cluster-wide Karpenter install (operator#280); a tenant's CR, in its own namespace,
 	// is refused.
 	OperatorNamespace string
+	// DomainClaims reads each Lake's verified custom-domain claims (lake domain_claims, lake#949) for
+	// the deployment sync: a domain is routed only with one. Nil reads them from the Lake's control
+	// Postgres (lake_domain_verification.go); tests substitute it.
+	DomainClaims LakeDomainClaimReader
 }
 
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete

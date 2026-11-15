@@ -101,6 +101,14 @@ func syncDeploymentRows(t *testing.T, reconciler *OramaZettaClusterReconciler, l
 	if err != nil {
 		t.Fatalf("read platform rows: %v", err)
 	}
+	if reconciler.DomainClaims == nil {
+		// The tests of the other rules start from verified claims of every domain lake requested.
+		claims := verifiedClaimsFor(rows.Domains)
+		reconciler.DomainClaims = func(context.Context, *oramav1alpha1.Lake) ([]LakeDomainClaim, error) {
+			return claims, nil
+		}
+		defer func() { reconciler.DomainClaims = nil }()
+	}
 	reconciler.materializeZettaPlatformRows(context.Background(), lake, host, zetta.url(), "test-token", rows)
 }
 

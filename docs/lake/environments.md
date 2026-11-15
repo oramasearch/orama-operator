@@ -100,7 +100,8 @@ the newest row per `(repository, environment, host)`:
 
 - **Applied.** A live request becomes an entry of the `LakeEnvironment`'s `spec.domains` (`host`, `tls`
   `acme` or `provided`) when the host is a lowercase DNS name, is not a platform host, is not served by
-  anything else on the cluster, and is this environment's by the first-claim rule (all below). The
+  anything else on the cluster, has a verified claim in lake, and is this environment's by the
+  first-claim rule (all below). The
   environment serves it from its Ingress (one rule per host) and, when the Lake has
   `spec.dnsSecretRef`, keeps one proxied `CloudflareDNSRecord` for it, owned by the environment and
   labelled with it.
@@ -119,10 +120,19 @@ the newest row per `(repository, environment, host)`:
   `LakeApp`'s host, to another environment's named host, or to a domain of another Lake's environment is
   refused too. A Lake on its own corporate zone therefore cannot route tenant domains in that zone: name
   them under the apps wildcard instead.
-- **Verification.** lake does not record domain ownership yet
-  ([lake#949](https://github.com/oramasearch/lake/issues/949)): a domain row has no verified state, so the
-  operator cannot wait for one. Until lake has it, the first-claim rule and the refusals above are the
-  operator's whole check. When lake records verification, an unverified claim is refused here too.
+- **Only verified claims are applied** ([lake#949](https://github.com/oramasearch/lake/issues/949)).
+  lake keeps one claim per host, across every account of the Lake, in its control Postgres
+  (`domain_claims`, lake migration `0106_domain_claims`): `create_domain` claims the host and answers a
+  TXT record `_lake-challenge.<host>` with the claim's token, and `verify_domain` marks the claim
+  `verified` once that record holds it, and only then writes the domain row. On every sync the operator
+  reads the verified claims (`SELECT host, environment, repository_id, liquid_id ... WHERE state =
+  'verified'`, `lake_domain_verification.go`) and applies a row only when a verified claim holds its
+  host for its repository (lake's id or the repository's liquid id) and environment. Any other row,
+  written before claims existed or by an older lake image, is answered `failed` with "has no verified
+  claim on this Lake: publish the TXT record ... then call verify_domain", and never takes the host
+  from the verified one by the first-claim rule. On a Lake whose schema has no `domain_claims` table
+  yet, every domain is refused. When the claims cannot be read (the database is unreachable), the poll
+  changes no domain: each environment keeps the domains it has, and no status row is written.
 - **Removed.** A tombstone takes it out of `spec.domains`; the environment deletes its Ingress rule and
   its DNS record. Deleting the environment deletes them all.
 - **Answered.** The operator appends a row with lake's columns and its own `status` and `message`

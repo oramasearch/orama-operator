@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -44,7 +45,7 @@ func activeHosts(plan lakeDomainPlan, repository, environment string) []string {
 // (#776).
 func TestLakeDomainBelongsToTheFirstClaim(t *testing.T) {
 	lake := testDeploymentLake(oramav1alpha1.LakeSpec{})
-	plan := planLakeDomains(lake, testLakeHost, []map[string]string{
+	plan := planVerifiedLakeDomains(lake, testLakeHost, []map[string]string{
 		domainClaimRow("zzz-tenant-b", "production", "shop.b.com", "2026-10-17T10:00:00.000000Z", false),
 		domainClaimRow("aaa-tenant-a", "production", "shop.b.com", "2026-10-17T11:00:00.000000Z", false),
 	}, lakeDomainGuard{})
@@ -68,7 +69,7 @@ func TestLakeDomainClaimTimeIsItsFirstRowSinceItsTombstone(t *testing.T) {
 	updated["tls"] = "provided"
 	answered := domainClaimRow("zzz", "production", "shop.example.com", "2026-10-17T12:00:00.000001Z", false)
 	answered["status"] = "active"
-	plan := planLakeDomains(lake, testLakeHost, []map[string]string{
+	plan := planVerifiedLakeDomains(lake, testLakeHost, []map[string]string{
 		domainClaimRow("zzz", "production", "shop.example.com", "2026-10-17T10:00:00Z", false),
 		domainClaimRow("aaa", "production", "shop.example.com", "2026-10-17T11:00:00.000000Z", false),
 		updated,
@@ -79,7 +80,7 @@ func TestLakeDomainClaimTimeIsItsFirstRowSinceItsTombstone(t *testing.T) {
 	}
 
 	// zzz withdraws and claims again: aaa's claim, live all along, is now the first.
-	plan = planLakeDomains(lake, testLakeHost, []map[string]string{
+	plan = planVerifiedLakeDomains(lake, testLakeHost, []map[string]string{
 		domainClaimRow("zzz", "production", "shop.example.com", "2026-10-17T10:00:00.000000Z", false),
 		domainClaimRow("aaa", "production", "shop.example.com", "2026-10-17T11:00:00.000000Z", false),
 		domainClaimRow("zzz", "production", "shop.example.com", "2026-10-17T12:00:00.000000Z", true),
@@ -91,7 +92,7 @@ func TestLakeDomainClaimTimeIsItsFirstRowSinceItsTombstone(t *testing.T) {
 
 	// Two claims at the same time: the claim's id (repository, environment, host) decides, the same
 	// way on every poll.
-	plan = planLakeDomains(lake, testLakeHost, []map[string]string{
+	plan = planVerifiedLakeDomains(lake, testLakeHost, []map[string]string{
 		domainClaimRow("r", "b", "same.example.com", "2026-10-17T10:00:00.000000Z", false),
 		domainClaimRow("r", "a", "same.example.com", "2026-10-17T10:00:00.000000Z", false),
 	}, lakeDomainGuard{})
@@ -151,7 +152,7 @@ func TestLakeDomainNeverTakesAPlatformHost(t *testing.T) {
 	rows = append(rows,
 		domainClaimRow("tenant", "production", "shop.customer.example", "2026-10-17T10:00:00.000000Z", false),
 		domainClaimRow("own", "e", "kept.customer.example", "2026-10-17T10:00:00.000000Z", false))
-	plan := planLakeDomains(lake, "eu.lake.live", rows, guard)
+	plan := planVerifiedLakeDomains(lake, "eu.lake.live", rows, guard)
 	for _, host := range refusedHosts {
 		if refused := plan.refused["tenant\nproduction\n"+host]; refused == "" {
 			t.Errorf("%s was not refused", host)
@@ -211,5 +212,151 @@ func TestLakeHostCertificateIsNeverSharedAcrossOwners(t *testing.T) {
 	}
 	if refs := certificate.GetOwnerReferences(); len(refs) != 1 || refs[0].Name != "owner" {
 		t.Errorf("certificate owners = %+v", refs)
+	}
+}
+
+// planVerifiedLakeDomains plans rows as if lake had verified a claim of every live row: the tests
+// of the other rules (first claim, platform hosts) start from verified claims.
+func planVerifiedLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]string, guard lakeDomainGuard) lakeDomainPlan {
+	return planLakeDomains(lake, host, rows, guard, newLakeVerifiedDomains(verifiedClaimsFor(rows)))
+}
+
+// verifiedClaimsFor is a verified claim of each live row's host by its repository and environment.
+func verifiedClaimsFor(rows []map[string]string) []LakeDomainClaim {
+	var claims []LakeDomainClaim
+	for _, row := range rows {
+		if parseDeploymentBool(row["deleted"]) || row["host"] == "" {
+			continue
+		}
+		claims = append(claims, LakeDomainClaim{Host: row["host"], Environment: row["environment"], RepositoryID: row["repository"]})
+	}
+	return claims
+}
+
+// A domain row is routed only with a verified claim of its host by its repository and environment
+// (lake#949): no claim, a claim of another environment or another repository, is refused with the
+// reason, and a refused row never takes the host from the verified one, even when it is older.
+func TestLakeDomainWithoutAVerifiedClaimIsRefused(t *testing.T) {
+	lake := testDeploymentLake(oramav1alpha1.LakeSpec{})
+	rows := []map[string]string{
+		domainClaimRow("tenant-a", "production", "shop.example.com", "2026-10-17T09:00:00.000000Z", false),
+		domainClaimRow("tenant-b", "production", "shop.example.com", "2026-10-17T10:00:00.000000Z", false),
+		domainClaimRow("tenant-b", "staging", "staging.example.com", "2026-10-17T10:00:00.000000Z", false),
+		domainClaimRow("tenant-b", "production", "unclaimed.example.com", "2026-10-17T10:00:00.000000Z", false),
+	}
+	verified := newLakeVerifiedDomains([]LakeDomainClaim{
+		{Host: "shop.example.com", Environment: "production", RepositoryID: "tenant-b"},
+		{Host: "staging.example.com", Environment: "production", RepositoryID: "tenant-b"},
+	})
+	plan := planLakeDomains(lake, testLakeHost, rows, lakeDomainGuard{}, verified)
+	if got := activeHosts(plan, "tenant-b", "production"); len(got) != 1 || got[0] != "shop.example.com" {
+		t.Errorf("the verified claim's domains = %v, want shop.example.com", got)
+	}
+	for _, key := range []string{
+		"tenant-a\nproduction\nshop.example.com",
+		"tenant-b\nstaging\nstaging.example.com",
+		"tenant-b\nproduction\nunclaimed.example.com",
+	} {
+		if refused := plan.refused[key]; !strings.Contains(refused, "has no verified claim") || !strings.Contains(refused, "_lake-challenge.") {
+			t.Errorf("%q refusal = %q", key, refused)
+		}
+	}
+	// Without any verified claim (a lake schema before domain_claims) nothing is routed.
+	plan = planLakeDomains(lake, testLakeHost, rows, lakeDomainGuard{}, nil)
+	if len(plan.active) != 0 {
+		t.Errorf("routed without a verified claim: %+v", plan.active)
+	}
+}
+
+// A domain row names the repository by the deployment's own value, lake's id or liquid's (lake#805):
+// a claim allows the host under either, whatever the case of the liquid id.
+func TestLakeDomainClaimMatchesTheLiquidID(t *testing.T) {
+	lake := testDeploymentLake(oramav1alpha1.LakeSpec{})
+	rows := []map[string]string{
+		domainClaimRow("00112233445566778899AABBCCDDEEFF", "production", "shop.example.com", "2026-10-17T09:00:00.000000Z", false),
+	}
+	verified := newLakeVerifiedDomains([]LakeDomainClaim{{
+		Host: "shop.example.com", Environment: "production",
+		RepositoryID: "0f8fad5b-d9cb-469f-a165-70867728950e", LiquidID: "00112233445566778899aabbccddeeff",
+	}})
+	plan := planLakeDomains(lake, testLakeHost, rows, lakeDomainGuard{}, verified)
+	if got := activeHosts(plan, "00112233445566778899AABBCCDDEEFF", "production"); len(got) != 1 {
+		t.Errorf("the liquid id's domains = %v (%q)", got, plan.refused["00112233445566778899AABBCCDDEEFF\nproduction\nshop.example.com"])
+	}
+}
+
+// The sync routes a domain once its claim is verified, answers an unverified one failed with the
+// reason, keeps every environment's domains unchanged when the claims cannot be read, and refuses
+// every domain on a Lake whose schema has no domain_claims table (lake#949).
+func TestLakeDomainSyncActsOnlyOnVerifiedClaims(t *testing.T) {
+	ctx := context.Background()
+	scheme := newLakeEnvironmentScheme(t)
+	lake := testDeploymentLake(oramav1alpha1.LakeSpec{})
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake).
+		WithStatusSubresource(&oramav1alpha1.LakeEnvironment{}).Build()
+	var claims []LakeDomainClaim
+	var claimsErr error
+	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme,
+		DomainClaims: func(context.Context, *oramav1alpha1.Lake) ([]LakeDomainClaim, error) { return claims, claimsErr }}
+	desired := desiredTestRow(nil)
+	zetta := newFakeZetta(t, "test-token")
+	insertTestRow(t, zetta, "deployments", desired)
+	insertTestRow(t, zetta, "domains", map[string]string{
+		"lake": testLakeHost, "repository": "repo-1", "environment": "production", "host": "shop.example.com",
+		"tls": "acme", "status": "pending", "message": "", "deleted": "false", "requested_by": "user/u-1",
+		"updated_at": "2026-09-05T10:00:01.000000Z", "ordering_token": "e4eaaaf2-d142-11e1-b3e4-080027620cdd",
+	})
+	event, err := parseDeploymentRow(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := types.NamespacedName{Namespace: "lake", Name: deploymentEnvironmentName(lake.Name, event)}
+	domainsOf := func() []oramav1alpha1.LakeEnvironmentDomain {
+		t.Helper()
+		var environment oramav1alpha1.LakeEnvironment
+		if err := kubeClient.Get(ctx, key, &environment); err != nil {
+			t.Fatalf("LakeEnvironment: %v", err)
+		}
+		return environment.Spec.Domains
+	}
+	latestDomainStatus := func() (string, string) {
+		t.Helper()
+		rows := zetta.rows("orama_control", "domains")
+		latest := rows[len(rows)-1]
+		return coerceSQLString(latest["status"]), coerceSQLString(latest["message"])
+	}
+
+	// 1. Not verified: the environment gets no domain and the row is answered failed, with why.
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	if got := domainsOf(); len(got) != 0 {
+		t.Errorf("an unverified domain was routed: %+v", got)
+	}
+	if status, message := latestDomainStatus(); status != oramav1alpha1.LakeEnvironmentDomainFailed || !strings.Contains(message, "has no verified claim") {
+		t.Errorf("unverified domain answered %q %q", status, message)
+	}
+
+	// 2. Verified: the domain is routed.
+	claims = []LakeDomainClaim{{Host: "shop.example.com", Environment: "production", RepositoryID: "repo-1"}}
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	if got := domainsOf(); len(got) != 1 || got[0].Host != "shop.example.com" {
+		t.Fatalf("the verified domain = %+v", got)
+	}
+
+	// 3. The claims cannot be read: nothing changes, nothing is answered.
+	claims, claimsErr = nil, errors.New("connection refused")
+	before := len(zetta.rows("orama_control", "domains"))
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	if got := domainsOf(); len(got) != 1 || got[0].Host != "shop.example.com" {
+		t.Errorf("an unreadable claims table changed the domains: %+v", got)
+	}
+	if after := len(zetta.rows("orama_control", "domains")); after != before {
+		t.Errorf("domain status rows written without the claims: %d -> %d", before, after)
+	}
+
+	// 4. No domain_claims table: every domain is refused.
+	claimsErr = errDomainClaimsTableMissing
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	if got := domainsOf(); len(got) != 0 {
+		t.Errorf("routed on a schema without domain_claims: %+v", got)
 	}
 }

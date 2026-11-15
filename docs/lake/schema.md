@@ -77,6 +77,16 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 
 ## Migration and rollout ordering
 
+Migration `0106_domain_claims` (lake#949) adds `domain_claims`, one row per custom-domain host with its
+TXT token and `pending` or `verified` state, guard `domain_claims_guard`. Additive. It is not vendored:
+every lake image that carries it has `lake manifest`, so the operator applies it from the image, and the
+vendored copy (above) serves only older images, which have no claims to read. The operator reads the
+table for the deployment sync ([environments.md](environments.md)) and treats it missing as "no claim
+is verified". **Roll order:** the operator release that reads it first, then the lake image. Between
+the two every custom domain is refused (no table yet), and a domain created before claims existed stays
+refused until its tenant runs `create_domain` and `verify_domain`.
+
+
 Migration `0099_account_balances` (lake#1114, lake v0.6.0) adds `account_balances`,
 `account_balance_credits` and `account_balance_charges`, with guard `account_balances_guard`. Additive. Apply
 it before the lake v0.6.0 image rolls; the schema gate holds that image until it has applied.
