@@ -136,6 +136,23 @@ stable explanatory message while a cap is full. Cancellation deletes only a Job 
 whose build-id label and Lake controller reference match; the row becomes `Cancelled` after those
 objects are absent.
 
+### Build nodes (operator#759)
+
+Rootless BuildKit runs with unconfined seccomp and AppArmor, so a build is kept away from the
+nodes other workloads use as soon as a cluster has nodes for builds (`lake_build_placement.go`):
+
+- every build pod tolerates the taint `orama.cloud/builds=true:NoSchedule`, which nothing else
+  tolerates;
+- when any node has the label `orama.cloud/builds=true`, every build pod requires it and refuses a
+  node another `lake-builder` pod runs on (one build per node);
+- while no node has it, builds schedule as before and only prefer a node with no other build.
+
+This follows the cluster's nodes, never a setting. **Still to do, outside this code:** each
+cluster needs a user pool labelled `orama.cloud/builds=true` and tainted
+`orama.cloud/builds=true:NoSchedule`, autoscaled from zero, in its `KubernetesCluster` (orama-infra)
+and the management cluster's own pool, applied with Steve's consent. Kata (`runtimeClassName`) on
+that pool comes after.
+
 ## Status, progress, and recovery
 
 While the Job is pending or active, the row is `Queued` or `Running`. A succeeded Job is not marked
