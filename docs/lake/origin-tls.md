@@ -83,10 +83,10 @@ answers it with a temporary Ingress of the Lake's ingress class (`spec.ingressCl
 | Ingress | Hosts | Certificate |
 |---|---|---|
 | `lake-<name>` (Lake namespace) | `host`, `apexHost` | One per host through ingress-shim (`applyIngressTLS`), Secret `<host>-tls`. A hand-supplied `spec.tls.secretName` replaces them |
-| `lake-<name>-apps-wildcard` (Lake namespace) | `*.<apps wildcard>` (default `*.<host>`) | The apps wildcard certificate, Secret `wildcard.<suffix>-tls` |
+| `lake-<name>-apps-wildcard` (Lake namespace) | `*.<apps wildcard>` (no default; [#762](https://github.com/oramasearch/orama-operator/issues/762)) | The apps wildcard certificate, Secret `wildcard.<suffix>-tls`. It never leaves the Lake namespace |
 | `lake-<name>-custom-domain` (Lake namespace) | `spec.customDomain.host`, once verified | Its own `Certificate` `<host>-tls`, HTTP-01 through a solver selected for that name alone; none of the edge settings below, because the customer's users do not come through Orama's zone ([`custom-domains.md`](custom-domains.md)) |
 | `lake-<name>-preview-wildcard` (Lake namespace) | `*.<previewWildcard>`, when set | The preview wildcard certificate |
-| A `LakeApp`'s Ingress (workspace namespace) | The app's host | Under the apps wildcard (one label): a copy of the wildcard certificate. Any other host: its own `Certificate` `<host>-tls` in the Lake namespace, owned by the `LakeApp` |
+| A `LakeApp`'s Ingress (workspace namespace) | The app's host | Always its own `Certificate` `<host>-tls` in the Lake namespace, owned by the `LakeApp`, also under the apps wildcard; never a copy of the wildcard certificate ([#784](https://github.com/oramasearch/orama-operator/issues/784)) |
 | A `LakeEnvironment`'s Ingress (workspace namespace) | The environment's host and its domains | A preview host: a copy of the preview wildcard certificate. A named host and each domain: its own `Certificate` in the Lake namespace, owned by the `LakeEnvironment` |
 | A public `OramaZettaCluster`'s Ingress | `spec.host` | Its own `Issuer` `<name>-letsencrypt` from its `dnsSecretRef`, through ingress-shim. Zettas a Lake creates have no Ingress |
 
@@ -96,16 +96,32 @@ answers it with a temporary Ingress of the Lake's ingress class (`spec.ingressCl
   (`kubernetes.io/tls`, labelled `orama.cloud/tls-copy`) is copied next to the Ingress that serves it,
   named `<ingress>-tls-<12 hex of the host's SHA-256>`. A renewal is copied again: the app and
   environment controllers watch the Lake namespace's `*-tls` Secrets. A certificate not issued yet is
-  not copied; ingress-nginx then serves no certificate and no redirect for that host until it is.
+  not copied, and a copy made earlier from another source is deleted; ingress-nginx then serves no
+  certificate and no redirect for that host until it is.
+- **An app gets a certificate of its own, never the apps wildcard's**
+  ([#784](https://github.com/oramasearch/orama-operator/issues/784)). The copy next to an Ingress holds
+  the private key, and a workspace namespace is a tenant's. The apps wildcard's key there would let
+  whoever reads that namespace (a mis-scoped RoleBinding, a future in-namespace controller, a backup)
+  impersonate every other tenant's app; the app's own host's key impersonates only that app. The
+  alternative, serving the wildcard as ingress-nginx's `--default-ssl-certificate`, was not taken:
+  it is one value per controller, so it would differ between clusters and Lakes (the operator is the
+  same on every cluster, and `helmfile.yaml` and every `platform.yaml` must match), and a cluster
+  serving two Lakes could name only one. The app's certificate is issued in the Lake namespace by the
+  Lake's Issuer (DNS-01 in the Lake's zone, HTTP-01 for any other, such as a separate apps domain), so
+  no DNS token reaches the workspace. Previews keep the preview wildcard's copy for now (below).
 - **A certificate is never shared across owners**
   ([#776](https://github.com/oramasearch/orama-operator/issues/776)). When `<host>-tls` already belongs to
   another `LakeApp` or `LakeEnvironment`, a second owner naming the same host gets no copy of it, and a
   copy made for it before is deleted: the private key of one tenant's host is never copied into another
   tenant's namespace. The domain intake refuses such a claim earlier (`environments.md`, *The first
   claim keeps a host*); this is the check behind it.
-- **Why wildcards.** Let's Encrypt allows 50 new certificates per registered domain per week, and
-  5 per identical set of names. One wildcard per Lake for apps and one for previews keeps a busy week
-  of new apps and previews within both.
+- **Why wildcards, and what per-app certificates cost.** Let's Encrypt allows 50 new certificates per
+  registered domain per week, and 5 per identical set of names. The preview wildcard keeps a busy week
+  of previews within that. Apps now take one certificate each, which is why the apps wildcard is a
+  registrable domain of its own (#762): app certificates never count against the Lake's own domain.
+  More than 50 new apps a week under one apps domain would reach its limit, unless that domain is in
+  the Public Suffix List, where every `<app>.<domain>` is its own registered domain. A renewal does
+  not count against the new-certificate limit.
 - **The wildcard Ingresses** make the origin present the wildcard certificate for any name under it,
   so the zone check below passes for the wildcard DNS record. A name with no app or environment is
   answered with a permanent redirect to `https://<host>/`; it never reaches a workload.

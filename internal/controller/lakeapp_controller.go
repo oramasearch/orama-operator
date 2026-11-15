@@ -1552,7 +1552,7 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	workloadName := lakeAppWorkloadObjectName(app)
 	tlsOwner := lakeTLSOwnerValue("LakeApp", app.Namespace+"/"+app.Name)
 	if host == "" {
-		if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, nil); err != nil {
+		if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, nil, lakeOwnCertificate); err != nil {
 			return err
 		}
 		if err := r.deleteLakeAppTLS(ctx, namespace, workloadName); err != nil {
@@ -1568,7 +1568,7 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	// The Lake's Issuer solves DNS-01 in its credential's zone and HTTP-01 for any other host
 	// (operator#632, docs/lake/origin-tls.md).
 	tlsHosts := lakeIssuableHosts(lake, []string{host}, "")
-	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, tlsHosts)
+	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, tlsHosts, lakeOwnCertificate)
 	if err != nil {
 		return fmt.Errorf("app certificate: %w", err)
 	}

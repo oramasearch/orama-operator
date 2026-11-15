@@ -425,7 +425,7 @@ credential.
 
 ## Ingress and authentication
 
-An empty app host derives `<app>.<Lake spec.apps.wildcard>`; with no accepted wildcard there is no such host and the app is not served. That address uses the one shared
+An empty app host derives `<app>.<Lake spec.apps.wildcard>`; with no accepted wildcard there is no such host and the app is not served. Every app's origin certificate is its own (`<host>-tls`, issued in the Lake namespace and copied next to its Ingress), also under the apps wildcard: the wildcard's private key never enters a workspace namespace ([#784](https://github.com/oramasearch/orama-operator/issues/784), [origin TLS](origin-tls.md)). That address uses the one shared
 wildcard record maintained by the apps sync. A standalone custom host gets its own proxied record after nginx
 reports a load-balancer target. The ingress class is `spec.apps.ingressClass`, default `nginx`.
 

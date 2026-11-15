@@ -704,7 +704,7 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Cont
 		previewHost = host
 	}
 	tlsHosts := lakeIssuableHosts(lake, hosts, previewHost)
-	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), tlsHosts)
+	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), tlsHosts, lakeShareWildcard)
 	if err != nil {
 		return nil, fmt.Errorf("environment certificates: %w", err)
 	}
@@ -956,7 +956,7 @@ func environmentTLSOwner(environment *oramav1alpha1.LakeEnvironment) string {
 // deleteEnvironmentTLS removes the environment's Certificates, their copies and the edge CA Secret.
 func (r *LakeEnvironmentReconciler) deleteEnvironmentTLS(ctx context.Context, lake *oramav1alpha1.Lake, environment *oramav1alpha1.LakeEnvironment, namespace string) error {
 	name := environmentWorkloadName(environment)
-	if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), nil); err != nil {
+	if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), nil, lakeShareWildcard); err != nil {
 		return err
 	}
 	if err := deleteLakeTLSCopies(ctx, r.Client, namespace, name, nil); err != nil {

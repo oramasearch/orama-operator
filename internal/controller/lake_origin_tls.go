@@ -363,19 +363,36 @@ func lakeTLSOwnerValue(kind, name string) string {
 	return fmt.Sprintf("%s-%x", strings.ToLower(kind), sha256.Sum256([]byte(name)))[:40]
 }
 
+// lakeHostCertificates says whether a host under a wildcard the Lake serves may use that
+// wildcard's certificate (lakeShareWildcard) or always gets a certificate of its own
+// (lakeOwnCertificate).
+type lakeHostCertificates bool
+
+const (
+	// lakeShareWildcard: a host under a served wildcard uses the wildcard's Secret (environments
+	// under the preview wildcard).
+	lakeShareWildcard lakeHostCertificates = true
+	// lakeOwnCertificate: every host gets its own Certificate, even under a served wildcard. A
+	// LakeApp's certificate is copied into its workspace namespace, and the apps wildcard's key in
+	// a tenant namespace would impersonate every other tenant's app; its own host's key impersonates
+	// only itself (#784).
+	lakeOwnCertificate lakeHostCertificates = false
+)
+
 // reconcileLakeHostCertificates gives every host a certificate in the Lake namespace and returns
-// each host's certificate Secret there. A host under a wildcard the Lake serves uses that
-// wildcard's Secret; any other host gets a Certificate named ingressTLSSecretName(host), owned by
-// owner and labelled with ownerValue. The owner's Certificates for hosts it no longer has are
-// deleted. A Certificate another owner already holds is never shared: the host gets no source, so
-// the owner's Ingress serves no certificate for it, rather than another tenant's key (#776).
-func reconcileLakeHostCertificates(ctx context.Context, c client.Client, scheme *runtime.Scheme, lake *oramav1alpha1.Lake, owner client.Object, ownerValue string, hosts []string) (map[string]string, error) {
+// each host's certificate Secret there. With lakeShareWildcard, a host under a wildcard the Lake
+// serves uses that wildcard's Secret; any other host, and every host with lakeOwnCertificate, gets
+// a Certificate named ingressTLSSecretName(host), owned by owner and labelled with ownerValue. The
+// owner's Certificates for hosts it no longer has are deleted. A Certificate another owner already
+// holds is never shared: the host gets no source, so the owner's Ingress serves no certificate for
+// it, rather than another tenant's key (#776).
+func reconcileLakeHostCertificates(ctx context.Context, c client.Client, scheme *runtime.Scheme, lake *oramav1alpha1.Lake, owner client.Object, ownerValue string, hosts []string, mode lakeHostCertificates) (map[string]string, error) {
 	issuer := lakeOriginIssuerName(lake)
 	ns := lakeNamespace(lake)
 	secrets := make(map[string]string, len(hosts))
 	keep := map[string]bool{}
 	for _, host := range hosts {
-		if wildcard := lakeWildcardFor(lake, host); wildcard != "" {
+		if wildcard := lakeWildcardFor(lake, host); wildcard != "" && mode == lakeShareWildcard {
 			secrets[host] = ingressTLSSecretName(wildcard)
 			continue
 		}
@@ -435,8 +452,8 @@ func copiedTLSSecretName(ingressName, host string) string {
 // copyLakeTLSSecrets copies each host's certificate Secret from the Lake namespace into namespace,
 // for the Ingress ingressName, and returns the TLS entries for it: one per host, naming its copy.
 // A certificate not issued yet is not copied (the entry still names the copy, and ingress-nginx
-// serves no certificate and no redirect for the host until it exists); a renewed one is copied
-// again. A host with no source (another owner holds its certificate) gets no copy, and a copy made
+// serves no certificate and no redirect for the host until it exists), and a copy made before from
+// another source is deleted until it is; a renewed one is copied again. A host with no source (another owner holds its certificate) gets no copy, and a copy made
 // for it before is deleted, so another tenant's key never stays in this namespace (#776). Copies of hosts the Ingress no longer has are deleted. mutate sets labels, annotations
 // and owner on each copy.
 func copyLakeTLSSecrets(ctx context.Context, c client.Client, lake *oramav1alpha1.Lake, namespace, ingressName string, hosts []string, sources map[string]string, mutate func(*corev1.Secret)) ([]networkingv1.IngressTLS, error) {
@@ -450,17 +467,17 @@ func copyLakeTLSSecrets(ctx context.Context, c client.Client, lake *oramav1alpha
 		if sources[host] == "" {
 			continue
 		}
-		keep[name] = true
 		var source corev1.Secret
 		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: sources[host]}, &source); err != nil {
 			if apierrors.IsNotFound(err) {
-				continue
+				continue // not issued yet; an older copy (for example of a wildcard's key) is deleted below
 			}
 			return nil, err
 		}
 		if len(source.Data[corev1.TLSCertKey]) == 0 || len(source.Data[corev1.TLSPrivateKeyKey]) == 0 {
 			continue
 		}
+		keep[name] = true
 		copy := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
 		if _, err := controllerutil.CreateOrUpdate(ctx, c, copy, func() error {
 			mutate(copy)
