@@ -290,6 +290,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeServiceConnectionAccess(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, err
 	}
+	// The passphrase liquid wraps lake's identity key under (lake_identity_passphrase.go,
+	// operator#1168): minted once for every Lake, mounted only for an image that reads it.
+	if err := r.reconcileLakeIdentityPassphrase(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.reconcileLakeDeployToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile deployment token: %w", err)
 	}
@@ -847,6 +852,10 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 			// service credential is mounted.
 			applyLakeServiceConnectionsOnDemand(lake, &deployment.Spec.Template, r.ServiceConnectionURL)
 		}
+		if lakeReadsIdentityPassphraseFile(lake, manifest) {
+			// The owner-only passphrase file liquid needs to create lake's identity (operator#1168).
+			applyLakeIdentityPassphrase(lake, &deployment.Spec.Template, image)
+		}
 		if len(lakeAgentLibrary(lake)) > 0 {
 			// The library agents' bus credentials (lake docs/api/agent-bus.md), one file each.
 			mode := int32(0o440)
@@ -1275,6 +1284,7 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		"LAKE_SEALING_PUBLIC_KEY":        {},
 		"LAKE_SERVICE_DIR":               {},
 		"LAKE_STORE_ROOT":                {},
+		lakeIdentityPassphraseFileEnv:    {},
 		zettaEgressAllowEnv:              {},
 	}
 	var explicitAppsWildcard *corev1.EnvVar

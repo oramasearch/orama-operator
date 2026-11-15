@@ -1905,6 +1905,13 @@ spec:
                     items:
                       type: string
                     type: array
+                  identityPassphraseFile:
+                    description: |-
+                      IdentityPassphraseFile is true when the image's manifest environment lists
+                      LIQUID_IDENTITY_PASSPHRASE_FILE: liquid then wraps a new identity's key under a passphrase, and
+                      the operator gives the Lake pod an owner-only passphrase file (operator#1168,
+                      docs/lake/README.md#identity-passphrase).
+                    type: boolean
                   image:
                     description: Image is the spec.image the manifest was read from.
                     type: string

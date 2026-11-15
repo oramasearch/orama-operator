@@ -955,6 +955,12 @@ type LakeImageManifest struct {
 	// (operator#773, docs/lake/services.md#connections-on-demand).
 	// +optional
 	ServiceConnectionsOnDemand bool `json:"serviceConnectionsOnDemand,omitempty"`
+	// IdentityPassphraseFile is true when the image's manifest environment lists
+	// LIQUID_IDENTITY_PASSPHRASE_FILE: liquid then wraps a new identity's key under a passphrase, and
+	// the operator gives the Lake pod an owner-only passphrase file (operator#1168,
+	// docs/lake/README.md#identity-passphrase).
+	// +optional
+	IdentityPassphraseFile bool `json:"identityPassphraseFile,omitempty"`
 }
 
 // LakeStripeProduct is one product a lake image bills under.

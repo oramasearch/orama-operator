@@ -221,6 +221,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    while Postgres is enabled; injected as `LAKE_INSTANCE_KEK`. It wraps lake's persisted identity
    key and the per-customer KEKs used by static secrets and encryption. It is distinct from the
    admin bearer and is never sent to clients.
+3a. **Identity passphrase** — Secret `lake-<name>-identity-passphrase` (key `passphrase`), minted
+   once and owned; given to an image that reads `LIQUID_IDENTITY_PASSPHRASE_FILE` as an owner-only
+   file. See [Identity passphrase](#identity-passphrase).
 4. **Cluster sealing key** — Secret `lake-<name>-sealing-key`, an X25519 keypair minted once and
    owned. The public key and `kid` are published in `status.sealing` and injected into lake as
    `LAKE_SEALING_PUBLIC_KEY` / `LAKE_SEALING_KID`; the private key remains in the operator-owned
@@ -686,6 +689,34 @@ runtime-default seccomp profile. Rollout behavior, probes and the drain are in
 [Rollouts](#rollouts).
 The pod's `fsGroupChangePolicy: OnRootMismatch` applies the store's group ownership only when its
 root does not already match gid 10001, avoiding a full recursive ownership pass on every mount.
+
+### Identity passphrase
+
+liquid protects a new identity's key with a passphrase on Linux
+([liquid#518](https://github.com/oramasearch/liquid/pull/518),
+[liquid#522](https://github.com/oramasearch/liquid/pull/522)). A pod has no terminal, so lake needs
+a passphrase file, and liquid refuses one that is not a regular file owned by lake's uid (or root)
+with mode `0600` or `0400`
+([lake#1303](https://github.com/oramasearch/lake/issues/1303),
+[operator#1168](https://github.com/oramasearch/orama-operator/issues/1168)).
+
+- **Every Lake** gets Secret `lake-<name>-identity-passphrase` (key `passphrase`, 32 random bytes as
+  64 hex), owned by the Lake, minted once and never written again while it holds a value, so a
+  rotation done by hand is kept. liquid wraps the identity key under it: losing it loses the
+  identity.
+- **Only an image whose manifest `environment` lists `LIQUID_IDENTITY_PASSPHRASE_FILE`**
+  (`status.imageManifest.identityPassphraseFile`) gets the file. Any other image renders exactly as
+  before, so this operator rolls first and the lake image with the new liquid pin follows.
+- **Why a copy.** The pod needs `fsGroup: 10001` for its store, and kubelet gives every file of a
+  Secret volume the pod's fsGroup and adds group read, so a `defaultMode: 0400` arrives as
+  `root:10001 0440`, which liquid refuses; without fsGroup it would be `root:root 0400`, which uid
+  10001 cannot read. So the Secret is mounted (`0440`) only into the init container
+  `identity-passphrase`, which runs from the lake image as uid 10001 and copies it with
+  `install -m 0400` into a memory-backed `emptyDir`. The lake container mounts only that copy,
+  read-only, at `/var/run/lake/identity-passphrase/passphrase`, named by
+  `LIQUID_IDENTITY_PASSPHRASE_FILE` (operator-owned: a `spec.env` entry of that name is ignored).
+- A passphrase changed in the Secret reaches lake at its next pod start, and liquid must re-wrap
+  the key under it: a rotation is liquid's own operation, not a Secret edit alone.
 
 ### DNS: ndots 2 on lake, agent and app pods
 
