@@ -111,7 +111,7 @@ func TestBackupRefusesADatastoreKindWithNoMechanism(t *testing.T) {
 		t.Fatalf("phase = %q, want Failed", b.Status.Phase)
 	}
 	condition := apimeta.FindStatusCondition(b.Status.Conditions, "Complete")
-	if condition == nil || condition.Reason != "MechanismNotAvailable" || !strings.Contains(condition.Message, "Kafka") {
+	if condition == nil || condition.Reason != backupReasonNoBackupByDecision || !strings.Contains(condition.Message, "Kafka has no backup") {
 		t.Fatalf("condition = %+v", condition)
 	}
 	var jobs batchv1.JobList

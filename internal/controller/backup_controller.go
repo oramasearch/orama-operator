@@ -120,6 +120,10 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 // run advances one Backup and fills desired.
 func (r *BackupReconciler) run(ctx context.Context, b *oramav1alpha1.Backup, desired *oramav1alpha1.BackupStatus) (ctrl.Result, error) {
 	kind := string(b.Spec.Datastore.Kind)
+	if refusal, refused := backup.Refusal(kind); refused {
+		r.finish(b, desired, false, backupReasonNoBackupByDecision, refusal, 0)
+		return ctrl.Result{}, nil
+	}
 	if !backup.Supported(kind) {
 		r.finish(b, desired, false, "MechanismNotAvailable", fmt.Sprintf("no backup mechanism for datastore kind %s yet; supported: %s (operator#453)", kind, strings.Join(backup.SupportedKinds(), ", ")), 0)
 		return ctrl.Result{}, nil

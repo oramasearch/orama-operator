@@ -84,6 +84,23 @@ var resourceKinds = map[string]bool{
 	"Postgres": true,
 }
 
+// Refusals are the kinds that have no backup by decision, with the decision in words. Their
+// schedules and Backups are refused with it (reason NoBackupByDecision), never run.
+var Refusals = map[string]string{
+	// Decided under Steve's 2026-11-14 delegation (operator#733).
+	"Kafka": "Kafka has no backup, by decision (operator#733): it has no snapshot, a mirror to another " +
+		"cluster (MirrorMaker 2) copies deletes and bad writes as faithfully as good ones and needs a " +
+		"second cluster per Kafka, and a Lake keeps durable data in its workspace Zetta. A Kafka " +
+		"service's durability is its own replication: three brokers with min.insync.replicas 2 survive " +
+		"the loss of one. Keep anything that must outlive the Kafka in a datastore that is backed up.",
+}
+
+// Refusal is a kind's no-backup decision, if it has one.
+func Refusal(kind string) (string, bool) {
+	reason, ok := Refusals[kind]
+	return reason, ok
+}
+
 // RunsInJob reports whether a kind's backup and restore run as a Job of the operator's image.
 func RunsInJob(kind string) bool {
 	_, ok := mechanisms[kind]

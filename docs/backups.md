@@ -136,6 +136,18 @@ corresponding source; nothing of ours links to it.
   ([`lake/backups.md`](lake/backups.md)). `LakeRestoreRehearsal` reads the archive through an
   `ObjectStore` in its scratch namespace.
 
+## Kafka
+
+[#733](https://github.com/oramasearch/orama-operator/issues/733). **Decided under Steve's 2026-11-14
+delegation: no backup, stated on the kind.** Kafka has no snapshot. The alternative, MirrorMaker 2 to
+another cluster, is replication rather than backup: it copies deletes, compactions and bad writes as
+faithfully as good ones, and it needs a second Kafka per Kafka. A Lake keeps durable data in its
+workspace Zetta, and a Kafka service's durability is its own replication (three brokers,
+`min.insync.replicas` 2). So a `BackupSchedule` or `Backup` of kind `Kafka` is refused with reason
+`NoBackupByDecision` and the decision in its message (`backup.Refusals`), never run. A Lake writes a
+schedule for each Kafka service anyway, so the decision is said on the service's `service_status`
+message; it does not count against the Lake's `BackupsOnSchedule`.
+
 ## Restore
 
 [#741](https://github.com/oramasearch/orama-operator/issues/741). *A backup that has never been
@@ -218,6 +230,7 @@ kind named by `spec.bucket.kind`; only `CloudflareR2Bucket` exists.
 |---|---|---|---|
 | `ClickHouse` | The server's own `BACKUP ALL EXCEPT DATABASES system, information_schema, INFORMATION_SCHEMA TO S3(...)` (or `BACKUP DATABASE <database>` when the connection names one), sent over the HTTP interface (default port 8123) as the request body, never the URL. The server writes a consistent per-table snapshot straight to the bucket; `RESTORE ... FROM S3(...)` reads it back. Size from `system.backups`. The bucket secret is redacted from any reported error. | None (SQL over HTTP from Go). ClickHouse is Apache-2.0. | Implemented. The ClickHouse server needs egress to the bucket endpoint, which its own workspace policy must allow (filed). |
 | `Postgres` | Continuous WAL archiving by the Barman Cloud Plugin's sidecar beside every instance, to the `ObjectStore` the schedule owns, plus a CloudNativePG base backup (`Backup`, `method: plugin`) per tick. Restore bootstraps a **new** Cluster from the base backup and the WAL up to its consistent point. | None in the operator image: the plugin's own sidecar (Barman, GPL-3.0, unmodified). | Implemented ([#731](https://github.com/oramasearch/orama-operator/issues/731)). |
+| `Kafka` | None, by decision ([Kafka](#kafka)): refused with `NoBackupByDecision`. | — | Decided ([#733](https://github.com/oramasearch/orama-operator/issues/733)). |
 | Every other kind | See the research. | — | Not built. |
 
 ## An example
@@ -297,7 +310,7 @@ Filed from [#453](https://github.com/oramasearch/orama-operator/issues/453), eac
 |---|---|
 | [#731](https://github.com/oramasearch/orama-operator/issues/731) | **Postgres** through CNPG-I, and Lake and Cloud v1 off `barmanObjectStore` before CloudNativePG 1.31. Built: the Barman Cloud Plugin. |
 | [#732](https://github.com/oramasearch/orama-operator/issues/732) | Zetta, built into the engine. |
-| [#733](https://github.com/oramasearch/orama-operator/issues/733) | Kafka: mirroring or no backup, stated on the kind. Waits on Steve. |
+| [#733](https://github.com/oramasearch/orama-operator/issues/733) | Kafka: decided, no backup, stated on the kind ([Kafka](#kafka)). |
 | [#734](https://github.com/oramasearch/orama-operator/issues/734) | Cassandra through Medusa. |
 | [#735](https://github.com/oramasearch/orama-operator/issues/735) | TiDB through BR. |
 | [#736](https://github.com/oramasearch/orama-operator/issues/736) | Valkey RDB snapshots. |

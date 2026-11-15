@@ -86,6 +86,9 @@ func (r *BackupScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	switch {
 	case cronErr != nil:
 		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, "InvalidSchedule", fmt.Sprintf("spec.schedule %q: %v", cronText, cronErr)
+	case isRefused(s.Spec.Datastore.Kind):
+		refusal, _ := backup.Refusal(string(s.Spec.Datastore.Kind))
+		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, backupReasonNoBackupByDecision, refusal
 	case !backup.Supported(string(s.Spec.Datastore.Kind)):
 		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, "MechanismNotAvailable",
 			fmt.Sprintf("no backup mechanism for datastore kind %s yet; supported: %s (operator#453)", s.Spec.Datastore.Kind, strings.Join(backup.SupportedKinds(), ", "))
@@ -229,6 +232,11 @@ func (r *BackupScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: wake.Sub(now) + time.Second}, nil
+}
+
+func isRefused(kind oramav1alpha1.BackupDatastoreKind) bool {
+	_, refused := backup.Refusal(string(kind))
+	return refused
 }
 
 func backupConditionReason(b *oramav1alpha1.Backup, fallback string) string {

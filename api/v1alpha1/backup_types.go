@@ -16,7 +16,9 @@ import (
 // (internal/backup); a kind with no mechanism yet is refused in the status, never half-run.
 // See docs/backups.md.
 
-// BackupDatastoreKind names the kind of datastore a backup is taken of.
+// BackupDatastoreKind names the kind of datastore a backup is taken of. Kafka has no backup, by
+// decision (operator#733): its schedules and Backups are refused with reason NoBackupByDecision and
+// the decision in words; see docs/backups.md "Kafka".
 // +kubebuilder:validation:Enum=Postgres;ClickHouse;Zetta;Kafka;Cassandra;TiDB;Valkey;SQLite;DuckDB;Polars
 type BackupDatastoreKind string
 
