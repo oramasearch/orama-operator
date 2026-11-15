@@ -230,6 +230,7 @@ kind named by `spec.bucket.kind`; only `CloudflareR2Bucket` exists.
 |---|---|---|---|
 | `ClickHouse` | The server's own `BACKUP ALL EXCEPT DATABASES system, information_schema, INFORMATION_SCHEMA TO S3(...)` (or `BACKUP DATABASE <database>` when the connection names one), sent over the HTTP interface (default port 8123) as the request body, never the URL. The server writes a consistent per-table snapshot straight to the bucket; `RESTORE ... FROM S3(...)` reads it back. Size from `system.backups`. The bucket secret is redacted from any reported error. | None (SQL over HTTP from Go). ClickHouse is Apache-2.0. | Implemented. The ClickHouse server needs egress to the bucket endpoint, which its own workspace policy must allow (filed). |
 | `Postgres` | Continuous WAL archiving by the Barman Cloud Plugin's sidecar beside every instance, to the `ObjectStore` the schedule owns, plus a CloudNativePG base backup (`Backup`, `method: plugin`) per tick. Restore bootstraps a **new** Cluster from the base backup and the WAL up to its consistent point. | None in the operator image: the plugin's own sidecar (Barman, GPL-3.0, unmodified). | Implemented ([#731](https://github.com/oramasearch/orama-operator/issues/731)). |
+| `Valkey` | A point-in-time RDB of every primary (`CLUSTER SHARDS`; a server without cluster mode is its own primary) over the replication protocol (`PSYNC ? -1`), streamed as a multipart upload to `shard-<n>.rdb` while its keys are counted per database. Restore: into a server or cluster with no key, every key written with `RESTORE ... ABSTTL` (the value's own RDB encoding as the DUMP payload) to the primary owning its slot, so the topology may differ; keys expired or expiring within a minute are counted, not written; each file's SHA-256 is checked. Verified: keys per database. A scratch target is emptied with `FLUSHALL`. | None: RESP and the RDB format from Go (`internal/backup/valkey.go`, `rdb.go`). Valkey is BSD-3-Clause. | Implemented ([#736](https://github.com/oramasearch/orama-operator/issues/736)). Module values and value types the reader does not know are refused with the key's name. |
 | `Kafka` | None, by decision ([Kafka](#kafka)): refused with `NoBackupByDecision`. | — | Decided ([#733](https://github.com/oramasearch/orama-operator/issues/733)). |
 | Every other kind | See the research. | — | Not built. |
 
@@ -313,7 +314,7 @@ Filed from [#453](https://github.com/oramasearch/orama-operator/issues/453), eac
 | [#733](https://github.com/oramasearch/orama-operator/issues/733) | Kafka: decided, no backup, stated on the kind ([Kafka](#kafka)). |
 | [#734](https://github.com/oramasearch/orama-operator/issues/734) | Cassandra through Medusa. |
 | [#735](https://github.com/oramasearch/orama-operator/issues/735) | TiDB through BR. |
-| [#736](https://github.com/oramasearch/orama-operator/issues/736) | Valkey RDB snapshots. |
+| [#736](https://github.com/oramasearch/orama-operator/issues/736) | Valkey RDB snapshots. Built. |
 | [#737](https://github.com/oramasearch/orama-operator/issues/737) | SQLite, DuckDB and Polars. |
 | [#738](https://github.com/oramasearch/orama-operator/issues/738) | The Lake store volume to a bucket. |
 | [#739](https://github.com/oramasearch/orama-operator/issues/739) | Escrow of the Lake instance key. Waits on Steve. |

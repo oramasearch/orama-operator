@@ -6,6 +6,7 @@ Licensed under the Apache License, Version 2.0.
 package backup
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -166,6 +167,26 @@ func (s *S3) do(ctx context.Context, method, key string, query url.Values, body 
 
 // doWithHeaders sends one request; extra holds lower-case header names, which are signed.
 func (s *S3) doWithHeaders(ctx context.Context, method, key string, query url.Values, body []byte, extra map[string]string) ([]byte, error) {
+	data, _, err := s.request(ctx, method, key, query, body, extra)
+	return data, err
+}
+
+// request sends one request and returns the body (at most 16 MiB) and the response headers.
+func (s *S3) request(ctx context.Context, method, key string, query url.Values, body []byte, extra map[string]string) ([]byte, http.Header, error) {
+	resp, err := s.send(ctx, method, key, query, body, extra)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if resp.StatusCode >= 300 {
+		return nil, nil, &S3Error{Method: method, Key: key, StatusCode: resp.StatusCode, Body: string(data)}
+	}
+	return data, resp.Header, nil
+}
+
+// send signs and sends one request and returns the response unread.
+func (s *S3) send(ctx context.Context, method, key string, query url.Values, body []byte, extra map[string]string) (*http.Response, error) {
 	path := "/" + s.Bucket.Name
 	if key != "" {
 		path += "/" + strings.TrimLeft(key, "/")
@@ -176,7 +197,7 @@ func (s *S3) doWithHeaders(ctx context.Context, method, key string, query url.Va
 	}
 	var reader io.Reader
 	if body != nil {
-		reader = strings.NewReader(string(body))
+		reader = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
@@ -191,18 +212,83 @@ func (s *S3) doWithHeaders(ctx context.Context, method, key string, query url.Va
 	s.signHeaders(req, body, extra)
 	client := s.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
+		// No overall timeout: a streamed download may take as long as the context allows.
+		client = &http.Client{}
 	}
-	resp, err := client.Do(req)
+	return client.Do(req)
+}
+
+// GetStream opens one object for reading, of any size. The caller closes it.
+func (s *S3) GetStream(ctx context.Context, key string) (io.ReadCloser, error) {
+	resp, err := s.send(ctx, http.MethodGet, key, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode >= 300 {
-		return nil, &S3Error{Method: method, Key: key, StatusCode: resp.StatusCode, Body: string(data)}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, &S3Error{Method: http.MethodGet, Key: key, StatusCode: resp.StatusCode, Body: string(data)}
 	}
-	return data, nil
+	return resp.Body, nil
+}
+
+// PartSize is the size of each part of a streamed upload: above the 5 MiB minimum S3 and R2 ask of
+// every part but the last, and small enough to keep a Job's memory bounded.
+const PartSize = 16 << 20
+
+// PutStream writes one object of any size from r as a multipart upload, PartSize at a time, and
+// returns its size. A failed upload is aborted, so no partial object is left.
+func (s *S3) PutStream(ctx context.Context, key string, r io.Reader) (int64, error) {
+	data, _, err := s.request(ctx, http.MethodPost, key, url.Values{"uploads": {""}}, nil, nil)
+	if err != nil {
+		return 0, err
+	}
+	var created struct {
+		UploadID string `xml:"UploadId"`
+	}
+	if err := xml.Unmarshal(data, &created); err != nil || created.UploadID == "" {
+		return 0, fmt.Errorf("object store did not start the upload of %q: %s", key, strings.TrimSpace(string(data)))
+	}
+	abort := func(cause error) (int64, error) {
+		_, _, _ = s.request(context.WithoutCancel(ctx), http.MethodDelete, key, url.Values{"uploadId": {created.UploadID}}, nil, nil)
+		return 0, cause
+	}
+	type part struct {
+		Number int    `xml:"PartNumber"`
+		ETag   string `xml:"ETag"`
+	}
+	var parts []part
+	var size int64
+	buffer := make([]byte, PartSize)
+	for number := 1; ; number++ {
+		n, readErr := io.ReadFull(r, buffer)
+		if n > 0 || number == 1 {
+			query := url.Values{"partNumber": {fmt.Sprint(number)}, "uploadId": {created.UploadID}}
+			_, header, err := s.request(ctx, http.MethodPut, key, query, buffer[:n], nil)
+			if err != nil {
+				return abort(err)
+			}
+			parts = append(parts, part{Number: number, ETag: header.Get("ETag")})
+			size += int64(n)
+		}
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+			break
+		}
+		if readErr != nil {
+			return abort(readErr)
+		}
+	}
+	body, err := xml.Marshal(struct {
+		XMLName xml.Name `xml:"CompleteMultipartUpload"`
+		Parts   []part   `xml:"Part"`
+	}{Parts: parts})
+	if err != nil {
+		return abort(err)
+	}
+	if _, _, err := s.request(ctx, http.MethodPost, key, url.Values{"uploadId": {created.UploadID}}, body, nil); err != nil {
+		return abort(err)
+	}
+	return size, nil
 }
 
 // sign adds AWS Signature Version 4 headers.

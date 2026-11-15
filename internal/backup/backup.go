@@ -51,6 +51,8 @@ type Result struct {
 	SizeBytes int64            `json:"sizeBytes"`
 	Message   string           `json:"message"`
 	Summary   map[string]Count `json:"summary,omitempty"`
+	// Extra is recorded in the manifest for the mechanism's own restore (the files it wrote).
+	Extra json.RawMessage `json:"extra,omitempty"`
 }
 
 // Mechanism takes one consistent backup of one datastore kind into the target, using the
@@ -74,6 +76,7 @@ type Cleaner interface {
 // mechanism yet and the controllers refuse it in status without starting anything.
 var mechanisms = map[string]Mechanism{
 	"ClickHouse": ClickHouse{},
+	"Valkey":     Valkey{},
 }
 
 // resourceKinds are the kinds the controllers back up by writing their own operator's resources
@@ -220,7 +223,7 @@ func run(kind, name, prefix string, timeout time.Duration, getenv func(string) s
 		return Report{Message: redact(err, bucket.SecretAccessKey).Error()}
 	}
 	// The manifest is what a restore reads and verifies against; without it the backup is not one.
-	manifest := Manifest{Kind: kind, Backup: name, CompletedAt: time.Now().UTC(), SizeBytes: result.SizeBytes, Summary: result.Summary}
+	manifest := Manifest{Kind: kind, Backup: name, CompletedAt: time.Now().UTC(), SizeBytes: result.SizeBytes, Summary: result.Summary, Extra: result.Extra}
 	if err := writeManifest(ctx, target, manifest); err != nil {
 		return Report{Message: fmt.Sprintf("backup %s was written but its manifest was not: %v", name, redact(err, bucket.SecretAccessKey))}
 	}

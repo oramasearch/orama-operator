@@ -44,6 +44,7 @@ func TestSigV4MatchesTheAWSExample(t *testing.T) {
 type fakeStore struct {
 	mu      sync.Mutex
 	objects map[string][]byte
+	parts   map[string][][]byte
 	pageMax int
 }
 
@@ -55,7 +56,27 @@ func (f *fakeStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimPrefix(r.URL.Path, "/backups/")
+	query := r.URL.Query()
 	switch {
+	case r.Method == http.MethodPost && query.Has("uploads"):
+		fmt.Fprint(w, "<InitiateMultipartUploadResult><UploadId>u1</UploadId></InitiateMultipartUploadResult>")
+	case r.Method == http.MethodPut && query.Get("uploadId") != "":
+		body, _ := io.ReadAll(r.Body)
+		if f.parts == nil {
+			f.parts = map[string][][]byte{}
+		}
+		f.parts[key] = append(f.parts[key], body)
+		w.Header().Set("ETag", fmt.Sprintf(`"%s-%s"`, key, query.Get("partNumber")))
+	case r.Method == http.MethodPost && query.Get("uploadId") != "":
+		f.objects[key] = bytes.Join(f.parts[key], nil)
+		delete(f.parts, key)
+	case r.Method == http.MethodGet && r.URL.Path != "/backups":
+		body, ok := f.objects[key]
+		if !ok {
+			http.Error(w, "<Error><Code>NoSuchKey</Code></Error>", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(body)
 	case r.Method == http.MethodPut:
 		body, _ := io.ReadAll(r.Body)
 		f.objects[key] = body
