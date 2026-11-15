@@ -120,6 +120,13 @@ type LakeAppSync struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	RestartGeneration int64 `json:"restartGeneration,omitempty"`
+	// TokenGeneration is apps.token_generation, the token generation Lake asks for (lake#1070): Lake
+	// raises it to rotate the app's tokens. When the app-tokens Secret was minted for a lower
+	// generation, every token in it is minted again. 0 when Lake's schema predates
+	// 0112_app_token_generation.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	TokenGeneration int64 `json:"tokenGeneration,omitempty"`
 	// TokenHashes gates rollout until the sync has registered these hashes in Postgres.
 	// +optional
 	TokenHashes *LakeAppTokenHashes `json:"tokenHashes,omitempty"`

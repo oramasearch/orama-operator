@@ -111,6 +111,7 @@ func (r *LakeReconciler) syncLakeConnections(
 		keep[workspace.Namespace] = map[string]bool{}
 	}
 	changing := false
+	limit := newRowLimit(lakeConnectionsPerWorkspace, "network connections per workspace")
 	for i := range snapshot.Connections {
 		row := &snapshot.Connections[i]
 		workspace, found := workspaceByID[row.WorkspaceID]
@@ -124,6 +125,14 @@ func (r *LakeReconciler) syncLakeConnections(
 		}
 		name := lakeConnectionName(row.ID)
 		keep[workspace.Namespace][name] = true
+		// Past the workspace's limit (operator#782) a connection is refused. One made before the
+		// limit existed is kept as it is, never torn down.
+		if row.Desired == oramav1alpha1.ConnectionDesiredPresent && !limit.admit(row.WorkspaceID) {
+			if writeNetworkConnectionStatus(ctx, store, row, failedNetworkConnectionStatus(row, limit.refusal())) != nil {
+				changing = true
+			}
+			continue
+		}
 		status, err := r.syncLakeConnection(ctx, lake, row)
 		if err != nil {
 			log.Error(err, "connection reconciliation deferred", "connection", row.ID)

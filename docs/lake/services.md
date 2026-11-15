@@ -271,6 +271,26 @@ the service fails with `Secret <ns>/<name> exists and is not this Lake's service
     user must be created inside the cluster: for TiDB through the bootstrap SQL of operator#774,
     for Cassandra after the datacenter is `Ready`. Tracked on
     [operator#771](https://github.com/oramasearch/orama-operator/issues/771).
+- **Built-in users (operator#772).**
+  - **ClickHouse `default`** has no password. Every installation pins `default/networks/ip` to
+    `127.0.0.1` and `::1`, the Altinity operator's own default, so no later default can widen it;
+    the operator keeps adding its `host_regexp` (the installation's own pods by reverse DNS), which
+    replicas use between themselves.
+  - **ClickHouse `clickhouse_operator`**, the Altinity operator's own user: chart 0.27.4 ships one
+    fixed password for every install. The Orama operator mints a generated credential on every
+    cluster, Secret `clickhouse-operator-credentials` in `clickhouse-system` (`username`,
+    `password`), once, never rotated by itself (`clickhouse_operator_credential.go`). The Altinity
+    operator uses it only once the chart values say so, which is still to do, on both install paths
+    in one pull request (helmfile.yaml and every `platform.yaml`, now in orama-infra): `secret.create:
+    false` and `configs.files.config.yaml.clickhouse.access.secret` naming
+    `clickhouse-system/clickhouse-operator-credentials`. Until then the fixed password stays.
+  - **Cassandra `cassandra`**, the superuser Cassandra creates with the password `cassandra`: once
+    the role list shows the generated `<slug>-superuser`, the operator drops it through the
+    management API (`DELETE /api/v0/ops/auth/role?username=cassandra`), the same API cass-operator
+    drives. Workspace NetworkPolicy `allow-orama-operator-cassandra-management` admits the
+    operator's pods to port 8080. It is best effort: a failure is logged and tried again on the
+    next pass, and never holds back a working service's connection. With a role in `system_auth`,
+    Cassandra never creates the default again.
 - **Valkey default user.** Not in the contract: Valkey's built-in `default` user is switched off,
   since left unmanaged it accepts unauthenticated clients. The operator's probes and replication
   use its own system users.
@@ -587,8 +607,24 @@ none) labelled
 deleted and not absent in the current read. A **new** service over the cap creates nothing and is
 `Failed` / `service quota reached (<n>)`; it starts on a later poll once there is room. An existing
 service is never refused or removed, even after the cap is lowered. The workspace-owned Zetta is
-excluded from this count; `spec.workspaces.maxWorkspaces` governs workspace admission. lake's own
-per-customer cap (`LAKE_SERVICES_PER_CUSTOMER`) is separate.
+excluded from this count; `spec.workspaces.maxWorkspaces` governs workspace admission.
+
+### Per-tenant limits (operator#782)
+
+`spec.services.maxServices` and `spec.workspaces.maxWorkspaces` are Lake-wide, so one tenant could
+use them up for every tenant. These limits are per workspace or per customer. They are constants in
+`lake_limits.go`, the same on every cluster, with no setting. The operator gives lake the ones lake
+reads (lake#1292) as reserved environment, so `spec.env` cannot change them and the two always agree.
+Rows are counted in the order lake created them; a row past its limit is `Failed` with
+`limit reached: at most <n> <what> (operator#782)`.
+
+| Limit | Value | lake variable | A row past it |
+|---|---|---|---|
+| Present services per customer, each workspace's own Zetta included | 50 | `LAKE_SERVICES_PER_CUSTOMER` | Nothing is made. A service lake shows `Ready` is never refused. |
+| Live workspaces per customer | 10 | `LAKE_WORKSPACES_PER_CUSTOMER` | No namespace is made; a workspace that has one keeps it. |
+| Live tunnel grants per workspace / per customer | 100 / 500 | `LAKE_TUNNEL_GRANTS_PER_WORKSPACE`, `LAKE_TUNNEL_GRANTS_PER_CUSTOMER` | Refused, and a Tunnel made for it is removed: every live grant is in the relay's one projection. |
+| Present network connections per workspace | 50 | none yet | Refused; a Connection made before the limit is kept. |
+| Present egress rules per workspace | 100 | none yet | Refused; an EgressRule made before the limit is kept. |
 
 ## Other ways a service goes away
 

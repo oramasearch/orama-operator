@@ -247,6 +247,15 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("lake %q: spec.image is required", lake.Name)
 	}
 	replicas, replicasRefused := lakeReplicas(&lake)
+	// A suspended Lake runs no lake process and keeps everything (operator#862,
+	// lake_suspension.go). status.suspendedSince is set in memory here, so the Zetta grace below
+	// reads it, and written with the rest of the status.
+	now := time.Now()
+	previousSuspendedSince := lake.Status.SuspendedSince
+	lake.Status.SuspendedSince = lakeSuspendedSince(&lake, now)
+	if lake.Spec.Suspended {
+		replicas = 0
+	}
 	port := int32(lakeDefaultPort)
 	if lake.Spec.Port != nil {
 		port = *lake.Spec.Port
@@ -275,6 +284,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	zetta, err := r.reconcileLakeZetta(ctx, &lake, ns, labels)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile Zetta data plane: %w", err)
+	}
+	// Stop what the Lake controls while it is suspended, or give back what a suspension took,
+	// before any control row is acted on.
+	if err := r.reconcileLakeSuspension(ctx, &lake, now); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile suspension: %w", err)
 	}
 	claimName, storeAccessModes, err := r.reconcileLakeStore(ctx, &lake, ns, labels)
 	if err != nil {
@@ -400,14 +414,18 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		log.Info("tenant workloads refused: network policy is not enforced",
 			"reason", networkPolicy.Condition.Reason, "message", networkPolicy.Condition.Message)
 	}
+	// A suspended Lake acts on no control row and runs no library agent: nothing new starts and
+	// nothing missing is made again until it is not suspended (operator#862).
 	controlRowsChanging := false
-	if lakeControlRowsEnabled(&lake) && schemaReady && networkPolicy.Enforced {
+	if lakeControlRowsEnabled(&lake) && schemaReady && networkPolicy.Enforced && !lake.Spec.Suspended {
 		controlRowsChanging = r.reconcileLakeServices(ctx, &lake, ns, labels)
 	}
 
 	// The Agent Library's specialized agents (lake_agents.go): best-effort, never fails the Lake.
-	if err := r.reconcileLakeLibraryAgents(ctx, &lake, ns, labels); err != nil {
-		log.Error(err, "library agents deferred")
+	if !lake.Spec.Suspended {
+		if err := r.reconcileLakeLibraryAgents(ctx, &lake, ns, labels); err != nil {
+			log.Error(err, "library agents deferred")
+		}
 	}
 	// Orama's provider key never stays in a workspace namespace (orama-operator#779).
 	if err := r.removeWorkspaceProviderKeyCopies(ctx, &lake); err != nil {
@@ -420,7 +438,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	// Aggregate readiness before writing status, preserving stable conditions between polls.
-	readiness := []lakeComponentReadiness{lakeDeploymentReadiness(deploy, replicas)}
+	var readiness []lakeComponentReadiness
+	if lake.Spec.Suspended {
+		readiness = append(readiness, lakeSuspensionReadiness(&lake, now))
+	}
+	readiness = append(readiness, lakeDeploymentReadiness(deploy, replicas))
 	storeStatus, storeCondition, storeReady, err := r.lakeStoreStatus(ctx, &lake, ns, claimName)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("read store status: %w", err)
@@ -516,6 +538,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		!apiequality.Semantic.DeepEqual(lake.Status.Store, storeStatus) ||
 		!apiequality.Semantic.DeepEqual(lake.Status.Sealing, sealing.Status) ||
 		!apiequality.Semantic.DeepEqual(previousCustomDomain, customDomain) ||
+		!lakeBackupTimesEqual(previousSuspendedSince, lake.Status.SuspendedSince) ||
 		conditionsChanged {
 		lake.Status.ReadyReplicas = deploy.Status.ReadyReplicas
 		lake.Status.Phase = phase
@@ -537,6 +560,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		}
 	}
 	result := lakeRequeue(&lake, controlRowsChanging, zettaReady, storeReady)
+	// A suspended Lake is looked at again when its Zetta grace ends.
+	if wait := lakeSuspensionRequeue(&lake, now); wait > 0 && (result.RequeueAfter == 0 || wait < result.RequeueAfter) {
+		result.RequeueAfter = wait
+	}
 	// A manifest being read is looked at sooner.
 	if manifest.Requeue > 0 && (result.RequeueAfter == 0 || manifest.Requeue < result.RequeueAfter) {
 		result.RequeueAfter = manifest.Requeue
@@ -679,6 +706,8 @@ func (r *LakeReconciler) reconcileLakeZetta(
 			Env:                     lakeDataPlaneZettaEnv(lake),
 			Reachability:            lake.Spec.Zetta.Reachability,
 			ProvisionOperatorSchema: &operatorSchema,
+			// Stopped once a suspended Lake's grace has passed (operator#862).
+			Suspended: lakeZettasSuspended(lake, time.Now()),
 		}
 		return controllerutil.SetControllerReference(lake, zetta, r.Scheme)
 	})
@@ -1412,6 +1441,11 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		for _, name := range lakePaymentsEnvNames {
 			reserved[name] = struct{}{}
 		}
+	}
+	// The per-tenant limits (lake_limits.go, operator#782): fixed, the same on every cluster.
+	env = append(env, lakeLimitEnv()...)
+	for name := range lakeLimitEnvNames() {
+		reserved[name] = struct{}{}
 	}
 	for _, custom := range lake.Spec.Env {
 		if _, found := reserved[custom.Name]; found {

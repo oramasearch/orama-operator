@@ -840,6 +840,21 @@ func TestLakeOrderSourceNameTooLongClaimsNothing(t *testing.T) {
 	}
 }
 
+// lakeSuspendedOf reads whether an order's LakeSet member sets suspended: true.
+func lakeSuspendedOf(h *orderHarness, name string) bool {
+	h.t.Helper()
+	var set oramav1alpha1.LakeSet
+	if !h.get(name, &set) {
+		return false
+	}
+	member, err := jsonObject(set.Spec.Clusters[0].Spec.Raw, "member")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	suspended, _ := member["suspended"].(bool)
+	return suspended
+}
+
 // lakeReplicasOf reads an order's LakeSet member's replicas override: nil when the member sets none.
 func lakeReplicasOf(h *orderHarness, name string) (*float64, bool) {
 	h.t.Helper()
@@ -909,6 +924,9 @@ func scenarioReadyOrderSuspendedAndRestored(h *orderHarness) {
 	if replicas == nil || *replicas != 0 {
 		t.Fatalf("a suspended order's Lake must be stopped: replicas %v", replicas)
 	}
+	if !lakeSuspendedOf(h, name) {
+		t.Fatal("a suspended order's Lake must have spec.suspended, which stops its agents, apps and Zettas")
+	}
 	var after oramav1alpha1.LakeSet
 	h.get(name, &after)
 	if after.UID != before.UID || after.Labels[orderIDLabel] != warehouseOrder || after.Spec.DeletionPolicy != oramav1alpha1.SetDeletionRetain ||
@@ -927,6 +945,9 @@ func scenarioReadyOrderSuspendedAndRestored(h *orderHarness) {
 	h.reconcile()
 	if replicas, _ := lakeReplicasOf(h, name); replicas != nil {
 		t.Fatalf("a renewed order's Lake must run again: replicas %v", *replicas)
+	}
+	if lakeSuspendedOf(h, name) {
+		t.Fatal("a renewed order's Lake is still suspended")
 	}
 	if s := h.source(); s.Status.Suspended != 0 || s.Status.ReadyOrders != 1 {
 		t.Fatalf("source status after renewal: %+v", s.Status)
@@ -1045,5 +1066,9 @@ func TestLakeOrderSourceMemberMayNotSetReplicas(t *testing.T) {
 	source := &oramav1alpha1.LakeOrderSource{Spec: oramav1alpha1.LakeOrderSourceSpec{Member: rawJSON(`{"replicas":1}`)}}
 	if _, err := orderMemberSpec(source); err == nil || !strings.Contains(err.Error(), "replicas") {
 		t.Fatalf("got %v, want a refusal naming replicas", err)
+	}
+	source = &oramav1alpha1.LakeOrderSource{Spec: oramav1alpha1.LakeOrderSourceSpec{Member: rawJSON(`{"suspended":false}`)}}
+	if _, err := orderMemberSpec(source); err == nil || !strings.Contains(err.Error(), "suspended") {
+		t.Fatalf("got %v, want a refusal naming suspended", err)
 	}
 }

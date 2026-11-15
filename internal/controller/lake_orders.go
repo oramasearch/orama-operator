@@ -361,9 +361,12 @@ func (r *LakeOrderSourceReconciler) advance(ctx context.Context, store CloudOrde
 
 // hold keeps a suspended order from running (operator#862). It claims nothing and makes nothing,
 // so a suspended order's missing resources are not made again. An order whose LakeSet exists
-// keeps it as it is, with its Lake's compute stopped: the member is written with `replicas: 0`,
-// and nothing else changes, so its data, its volumes, its name and its host are kept. A dedicated
-// cluster's KubernetesCluster, platform and operator are kept as they are. Nothing is deleted.
+// keeps it as it is, with its Lake's compute stopped: the member is written with
+// `suspended: true` and `replicas: 0`, and nothing else changes, so its data, its volumes, its
+// name and its host are kept (the Lake stops its agents, apps, builds and runs at once and its
+// Zettas after their grace, lake_suspension.go). A dedicated cluster's KubernetesCluster,
+// platform and operator are kept as they are; its autoscaled pools shrink by themselves once the
+// compute has stopped. Nothing is deleted.
 func (r *LakeOrderSourceReconciler) hold(ctx context.Context, pass orderPass, order CloudOrder) (string, orderOutcome) {
 	log := logf.FromContext(ctx).WithValues("order", order.ID, "offer", order.Offer)
 	name := orderResourceName(order.ID)
@@ -388,7 +391,7 @@ func (r *LakeOrderSourceReconciler) hold(ctx context.Context, pass orderPass, or
 		return cloudOrderHeld, orderOutcome{waiting: "suspended; LakeSet " + name + " cannot be written: " + err.Error(), lakeSet: name}
 	}
 	log.V(1).Info("the order is suspended; its Lake's compute is stopped and its data kept")
-	return cloudOrderHeld, orderOutcome{waiting: "suspended: the order is not paid for; its Lake is stopped (replicas 0) and its data kept", lakeSet: name}
+	return cloudOrderHeld, orderOutcome{waiting: "suspended: the order is not paid for; its Lake is suspended (no compute, its Zettas after their grace) and its data kept", lakeSet: name}
 }
 
 // provision creates or keeps an order's resources and reports how far they are.
@@ -634,15 +637,19 @@ func dedicatedClusterObjects(template *oramav1alpha1.KubernetesCluster, releases
 
 // orderLakeSet is the LakeSet of an order: the source set's template and secrets, and one member
 // on the chosen cluster with the source's member settings, its host and its node name. A
-// suspended order's member has `replicas: 0`: its Lake keeps every resource and its data, and runs
-// no lake process. A present one has no such override, so its Lake runs its replica again.
+// suspended order's member has `suspended: true` and `replicas: 0`: its Lake keeps every resource
+// and its data, and runs no compute. A present one has no such override, so its Lake runs again.
 func orderLakeSet(pass orderPass, order CloudOrder, name, cluster, host string, suspended bool) (*oramav1alpha1.LakeSet, error) {
 	override := map[string]any{
 		"host": host,
 		"args": []any{"--listen", "0.0.0.0:4900", "--node", name},
 	}
 	if suspended {
+		// spec.suspended stops all of the Lake's compute, its Zettas after their grace
+		// (lake_suspension.go, operator#862). replicas: 0 stays beside it, so a leaf whose operator
+		// predates spec.suspended still stops the lake process.
 		override["replicas"] = 0
+		override["suspended"] = true
 	}
 	member := mergeSpec(pass.member, override)
 	raw, err := json.Marshal(member)
@@ -672,7 +679,7 @@ func orderMemberSpec(source *oramav1alpha1.LakeOrderSource) (map[string]any, err
 			return nil, err
 		}
 	}
-	for _, field := range []string{"host", "args", "apexHost", "region", "regions", "namespace", "replicas"} {
+	for _, field := range []string{"host", "args", "apexHost", "region", "regions", "namespace", "replicas", "suspended"} {
 		if _, set := member[field]; set {
 			return nil, fmt.Errorf("spec.member sets %s, which the operator sets for each order: remove it", field)
 		}

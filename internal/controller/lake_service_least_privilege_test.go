@@ -96,7 +96,14 @@ func TestClickHouseAppUserHoldsOnlyItsDatabase(t *testing.T) {
 	if len(grants) != 1 || grants[0] != "GRANT ALL ON default.*" {
 		t.Fatalf("app grants = %v, want only ALL on its database", grants)
 	}
+	// default is pinned to loopback and given nothing else (operator#772).
+	if ip := users[clickHouseDefaultUser+"/networks/ip"]; !reflect.DeepEqual(ip, []interface{}{"127.0.0.1", "::1"}) {
+		t.Fatalf("default networks/ip = %v, want loopback only", ip)
+	}
 	for key, value := range users {
+		if key == clickHouseDefaultUser+"/networks/ip" {
+			continue
+		}
 		if !strings.HasPrefix(key, clickHouseUser+"/") {
 			t.Fatalf("configuration defines user setting %s outside the app user", key)
 		}

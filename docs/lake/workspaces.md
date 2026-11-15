@@ -230,6 +230,7 @@ whose kind is not in use selects no pod.
 | `allow-tidb-tikv-operator-ingress` | `app.kubernetes.io/component=tikv`, `managed-by=tidb-operator` | the TiDB operator, as above | TCP 20180 | leader counts during an upgrade |
 | `allow-tidb-operator-ingress` | `app.kubernetes.io/component=tidb`, `managed-by=tidb-operator` | the TiDB operator, as above | TCP 4000, 10080 | sets the root password (`createPassword`) over SQL; health on the status port |
 | `allow-cassandra-operator-ingress` | `cassandra.datastax.com/cluster` exists | `k8ssandra-operator`, `app.kubernetes.io/name` in `cass-operator`, `k8ssandra-operator` | TCP 8080 | the management API: cass-operator starts every node through it (`MGMT_API_EXPLICIT_START`) |
+| `allow-orama-operator-cassandra-management` | `cassandra.datastax.com/cluster` exists | the Orama operator's namespace, `app.kubernetes.io/name=orama-operator` | TCP 8080 | the management API, where the operator drops Cassandra's default `cassandra` superuser ([#772](https://github.com/oramasearch/orama-operator/issues/772), [services](services.md)) |
 | `allow-valkey-operator-ingress` | `app.kubernetes.io/managed-by=valkey-operator` with `valkey.io/cluster` | `valkey-operator-system`, `app.kubernetes.io/name=valkey-operator` | TCP 6379 | cluster formation (`CLUSTER MEET`, slots, replication) and state reads |
 
 Strimzi needs no ingress policy from us: it writes its own `<cluster>-network-policy-kafka`, which

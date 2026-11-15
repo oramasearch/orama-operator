@@ -644,6 +644,16 @@ func (r *LakeReconciler) createBuildJob(ctx context.Context, lake *oramav1alpha1
 	ttl := buildJobTTLSeconds
 	suspended := true
 	name := buildJobName(build.ID)
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	dedicatedNodes, err := clusterHasBuildNodes(ctx, reader)
+	if err != nil {
+		return err
+	}
+	pod := buildPod(lake, build, target, labels)
+	placeBuildPod(&pod, dedicatedNodes)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
 		Spec: batchv1.JobSpec{
@@ -653,7 +663,7 @@ func (r *LakeReconciler) createBuildJob(ctx context.Context, lake *oramav1alpha1
 			Suspend:                 &suspended,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec:       buildPod(lake, build, target, labels),
+				Spec:       pod,
 			},
 		},
 	}

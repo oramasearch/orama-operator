@@ -28,6 +28,8 @@ var (
 
 const (
 	clickHouseUser = "app"
+	// clickHouseDefaultUser is ClickHouse's built-in user.
+	clickHouseDefaultUser = "default"
 	// clickHouseProfile is the settings profile of the app user.
 	clickHouseProfile     = "app"
 	clickHouseDatabase    = "default"
@@ -126,6 +128,11 @@ func (k clickHouseServiceKind) build(in catalogService, password string) []catal
 			clickHouseUser + "/profile":             clickHouseProfile,
 			clickHouseUser + "/quota":               "default",
 			clickHouseUser + "/grants/query":        clickHouseAppGrants(),
+			// The built-in default user has no password; it is pinned here to loopback (operator#772),
+			// which is the Altinity operator's default today, so a later chart or operator default
+			// can never widen it. The operator still adds its host_regexp, the installation's own
+			// pods by reverse DNS, which replicas use for distributed queries between themselves.
+			clickHouseDefaultUser + "/networks/ip": []interface{}{"127.0.0.1", "::1"},
 		},
 		// The app user's own profile, so nothing a later change makes to "default" reaches it:
 		// reads and writes, DDL in its database, no introspection functions (addressToLine and the

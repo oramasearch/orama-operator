@@ -137,6 +137,12 @@ func (r *LakeWorkspacesReconciler) Reconcile(ctx context.Context, request ctrl.R
 	if !lakeWorkspacesEnabled(&lake) {
 		return ctrl.Result{}, nil
 	}
+	// A suspended Lake's workspace rows are not acted on: nothing is made or made again, and its
+	// workspace Zettas are stopped and given back by the Lake reconciler (lake_suspension.go,
+	// operator#862).
+	if lake.Spec.Suspended {
+		return ctrl.Result{RequeueAfter: lakeWorkspacesPoll}, nil
+	}
 	parent := &LakeReconciler{Client: r.Client, Scheme: r.Scheme}
 	_, _, schema := parent.lakeSchemaStatus(ctx, &lake, lakeNamespace(&lake), lakeDesiredSchemaVersion(&lake, lake.Status.ImageManifest))
 	if schema.phase != "Ready" {
@@ -197,6 +203,14 @@ func (r *LakeWorkspacesReconciler) syncLakeWorkspaces(
 	rows []LakeWorkspaceRow,
 ) bool {
 	live := r.liveWorkspaceCount(ctx, lake, rows)
+	// Past a customer's limit, counted in the order lake created the rows (operator#782, lake#987),
+	// a workspace gets no namespace; one that already has one keeps it.
+	perCustomer := newRowLimit(lakeWorkspacesPerCustomer, "workspaces per customer")
+	for i := range rows {
+		if rows[i].Desired != "deleted" {
+			rows[i].overCustomerLimit = !perCustomer.admit(rows[i].CustomerID)
+		}
+	}
 	changing := false
 	for desiredDeleted := 1; desiredDeleted >= 0; desiredDeleted-- {
 		for i := range rows {
@@ -667,6 +681,9 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNamespace(
 		if limit := int(lake.Spec.Workspaces.MaxWorkspaces); limit > 0 && *live >= limit {
 			return false, fmt.Errorf("workspace quota reached (%d)", limit)
 		}
+		if row.overCustomerLimit {
+			return false, errors.New(newRowLimit(lakeWorkspacesPerCustomer, "workspaces per customer").refusal())
+		}
 		namespace.Name = name
 	}
 	created := namespace.ResourceVersion == ""
@@ -858,6 +875,10 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 		policies = append(policies, sandboxAllowance(
 			"The Orama operator signs in to workspace Postgres services to keep the roles of credential-scoped Connections (operator#469).",
 			workspaceOperatorPostgresPolicy(r.OperatorNamespace, namespace, labels),
+		))
+		policies = append(policies, sandboxAllowance(
+			"The Orama operator drops Cassandra's default superuser through the management API once the generated one exists (operator#772).",
+			workspaceOperatorCassandraManagementPolicy(r.OperatorNamespace, namespace, labels),
 		))
 	}
 	policies = append(policies, workspaceLakeServiceIngressAllowances(lake)...)
@@ -1156,6 +1177,31 @@ func workspaceOperatorPostgresPolicy(operatorNamespace, namespace string, labels
 					}},
 				}},
 				Ports: []networkingv1.NetworkPolicyPort{workspaceTCPPort(servicePostgresPort)},
+			}},
+		},
+	}
+}
+
+// workspaceOperatorCassandraManagementName admits the Orama operator to the Cassandra management
+// API, where it drops the default `cassandra` superuser (operator#772).
+const workspaceOperatorCassandraManagementName = "allow-orama-operator-cassandra-management"
+
+func workspaceOperatorCassandraManagementPolicy(operatorNamespace, namespace string, labels map[string]string) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: workspacePolicyMeta(workspaceOperatorCassandraManagementName, namespace, labels),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(cassandraClusterLabel)},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: namespaceNameSelector(operatorNamespace),
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						"app.kubernetes.io/name": "orama-operator",
+					}},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{workspaceTCPPort(cassandraManagementPort)},
 			}},
 		},
 	}

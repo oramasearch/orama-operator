@@ -39,6 +39,18 @@ type LakeSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Suspended stops the Lake's compute and keeps all of its data (operator#862). A
+	// LakeOrderSource sets it while the Lake's order is not paid for. While it is true the lake
+	// Deployment, its library agents, every Deployment, Job and CronJob the Lake controls (agents,
+	// served models, builds, methodology runs) and every LakeApp and LakeEnvironment of the Lake
+	// run no pod, and no control row is acted on, so nothing new starts and nothing is made again.
+	// After lakeSuspensionZettaGrace (72 hours from status.suspendedSince) its own and its
+	// workspaces' OramaZettaClusters are suspended too. Volumes, claims, Secrets, Services, the
+	// control Postgres, managed services, hosts and names are all kept; nothing is deleted. Back to
+	// false, everything runs as it did.
+	// +optional
+	Suspended bool `json:"suspended,omitempty"`
+
 	// PullSecretName, if set, is attached to the lake pods as an imagePullSecret. Needed for a
 	// private spec.image (oramasearch/lake is private). The Secret must exist in spec.namespace.
 	// +optional
@@ -895,6 +907,10 @@ type LakeStatus struct {
 	// found, and whether the host is routed (docs/lake/custom-domains.md). Absent without it.
 	// +optional
 	CustomDomain *LakeCustomDomainStatus `json:"customDomain,omitempty"`
+	// SuspendedSince is when the operator first saw spec.suspended true; cleared when it is false.
+	// The Zetta grace (72 hours) counts from it.
+	// +optional
+	SuspendedSince *metav1.Time `json:"suspendedSince,omitempty"`
 	// Conditions includes StoreReady, BackupReady, ZettaReady, and FeaturesReady, including invalid
 	// configuration details.
 	// +optional

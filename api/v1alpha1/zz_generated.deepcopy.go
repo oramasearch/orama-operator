@@ -4904,6 +4904,10 @@ func (in *LakeStatus) DeepCopyInto(out *LakeStatus) {
 		*out = new(LakeCustomDomainStatus)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.SuspendedSince != nil {
+		in, out := &in.SuspendedSince, &out.SuspendedSince
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]metav1.Condition, len(*in))

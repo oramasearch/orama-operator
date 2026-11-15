@@ -188,6 +188,27 @@ into the pod. A failed registration keeps the workload paused. Old tokens stop a
 lake sees the new hashes. Unbinding removes the Zetta token and registers null without rotating
 the other purposes. Deletion clears `token_hashes_json` after resource teardown.
 
+**Rotation Lake asks for (lake#1070, lake 0112_app_token_generation).** Lake rotates an app's tokens
+by raising `apps.token_generation`; it never writes the operator's columns. The operator:
+
+1. reads `token_generation` and `token_hashes_generation` with each row (`listAppsSQL`, through
+   `to_jsonb`, so an older schema reads as "unknown" and the hashes alone are written, as before);
+2. carries `token_generation` into `spec.sync.tokenGeneration`. When the `app-tokens` Secret was
+   minted for a lower generation (annotation `orama.cloud/token-generation`, missing is 0), the
+   LakeApp mints every token again and records the new generation;
+3. registers the new hashes with `UPDATE apps SET token_hashes_json = $5::jsonb,
+   token_hashes_generation = $6 WHERE id = $1::uuid AND customer_id = $2::uuid AND generation = $3 AND
+   desired = $4 AND token_generation = $6`, `$6` being the generation read: a rotation Lake asked for
+   in between matches nothing and is minted on the next pass;
+4. writes `token_hashes_generation` for every app it reconciles, an existing app's current hashes
+   included, so no app stays on Lake's unacknowledged path.
+
+Lake verifies a token only while `token_hashes_generation = token_generation`, so old tokens stop at
+once and the new ones work once registered. While the generation is pending, the app's rollout waits
+(`TokenRegistrationPending`). Revoking `UPDATE (token_hashes_json)` from `lake_runtime` is the last
+step, once every app has a `token_hashes_generation` (the compatibility grant of
+[orama-operator#861](https://github.com/oramasearch/orama-operator/pull/861)).
+
 Lake hashes each bearer and enforces its purpose against the current row:
 
 - `source`: `repository_tree` / `repository_file` reads for this repository and revision only;

@@ -266,8 +266,18 @@ func (r *LakeAppsReconciler) registerLakeAppTokens(ctx context.Context, store La
 	if !lakeAppOwnsTokens(app, &tokens) {
 		return nil, errors.New("app tokens have another owner")
 	}
+	// Lake asked for a newer token generation than the Secret holds (lake#1070): nothing is
+	// registered until the LakeApp has minted the new tokens, which it does once this spec carries
+	// the generation. nil hashes hold the app's rollout meanwhile.
+	if row.TokenGenerationKnown && lakeAppTokensGeneration(&tokens) < row.TokenGeneration {
+		return nil, nil
+	}
 	hashes := lakeAppTokenHashes(&tokens)
-	if !apiequality.Semantic.DeepEqual(hashes, row.TokenHashes) {
+	// With 0112 every app's hashes carry the generation they were minted for, existing apps
+	// included, so none stays on Lake's unacknowledged path.
+	acknowledged := !row.TokenGenerationKnown ||
+		(row.TokenHashesGeneration != nil && *row.TokenHashesGeneration == row.TokenGeneration)
+	if !apiequality.Semantic.DeepEqual(hashes, row.TokenHashes) || (hashes != nil && !acknowledged) {
 		updated, err := store.UpdateAppTokenHashes(ctx, row, hashes)
 		if err != nil || !updated {
 			return nil, errors.New("app token registration deferred")
@@ -330,6 +340,7 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 			ID: row.ID, CustomerID: row.CustomerID, WorkspaceID: row.WorkspaceID,
 			WorkspaceNamespace: row.WorkspaceNamespace, Generation: row.Generation,
 			RestartGeneration: row.RestartGeneration,
+			TokenGeneration:   row.TokenGeneration,
 		},
 	}
 	if row.CustomerID == "" || row.Generation < 1 || row.RestartGeneration < 0 ||

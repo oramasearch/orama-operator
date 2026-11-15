@@ -36,6 +36,13 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	Replicas int32 `json:"replicas,omitempty"`
 
+	// Suspended runs no node: the StatefulSet is scaled to zero and its volumes, claims, Secrets,
+	// Services and node identities are kept, so setting it back to false starts the same nodes on
+	// the same data (operator#862). An owning Lake sets it once the Lake has been suspended for
+	// its Zetta grace.
+	// +optional
+	Suspended bool `json:"suspended,omitempty"`
+
 	// Image is the Zetta-headless container image (built like the other components → private Docker Hub).
 	// +kubebuilder:default="oramasearch/zetta:headless-v1-sandbox"
 	// +optional
@@ -389,7 +396,7 @@ type OramaZettaStorage struct {
 
 // OramaZettaClusterStatus is the observed state of the cluster.
 type OramaZettaClusterStatus struct {
-	// Phase: Progressing | Ready | Degraded.
+	// Phase: Progressing | Ready | Degraded | Suspended (spec.suspended).
 	// +optional
 	Phase string `json:"phase,omitempty"`
 	// ReadyNodes is the number of ready zetta pods.

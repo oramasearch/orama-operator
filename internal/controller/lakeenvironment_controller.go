@@ -128,7 +128,7 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		return r.finishEnvironmentStatus(ctx, &environment, nil, host, pendingDomainStatuses(&environment, message), oramav1alpha1.LakeEnvironmentPhaseDegraded, reason, message)
 	}
-	if err := r.reconcileEnvironmentWorkload(ctx, &environment, workloadNamespace, secretNames); err != nil {
+	if err := r.reconcileEnvironmentWorkload(ctx, &environment, workloadNamespace, secretNames, lake.Spec.Suspended); err != nil {
 		return ctrl.Result{}, err
 	}
 	domains, err := r.reconcileEnvironmentIngress(ctx, &lake, &environment, workloadNamespace, host)
@@ -142,6 +142,10 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{}, err
 		}
 		return r.finishEnvironmentStatus(ctx, &environment, nil, host, domains, oramav1alpha1.LakeEnvironmentPhaseProgressing, "DeploymentPending", "waiting for the environment Deployment")
+	}
+	if lake.Spec.Suspended {
+		return r.finishEnvironmentStatus(ctx, &environment, &deployment, host, domains, oramav1alpha1.LakeEnvironmentPhaseProgressing,
+			"LakeSuspended", "the Lake is suspended: the environment runs no pod until it is not")
 	}
 	phase, reason, message := environmentDeploymentState(&environment, &deployment)
 	return r.finishEnvironmentStatus(ctx, &environment, &deployment, host, domains, phase, reason, message)
@@ -391,12 +395,17 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentWorkload(
 	environment *oramav1alpha1.LakeEnvironment,
 	namespace string,
 	secretNames []string,
+	lakeSuspended bool,
 ) error {
 	labels := environmentLabels(environment)
 	name := environmentWorkloadName(environment)
 	replicas := environment.Spec.Replicas
 	if replicas == 0 {
 		replicas = 1
+	}
+	if lakeSuspended {
+		// A suspended Lake's environments run no pod; everything else is kept (operator#862).
+		replicas = 0
 	}
 	revisionHistoryLimit := int32(10)
 	env := make([]corev1.EnvVar, 0, len(environment.Spec.Env))
