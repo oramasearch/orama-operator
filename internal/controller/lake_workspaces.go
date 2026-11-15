@@ -865,6 +865,10 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 			"The Orama operator signs in to workspace Postgres services to keep the roles of credential-scoped Connections (operator#469).",
 			workspaceOperatorPostgresPolicy(r.OperatorNamespace, namespace, labels),
 		))
+		policies = append(policies, sandboxAllowance(
+			"The Orama operator drops Cassandra's default superuser through the management API once the generated one exists (operator#772).",
+			workspaceOperatorCassandraManagementPolicy(r.OperatorNamespace, namespace, labels),
+		))
 	}
 	policies = append(policies, workspaceLakeServiceIngressAllowances(lake)...)
 	connectionPolicies, connectionErr := r.existingWorkspaceConnectionAllowances(ctx, namespace)
@@ -1162,6 +1166,31 @@ func workspaceOperatorPostgresPolicy(operatorNamespace, namespace string, labels
 					}},
 				}},
 				Ports: []networkingv1.NetworkPolicyPort{workspaceTCPPort(servicePostgresPort)},
+			}},
+		},
+	}
+}
+
+// workspaceOperatorCassandraManagementName admits the Orama operator to the Cassandra management
+// API, where it drops the default `cassandra` superuser (operator#772).
+const workspaceOperatorCassandraManagementName = "allow-orama-operator-cassandra-management"
+
+func workspaceOperatorCassandraManagementPolicy(operatorNamespace, namespace string, labels map[string]string) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: workspacePolicyMeta(workspaceOperatorCassandraManagementName, namespace, labels),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(cassandraClusterLabel)},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: namespaceNameSelector(operatorNamespace),
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						"app.kubernetes.io/name": "orama-operator",
+					}},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{workspaceTCPPort(cassandraManagementPort)},
 			}},
 		},
 	}

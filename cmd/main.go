@@ -427,6 +427,11 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeAppsSync")
 		os.Exit(1)
 	}
+	// The Altinity ClickHouse operator's own credential, generated once on every cluster (#772).
+	if err = mgr.Add(&controller.ClickHouseOperatorCredential{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}); err != nil {
+		setupLog.Error(err, "unable to add the ClickHouse operator credential")
+		os.Exit(1)
+	}
 	workspacesListener := controller.NewLakeWorkspacesListener(mgr.GetClient())
 	if err = mgr.Add(workspacesListener); err != nil {
 		setupLog.Error(err, "unable to add the lake workspaces listener")

@@ -9,11 +9,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sync"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Cassandra services run on K8ssandra Operator 1.33.0 (k8ssandra.io/v1alpha1), which drives
@@ -141,6 +147,13 @@ func (cassandraServiceKind) credential(ctx context.Context, c client.Reader, in 
 	if user == "" || password == "" {
 		return nil, "", nil
 	}
+	// Cassandra's stock cassandra/cassandra superuser is dropped once the generated one exists
+	// (operator#772). Best effort: a failure is logged and tried again on the next pass, and never
+	// holds back the connection of a service that already works.
+	if err := dropCassandraDefaultRole(ctx, in, user); err != nil {
+		logf.FromContext(ctx).Error(err, "Cassandra's default superuser is not dropped yet; tried again on the next pass",
+			"namespace", in.namespace, "service", in.svc.Slug)
+	}
 	credential, err := json.Marshal(struct {
 		Kind       string `json:"kind"`
 		Endpoint   string `json:"endpoint"`
@@ -165,3 +178,97 @@ func (cassandraServiceKind) claimSelectors(in catalogService) []client.MatchingL
 
 // nameOverhead: every name cass-operator derives comes from the slug, not <lake>-<slug>.
 func (cassandraServiceKind) nameOverhead() int { return 0 }
+
+// cassandraDefaultRole is the superuser Cassandra's CassandraRoleManager creates, with the
+// well-known password "cassandra", when system_auth has no role yet. cass-operator creates the
+// generated <cluster>-superuser beside it and never drops it (operator#772).
+const cassandraDefaultRole = "cassandra"
+
+// cassandraManagement is how the operator reaches a datacenter's management API (port 8080), the
+// HTTP API cass-operator and k8ssandra-operator already drive every node through. The workspace
+// NetworkPolicy allow-orama-operator-cassandra-management admits the operator's pods to it.
+// Tests replace baseURL and client.
+var cassandraManagement = struct {
+	client  *http.Client
+	baseURL func(in catalogService) string
+}{
+	client: &http.Client{Timeout: 10 * time.Second},
+	baseURL: func(in catalogService) string {
+		return fmt.Sprintf("http://%s:%d", cassandraHost(in), cassandraManagementPort)
+	},
+}
+
+// cassandraDefaultRolesDropped remembers the datacenters whose default role is gone, so a steady
+// service makes no management-API call. A restarted operator checks each one once again.
+var cassandraDefaultRolesDropped sync.Map
+
+// dropCassandraDefaultRole drops the stock `cassandra` role through the management API
+// (DELETE /api/v0/ops/auth/role?username=cassandra), only once the role list shows the generated
+// superuser, so the datacenter always keeps a superuser. Dropping it is permanent: with a role in
+// system_auth, CassandraRoleManager never creates the default again.
+func dropCassandraDefaultRole(ctx context.Context, in catalogService, superuser string) error {
+	key := in.namespace + "/" + cassandraSlugName(in)
+	if _, done := cassandraDefaultRolesDropped.Load(key); done {
+		return nil
+	}
+	base := cassandraManagement.baseURL(in)
+	roles, err := cassandraManagementRoles(ctx, base)
+	if err != nil {
+		return err
+	}
+	if !roles[superuser] {
+		return fmt.Errorf("the generated superuser %s is not in the role list yet", superuser)
+	}
+	if superuser == cassandraDefaultRole {
+		return fmt.Errorf("the generated superuser is named %s; it is never dropped", cassandraDefaultRole)
+	}
+	if roles[cassandraDefaultRole] {
+		endpoint := base + "/api/v0/ops/auth/role?" + url.Values{"username": {cassandraDefaultRole}}.Encode()
+		if _, err := cassandraManagementCall(ctx, http.MethodDelete, endpoint); err != nil {
+			return fmt.Errorf("drop role %s: %w", cassandraDefaultRole, err)
+		}
+		logf.FromContext(ctx).Info("dropped Cassandra's default superuser", "namespace", in.namespace, "service", in.svc.Slug)
+	}
+	cassandraDefaultRolesDropped.Store(key, true)
+	return nil
+}
+
+// cassandraManagementRoles lists the datacenter's roles (GET /api/v0/ops/auth/role): a JSON array
+// with one object per role, its name under "name".
+func cassandraManagementRoles(ctx context.Context, base string) (map[string]bool, error) {
+	body, err := cassandraManagementCall(ctx, http.MethodGet, base+"/api/v0/ops/auth/role")
+	if err != nil {
+		return nil, fmt.Errorf("list roles: %w", err)
+	}
+	var listed []map[string]interface{}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		return nil, fmt.Errorf("list roles: %w", err)
+	}
+	roles := make(map[string]bool, len(listed))
+	for _, role := range listed {
+		if name, ok := role["name"].(string); ok {
+			roles[name] = true
+		}
+	}
+	return roles, nil
+}
+
+func cassandraManagementCall(ctx context.Context, method, endpoint string) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := cassandraManagement.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return nil, fmt.Errorf("management API answered %s", response.Status)
+	}
+	return body, nil
+}

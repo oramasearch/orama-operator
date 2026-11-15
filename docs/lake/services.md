@@ -271,6 +271,26 @@ the service fails with `Secret <ns>/<name> exists and is not this Lake's service
     user must be created inside the cluster: for TiDB through the bootstrap SQL of operator#774,
     for Cassandra after the datacenter is `Ready`. Tracked on
     [operator#771](https://github.com/oramasearch/orama-operator/issues/771).
+- **Built-in users (operator#772).**
+  - **ClickHouse `default`** has no password. Every installation pins `default/networks/ip` to
+    `127.0.0.1` and `::1`, the Altinity operator's own default, so no later default can widen it;
+    the operator keeps adding its `host_regexp` (the installation's own pods by reverse DNS), which
+    replicas use between themselves.
+  - **ClickHouse `clickhouse_operator`**, the Altinity operator's own user: chart 0.27.4 ships one
+    fixed password for every install. The Orama operator mints a generated credential on every
+    cluster, Secret `clickhouse-operator-credentials` in `clickhouse-system` (`username`,
+    `password`), once, never rotated by itself (`clickhouse_operator_credential.go`). The Altinity
+    operator uses it only once the chart values say so, which is still to do, on both install paths
+    in one pull request (helmfile.yaml and every `platform.yaml`, now in orama-infra): `secret.create:
+    false` and `configs.files.config.yaml.clickhouse.access.secret` naming
+    `clickhouse-system/clickhouse-operator-credentials`. Until then the fixed password stays.
+  - **Cassandra `cassandra`**, the superuser Cassandra creates with the password `cassandra`: once
+    the role list shows the generated `<slug>-superuser`, the operator drops it through the
+    management API (`DELETE /api/v0/ops/auth/role?username=cassandra`), the same API cass-operator
+    drives. Workspace NetworkPolicy `allow-orama-operator-cassandra-management` admits the
+    operator's pods to port 8080. It is best effort: a failure is logged and tried again on the
+    next pass, and never holds back a working service's connection. With a role in `system_auth`,
+    Cassandra never creates the default again.
 - **Valkey default user.** Not in the contract: Valkey's built-in `default` user is switched off,
   since left unmanaged it accepts unauthenticated clients. The operator's probes and replication
   use its own system users.
