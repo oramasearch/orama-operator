@@ -979,7 +979,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   stack's only row is the operator's `c1`. Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008, the reference rows, the migration role's grants and the dashboard role's grants) is current and the master key is valid, the operator
   runs the Job `<cr>-controldb-cluster-row`, which inserts one row **only when the table has no row
   at all**, soft-deleted rows included: `name` = the CR name, `cluster_prefix` = `c1` (the only
-  prefix the `collections.orama.com` worker routes, so customers' read keys keep working),
+  prefix the `collections.example.com` worker routes, so customers' read keys keep working),
   `writer_url` = `https://<engine.writer.host>`, `reader_url` = `https://<engine.reader.host>` (never
   an in-cluster URL: without both hosts the operator waits, `WaitingForPublicHosts`, because the row is
   written once), `master_api_key` from `spec.masterAPIKeySecretRef` at the time of the insert (a
