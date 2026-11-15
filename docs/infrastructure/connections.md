@@ -104,6 +104,12 @@ namespace. Only the operator reads it. Each workspace `NetworkSandbox` has the a
 computes itself, so the plaintext password never reaches the server, its logs or
 `pg_stat_activity`.
 
+**The superuser session verifies the server** (orama-operator#775). The operator connects to
+`<cluster>-rw.<namespace>.svc`, the name CloudNativePG's server certificate carries, with
+`sslmode=verify-full` against the cluster's own CA (Secret `<cluster>-ca`, key `ca.crt`), and never
+falls back to an unverified or plaintext session. Until that Secret exists the Connection waits
+("waiting for the target's Postgres CA Secret") and the superuser password is never sent.
+
 **The superuser session trusts nothing in the tenant's database**
 ([operator#800](https://github.com/oramasearch/orama-operator/issues/800), LSR-138). The database
 belongs to the tenant: its owner may set the database's default `search_path` and create objects in
