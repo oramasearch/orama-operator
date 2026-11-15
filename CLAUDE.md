@@ -329,7 +329,8 @@ Production runs no e2e suites because none is created there
 
 - **Functional e2e (`OramaCloudV1E2ETest`):** the comprehensive suite lives at
   `internal/controller/assets/e2e-functional.sh` (a curl+jq script embedded via `go:embed`,
-  shipped in a ConfigMap, run by an `alpine` Job that installs curl+jq). It self-bootstraps a
+  shipped in a ConfigMap, run by a Job on the prebuilt `oramasearch/e2e-runner` with curl+jq once it is pinned,
+  `hack/e2e-runner`, #1158; until then an `alpine` Job that installs them). It self-bootstraps a
   clean-slate collection+index and asserts **every critical OramaCore function in variations**
   (search modes/filters/facets/sort/group, CRUD/upsert/delete, replication canary, batch-get, KV,
   hooks, merchandising, MCP, answer/RAG; never the analytics export, which erases readers' events).

@@ -216,3 +216,65 @@ func TestE2EScriptsParseAndWireTheControlPlane(t *testing.T) {
 		t.Error("cp_expiry runs after the summary")
 	}
 }
+
+// The runner (operator#1158). Once the prebuilt oramasearch/e2e-runner is pinned, every default
+// spec.image (empty, the short alpine name, the CRD default existing objects carry) runs it, a custom
+// image is kept, and no command installs a package at start; the command refuses an image without
+// curl or jq. Until it is pinned, the legacy alpine installs them as before.
+func TestE2ERunnerPrebuiltImageRunsTheSuiteWithoutInstalling(t *testing.T) {
+	const prebuilt = "docker.io/oramasearch/e2e-runner:alpine3.20-1@sha256:" +
+		"0000000000000000000000000000000000000000000000000000000000000000"
+	for _, image := range []string{"", "alpine:3.20", e2eRunnerImage, "custom@sha256:" + strings.Repeat("1", 64)} {
+		runner, command := e2eRunner(image, prebuilt)
+		want := prebuilt
+		if strings.HasPrefix(image, "custom") {
+			want = image
+		}
+		if runner != want {
+			t.Errorf("spec.image %q runs %q, want %q", image, runner, want)
+		}
+		script := strings.Join(command, " ")
+		if strings.Contains(script, "apk") || !strings.Contains(script, "command -v curl") ||
+			!strings.Contains(script, "command -v jq") || !strings.HasSuffix(script, "exec sh "+e2eScriptPath) {
+			t.Errorf("spec.image %q command = %q", image, script)
+		}
+	}
+
+	runner, command := e2eRunner("", "")
+	if runner != e2eRunnerImage || !strings.Contains(strings.Join(command, " "), "apk add --no-cache curl jq") {
+		t.Errorf("without a prebuilt runner: %q %q", runner, command)
+	}
+	// The default the operator ships matches the Job it writes today.
+	kube, _ := reconcileE2E(t, e2eTestTarget(nil), e2eTestResource(""))
+	job := &batchv1.Job{}
+	if err := kube.Get(context.Background(), client.ObjectKey{Namespace: "orama-system", Name: "suite-e2e"}, job); err != nil {
+		t.Fatal(err)
+	}
+	wantImage, wantCommand := e2eRunner("", e2eRunnerPrebuiltImage)
+	c := job.Spec.Template.Spec.Containers[0]
+	if c.Image != wantImage || !reflect.DeepEqual(c.Command, wantCommand) {
+		t.Errorf("Job runs %q %q, want %q %q", c.Image, c.Command, wantImage, wantCommand)
+	}
+}
+
+// A test without its own pull secret pulls the runner with the target stack's, which can read the
+// private prebuilt runner (operator#1158); the test's own secret wins.
+func TestE2ERunnerPullsWithTheTargetsSecret(t *testing.T) {
+	target := e2eTestTarget(func(oc *oramav1alpha1.OramaCloudV1) { oc.Spec.PullSecretName = "stack-pull" })
+	for _, own := range []string{"", "test-pull"} {
+		test := e2eTestResource("")
+		test.Spec.PullSecretName = own
+		kube, _ := reconcileE2E(t, target.DeepCopy(), test)
+		job := &batchv1.Job{}
+		if err := kube.Get(context.Background(), client.ObjectKey{Namespace: "orama-system", Name: "suite-e2e"}, job); err != nil {
+			t.Fatal(err)
+		}
+		want := "stack-pull"
+		if own != "" {
+			want = own
+		}
+		if got := job.Spec.Template.Spec.ImagePullSecrets; len(got) != 1 || got[0].Name != want {
+			t.Errorf("test pull secret %q: Job pulls with %v, want %s", own, got, want)
+		}
+	}
+}
