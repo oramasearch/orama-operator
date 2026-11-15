@@ -89,7 +89,7 @@ func readyLeaf() []client.Object {
 }
 
 func dockerHubSecret() *corev1.Secret {
-	auth := base64.StdEncoding.EncodeToString([]byte("steveorama:hub-token"))
+	auth := base64.StdEncoding.EncodeToString([]byte("registry-user:hub-token"))
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "oramasearch-dockerhub", Namespace: "orama-system"},
 		Type:       corev1.SecretTypeDockerConfigJson,
@@ -165,7 +165,7 @@ func TestOramaOperatorInstallsTheVersionAndFollowsTheLeaf(t *testing.T) {
 	if req.Namespace != "orama-system" || req.Chart.Repository != defaultLeafChartRepository || req.Chart.Version != "0.0.0-dev-83242f9" {
 		t.Fatalf("request: %+v", req)
 	}
-	if req.Chart.User != "steveorama" || req.Chart.Pass != "hub-token" || req.PullSecret.Name != "oramasearch-dockerhub" {
+	if req.Chart.User != "registry-user" || req.Chart.Pass != "hub-token" || req.PullSecret.Name != "oramasearch-dockerhub" {
 		t.Fatalf("registry credentials not taken from the pull secret: user %q", req.Chart.User)
 	}
 	operatorValues := req.Values["operator"].(map[string]any)
@@ -418,7 +418,7 @@ func TestValuesAreComparedAsHelmStoresThem(t *testing.T) {
 
 func TestRegistryCredentialsAreReadFromAPullSecret(t *testing.T) {
 	user, pass, err := registryCredentials(dockerHubSecret(), "registry-1.docker.io")
-	if err != nil || user != "steveorama" || pass != "hub-token" {
+	if err != nil || user != "registry-user" || pass != "hub-token" {
 		t.Fatalf("Docker Hub is known by index.docker.io too: %q %q %v", user, pass, err)
 	}
 	if _, _, err := registryCredentials(dockerHubSecret(), "ghcr.io"); err == nil || !strings.Contains(err.Error(), "no credentials for registry ghcr.io") {
