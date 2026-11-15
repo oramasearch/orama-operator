@@ -92,6 +92,7 @@ type LakeAppReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;secrets;resourcequotas;limitranges,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
@@ -1467,6 +1468,11 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 	}
 	revisionHistoryLimit := int32(10)
 	workloadName := lakeAppWorkloadObjectName(app)
+	// Its own user namespace when every node supports one (operator#763, user_namespaces.go).
+	userNamespaces, _, err := clusterSupportsUserNamespaces(ctx, r.Client)
+	if err != nil {
+		return err
+	}
 	deployment := &appsv1.Deployment{ObjectMeta: lakeAppObjectMeta(app, workloadName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		deployment.Labels = labels
@@ -1476,7 +1482,7 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Template.Labels = labels
 		deployment.Spec.Template.Annotations = lakeAppPodAnnotations(app, secrets)
-		deployment.Spec.Template.Spec = lakeAppPodSpec(lake, app, secrets)
+		deployment.Spec.Template.Spec = withLakeAppUserNamespace(lakeAppPodSpec(lake, app, secrets), app, userNamespaces)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("reconcile app Deployment: %w", err)

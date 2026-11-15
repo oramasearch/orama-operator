@@ -350,7 +350,23 @@ default seccomp, has a read-only root filesystem, disables its Kubernetes token 
 gets a size-limited `emptyDir` at `/tmp`, and resolves with `ndots:2` so the full Service names it dials resolve on the first query ([DNS](README.md#dns-ndots-2-on-lake-agent-and-app-pods)). Synchronized-app pull credentials exist only in the
 merged workload-namespace Docker config Secret; the public Lake host password is never copied into
 the CR, pod template, status or logs. Runtime env includes `WORKSPACE_ID`, and `LAKE_URL`, auth and event URLs use Lake's
-`/w/<workspace id>` route. The selected binding values appear as files at:
+`/w/<workspace id>` route.
+
+**Own user namespace where the cluster supports one** ([operator#763](https://github.com/oramasearch/orama-operator/issues/763)).
+The app pod gets `hostUsers: false` when every node of the cluster reports, in its Node status,
+kubelet 1.33 or later (user namespaces on by default; a kubelet is never newer than its API
+server), Linux kernel 6.3 or later (idmapped tmpfs, for the Secret and `emptyDir` volumes) and
+containerd 2.0 or CRI-O 1.25 or later. Its UID 10001 is then a host range of its own, not the
+same host UID as every other tenant's app. One node that does not qualify keeps every app pod on
+the host's user namespace, since the scheduler may use any node. An app that mounts a store volume
+also keeps it, because the operator cannot tell from the API whether a StorageClass's filesystem
+supports idmapped mounts. There is no switch: the decision is read from the cluster each reconcile
+(`internal/controller/user_namespaces.go`), the same way on every cluster. When it changes (a pool
+added or upgraded), the app's pod template changes and its pods roll. On 2026-11-14 the managing
+cluster's nodes (kubelet 1.35.9, kernel 6.8, containerd 2.3) qualify. A dedicated tenant node pool
+and a sandbox runtime are the rest of #763 and need pools provisioned first.
+
+The selected binding values appear as files at:
 
 ```text
 /var/run/orama/bindings/zetta
