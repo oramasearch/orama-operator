@@ -349,6 +349,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeControlDB(ctx, &lake, ns, labels, backup); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile control db: %w", err)
 	}
+	// The store volume's copy to the backup bucket (operator#738).
+	if err := r.reconcileLakeStoreBackup(ctx, &lake, ns, claimName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile store backup: %w", err)
+	}
 	// The schema follows the image's manifest; while a new image's manifest is being read the
 	// PostgresSchema is left as it is, and so is the Deployment.
 	desiredSchemaVersion := ""

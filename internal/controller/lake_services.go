@@ -709,7 +709,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		}
 	}
 	if backupsSwept {
-		keepBackups := map[string]bool{}
+		keepBackups := map[string]bool{lakeStoreBackupID: true}
 		for _, svc := range present {
 			keepBackups[svc.ID] = true
 		}

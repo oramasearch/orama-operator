@@ -160,7 +160,19 @@ func (r *BackupReconciler) run(ctx context.Context, b *oramav1alpha1.Backup, des
 			r.wait(b, desired, "OperatorImageUnknown", "the operator's own image could not be read from its pod")
 			return ctrl.Result{RequeueAfter: backupWaitPoll}, nil
 		}
-		if err := r.createRun(ctx, b, bucket, image, prefix, jobName); err != nil {
+		claim := ""
+		if volumeBacked(b.Spec.Datastore.Kind) {
+			var waiting string
+			claim, waiting, err = prepareVolumeCopy(ctx, r.Client, r.Scheme, b, jobName)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if waiting != "" {
+				r.wait(b, desired, "PreparingVolume", waiting)
+				return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+			}
+		}
+		if err := r.createRun(ctx, b, bucket, image, prefix, jobName, claim); err != nil {
 			return ctrl.Result{}, err
 		}
 		now := metav1.NewTime(r.now())
@@ -303,7 +315,7 @@ func resolveBackupBucket(ctx context.Context, c client.Client, namespace string,
 }
 
 // createRun writes the bucket credentials copy, the network policies and the Job.
-func (r *BackupReconciler) createRun(ctx context.Context, b *oramav1alpha1.Backup, bucket *corev1.Secret, image, prefix, jobName string) error {
+func (r *BackupReconciler) createRun(ctx context.Context, b *oramav1alpha1.Backup, bucket *corev1.Secret, image, prefix, jobName, claim string) error {
 	labels := map[string]string{
 		"app.kubernetes.io/managed-by": backupOperatorManagedTag,
 		"app.kubernetes.io/component":  "backup",
@@ -319,6 +331,9 @@ func (r *BackupReconciler) createRun(ctx context.Context, b *oramav1alpha1.Backu
 		return err
 	}
 	job := newBackupJob(b, image, prefix, jobName, credentials, pullSecrets, labels)
+	if claim != "" {
+		withVolume(job, claim, volumeSourceMount, true, b.Spec.Datastore.Volume)
+	}
 	if err := controllerutil.SetControllerReference(b, job, r.Scheme); err != nil {
 		return err
 	}
@@ -505,7 +520,13 @@ func readRunReport(ctx context.Context, c client.Client, job *batchv1.Job) (back
 }
 
 func (r *BackupReconciler) cleanupRun(ctx context.Context, b *oramav1alpha1.Backup) error {
-	return cleanupRunResources(ctx, r.Client, b.Namespace, backupJobName(b.Name))
+	if err := cleanupRunResources(ctx, r.Client, b.Namespace, backupJobName(b.Name)); err != nil {
+		return err
+	}
+	if volumeBacked(b.Spec.Datastore.Kind) {
+		return cleanupVolumeCopy(ctx, r.Client, b.Namespace, backupJobName(b.Name))
+	}
+	return nil
 }
 
 // cleanupRunResources deletes what writeRunResources wrote.

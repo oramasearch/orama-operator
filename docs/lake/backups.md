@@ -139,6 +139,11 @@ spec:
   example `service ready; backup late: no backup has succeeded since ...`), and summarised in the
   Lake's condition `BackupsOnSchedule`. A workspace's own Zetta shows only on the condition, since
   its status belongs to the workspace reconciler.
+- **The store volume** gets a schedule `<claim>-backup` in the Lake's namespace (kind `Volume`): a
+  file-level copy, from a CSI snapshot of the claim, to the same bucket, run as lake's user (10001)
+  so every file can be read ([operator#738](https://github.com/oramasearch/orama-operator/issues/738)).
+  This is the copy off the cluster's disks and region that the daily CSI snapshots
+  ([`volume-snapshots.md`](volume-snapshots.md)) are not; the snapshots stay.
 - Deleting a service deletes its schedule and connection Secret. Its `Backup`s are only labelled,
   so they and their objects stay.
 

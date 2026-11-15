@@ -79,6 +79,8 @@ var mechanisms = map[string]Mechanism{
 	"ClickHouse": ClickHouse{},
 	"Valkey":     Valkey{},
 	"Zetta":      Zetta{},
+	// A volume claim, file by file from a CSI snapshot (operator#738).
+	"Volume": Volume{},
 }
 
 // resourceKinds are the kinds the controllers back up by writing their own operator's resources

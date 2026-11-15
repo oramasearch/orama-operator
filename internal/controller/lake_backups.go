@@ -345,3 +345,50 @@ func isBackupDecisionRefusal(schedule *oramav1alpha1.BackupSchedule) bool {
 
 // backupReasonNoBackupByDecision is the Ready reason of a kind with no backup by decision.
 const backupReasonNoBackupByDecision = "NoBackupByDecision"
+
+// lakeStoreBackupID is the service-id label of the store's schedule, which no service row has.
+const lakeStoreBackupID = "lake-store"
+
+// reconcileLakeStoreBackup keeps the BackupSchedule of the Lake's store volume (operator#738): a
+// file-level copy, from a CSI snapshot, to the Lake's backup bucket, as lake's own user so every file
+// can be read. The store's CSI snapshots (lake_volume_snapshots.go) stay as they are; this is the copy
+// off the cluster's disks.
+func (r *LakeReconciler) reconcileLakeStoreBackup(ctx context.Context, lake *oramav1alpha1.Lake, namespace, claim string) error {
+	if claim == "" {
+		return nil
+	}
+	schedule := &oramav1alpha1.BackupSchedule{ObjectMeta: metav1.ObjectMeta{Name: lakeBackupScheduleName(claim), Namespace: namespace}}
+	if lake.Spec.Backups == nil {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(schedule), schedule); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if !metav1.IsControlledBy(schedule, lake) {
+			return nil
+		}
+		return client.IgnoreNotFound(r.Delete(ctx, schedule))
+	}
+	user, group := lakeRunAsUser, lakeRunAsGroup
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, schedule, func() error {
+		if schedule.ResourceVersion != "" && !metav1.IsControlledBy(schedule, lake) {
+			return fmt.Errorf("BackupSchedule %s/%s exists and is not this Lake's", namespace, schedule.Name)
+		}
+		schedule.Labels = map[string]string{serviceLakeLabel: lake.Name, serviceComponentLabel: lakeBackupComponent, serviceIDLabel: lakeStoreBackupID}
+		keep := lake.Spec.Backups.Keep
+		if keep < 1 {
+			keep = backupScheduleDefaultKeep
+		}
+		cron := lake.Spec.Backups.Schedule
+		if cron == "" {
+			cron = backupScheduleDefaultCron
+		}
+		schedule.Spec = oramav1alpha1.BackupScheduleSpec{
+			Datastore: oramav1alpha1.BackupDatastoreRef{Kind: oramav1alpha1.BackupDatastoreVolume, Name: claim,
+				Volume: &oramav1alpha1.BackupVolumeSource{VolumeSnapshotClassName: snapshotDefaultClass, RunAsUser: &user, RunAsGroup: &group}},
+			Bucket:   oramav1alpha1.BackupBucketRef{Kind: "CloudflareR2Bucket", Name: lakeBackupBucketName(lake.Name), Namespace: namespace},
+			Schedule: cron,
+			Keep:     keep,
+		}
+		return controllerutil.SetControllerReference(lake, schedule, r.Scheme)
+	})
+	return err
+}

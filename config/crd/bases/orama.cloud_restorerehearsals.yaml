@@ -108,6 +108,7 @@ spec:
                     - SQLite
                     - DuckDB
                     - Polars
+                    - Volume
                     type: string
                   name:
                     description: |-
@@ -123,6 +124,30 @@ spec:
                       those pods accept the run's pod, and, for a kind whose server writes to the bucket itself
                       (ClickHouse, TiDB, Cassandra), reach public HTTPS on 443 (operator#740). Empty means the
                       kind's default: the labels its operator puts on the pods of a datastore of this name.
+                    type: object
+                  volume:
+                    description: |-
+                      Volume is how a volume-backed datastore (Volume, SQLite, DuckDB, Polars; name is then the
+                      volume claim) is read: the backup takes a CSI VolumeSnapshot of the claim, mounts a claim made
+                      from it read-only in the backup Job, and copies its files to the bucket (operator#738,
+                      operator#737).
+                    properties:
+                      runAsGroup:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      runAsUser:
+                        description: |-
+                          RunAsUser and RunAsGroup are the user and group the copy runs as, so it can read files only
+                          their owner may: the workload's own. Default 65532.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      volumeSnapshotClassName:
+                        description: |-
+                          VolumeSnapshotClassName is the class of the snapshot the copy is made from. Empty means
+                          lake-retain, the Retain class the platform layer installs.
+                        type: string
                     type: object
                 required:
                 - kind

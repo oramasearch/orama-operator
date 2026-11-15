@@ -104,6 +104,9 @@ func (r *BackupRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if driver, ok := restoreDrivers[rs.Spec.Target.Kind]; ok && rs.Spec.Scratch {
 			return ctrl.Result{}, driver.cleanup(ctx, r, &rs)
 		}
+		if volumeBacked(rs.Spec.Target.Kind) && rs.Spec.Scratch {
+			return ctrl.Result{}, deleteRestoreClaim(ctx, r.Client, &rs)
+		}
 		return ctrl.Result{}, nil
 	}
 	desired := *rs.Status.DeepCopy()
@@ -210,6 +213,15 @@ func (r *BackupRestoreReconciler) runJob(ctx context.Context, rs *oramav1alpha1.
 		if image == "" {
 			return runOutcome{message: "the operator's own image could not be read from its pod", requeue: backupWaitPoll}, nil
 		}
+		if volumeBacked(rs.Spec.Target.Kind) {
+			refusal, err := ensureRestoreClaim(ctx, r.Client, rs, b)
+			if err != nil {
+				return runOutcome{}, err
+			}
+			if refusal != "" {
+				return runOutcome{done: true, reason: "Refused", message: refusal}, nil
+			}
+		}
 		labels := map[string]string{
 			"app.kubernetes.io/managed-by": backupOperatorManagedTag,
 			"app.kubernetes.io/component":  "restore",
@@ -234,6 +246,9 @@ func (r *BackupRestoreReconciler) runJob(ctx context.Context, rs *oramav1alpha1.
 			"--timeout", fmt.Sprintf("%ds", backupJobDeadline-60),
 		}
 		created := newBackupSystemJob(rs.Namespace, jobName, image, "restore", args, rs.Spec.Target, credentials, pullSecrets, labels)
+		if volumeBacked(rs.Spec.Target.Kind) {
+			withVolume(created, rs.Spec.Target.Name, volumeTargetMount, false, rs.Spec.Target.Volume)
+		}
 		if err := controllerutil.SetControllerReference(rs, created, r.Scheme); err != nil {
 			return runOutcome{}, err
 		}
