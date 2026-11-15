@@ -272,9 +272,11 @@ rules:
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
   # zetta-tunnel's ingress gateway: its IngressClass, and the address of the Ingresses it serves.
+  # Each OramaCloudV1 stack's own ingress-nginx (operator#573): its IngressClass, deleted with the
+  # stack (oramacloudv1_stack_ingress.go).
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingressclasses"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses/status"]
     verbs: ["get", "update", "patch"]
@@ -345,6 +347,16 @@ rules:
     resources: ["rolebindings"]
     resourceNames: ["karpenter", "karpenter-dns"]
     verbs: ["create", "update", "patch", "delete"]
+  # Each OramaCloudV1 stack's ingress-nginx (operator#573): a RoleBinding in the stack's namespace
+  # (named <cr>-ingress-nginx, so not listable by name; create cannot be limited by name anyway) to
+  # the one ClusterRole below, which the operator may bind and nothing else.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["orama-v1-ingress-nginx"]
+    verbs: ["bind"]
   # Observability (operator#15): each cluster's alert rules and routing, and the scrape
   # configuration of what the operator runs, for the platform's kube-prometheus-stack. The CRDs may
   # be absent until the platform layer is installed; the reconcilers tolerate that.
@@ -384,6 +396,45 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccount.name }}
     namespace: {{ .Release.Namespace }}
+---
+# What each OramaCloudV1 stack's own ingress-nginx may do, granted only inside the stack's namespace
+# by the RoleBinding <cr>-ingress-nginx (operator#573, oramacloudv1_stack_ingress.go). It is
+# upstream's namespace-scoped Role (ingress-nginx chart 4.15.1, rbac.scope): read its namespace's
+# Ingresses, Services, endpoints, Secrets and ConfigMaps, write Ingress status, hold its leader lease.
+# The controller runs with --ingress-class-by-name, so it needs no cluster-wide read.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: orama-v1-ingress-nginx
+  labels: {{- include "operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps", "pods", "secrets", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "update", "create"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
 ---
 # Leader-election Role — the manager runs with --leader-elect, which needs a Lease (+ events) in its
 # own namespace. Namespaced (not cluster-wide) since the lock lives beside the manager.

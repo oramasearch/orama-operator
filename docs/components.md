@@ -25,6 +25,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
 | **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
+| **ingress** | `internal/controller/oramacloudv1_stack_ingress.go` | the stack's own ingress-nginx while it serves a host: IngressClass `orama-v1-<namespace>-<name>`, controller Deployment, LoadBalancer Service, ConfigMap, ServiceAccount and a RoleBinding to the chart's `orama-v1-ingress-nginx`; every v1 Ingress names its class ([#573](https://github.com/oramasearch/orama-operator/issues/573), [`infrastructure/ingress.md`](infrastructure/ingress.md#orama-cloud-v1-each-stack-runs-its-own-ingress-nginx)) | 🟡 **implemented**; fake-client coverage, not yet proven on `v1-dev` |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
 | **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. Four owned **`PostgresSchema`s**, applied in order, give it the dashboard's Drizzle schema 0000 to 0008, its reference rows and the `migration` role's grants; the CNPG managed role `migration` signs in only while an `OramaCloudV1Migration` targets the stack ([#653](https://github.com/oramasearch/orama-operator/issues/653)); + a Job inserting the `c1` `oramacore_clusters` row into an empty table ([#443](https://github.com/oramasearch/orama-operator/issues/443)) ([#378](https://github.com/oramasearch/orama-operator/issues/378); see [controlDB](#controldb-internalcontrollercontroldbgo)) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
 | **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn, or with `applyEveryVersion` no guard) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data). The stack reports its control-DB schemas as one `controldb-schema` component | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
@@ -154,8 +155,9 @@ storage and their StatefulSet, or the control DB's CNPG Cluster (judged by its c
 also restarts analytics-processor, which creates ClickHouse's tables only when it starts. The ordinary steps then create them again on the current
 storage settings. It derives everything from the cluster on every pass and keeps no record, so a volume
 already on its declared storage is left alone and a later change is reconciled the same way.
-index-builder's credentials hash includes `<cr>-controldb-app`, so it rolls when a new control DB brings a new
-owner password, as analytics-processor already did. Field reference:
+index-builder's credentials hash includes the Secret its `DATABASE_URL` comes from (its own role's
+`<cr>-controldb-index-builder`, or `<cr>-controldb-app` where it has no role), so it rolls when that password
+changes, as analytics-processor already did. Field reference:
 [crd-reference.md](crd-reference.md#replacing-a-volume-storageapprovedatadeletion).
 
 ## Cloudflare DNS ownership
@@ -460,7 +462,7 @@ hooks may call an arbitrary public URL, but both IPv4 and IPv6 blocks exclude pr
 metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations. The API, node and
 pod exclusions are discovered from the cluster and retained across transient discovery failure.
 While `engine.writer.host` (primary region) or `engine.reader.host` is published, the sandbox also
-admits ingress-nginx, and nothing else, to that stack's writer
+admits the stack's own ingress-nginx ([#573](https://github.com/oramasearch/orama-operator/issues/573)), and nothing else, to that stack's writer
 pods on 8080 (`allow-writer-ingress-nginx`) or reader pods on the port behind the reader Service: 80
 with Envoy, 8080 without (`allow-reader-ingress-nginx`). The rule goes away with the endpoint.
 The zetta-tunnel gateway is never admitted: Cloud v1 is not served by it (bridge [decision 19](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-17.md#19-the-public-engine-hosts-admit-ingress-nginx-only-never-the-zetta-tunnel-gateway) of
@@ -971,8 +973,9 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   are raw JSON: their merged members are refused by member-cluster admission and the
   set reports those members as `Degraded`.
 - The dashboard never runs `db-migrate`; the operator's `PostgresSchema`s own the schema.
-  Dashboard and index-builder `DATABASE_URL` and analytics-processor render `PG_URI`
-  use `pgURIEnv` to read the CNPG-generated `<cr>-controldb-app` Secret's `uri` key.
+  analytics-processor render `PG_URI` uses `pgURIEnv` to read the CNPG-generated
+  `<cr>-controldb-app` Secret's `uri` key; the dashboard and index-builder read their own
+  roles' Secrets, and the owner's only where they have no role (below).
   Dashboard `POSTGRES_PASSWORD` uses `pgPasswordEnv` for its `password` key.
   The analytics template contains only placeholders; its init container escapes every
   value for sed replacement, preserving `&`, `\` and `#` in credentials and URIs.
@@ -1037,7 +1040,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
 ### The control DB's schema
 
 On a writable control DB (the primary, or any stack without `replicate: true` on a read tier) the
-operator owns five `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
+operator owns six `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
 Each file and its `PostgresSchema` are written only once the one before reports `phase: Applied`
 for its **current** `spec.version` and `metadata.generation`; a stale `Applied` does not release
 the next. A streaming replica receives the primary's schema and owns none.
@@ -1049,6 +1052,7 @@ the next. A streaming replica receives the primary's schema and owns none.
 | 3 | `<cr>-controldb-reference-data` | `reference-data.sql` | none (`applyEveryVersion`) | The reference rows again, with this stack's Stripe prices, re-applied whenever the rows or the prices change |
 | 4 | `<cr>-controldb-migration-grants` | `migration-grants.sql` | none (`applyEveryVersion`) | The `migration` role's grants ([#653](https://github.com/oramasearch/orama-operator/issues/653)): `SELECT, INSERT, UPDATE, DELETE` on every table in `public` and `USAGE, SELECT` on its sequences, now and as default privileges. Its header names the versions of schemas 1 and 2, so a new version of a schema that creates tables re-applies it |
 | 5 | `<cr>-controldb-dashboard-grants` | `dashboard-grants.sql` | none (`applyEveryVersion`) | The `dashboard` role's grants ([#99](https://github.com/oramasearch/orama-operator/issues/99)): `CONNECT, TEMPORARY` on the database (the `projects` delete trigger creates a temporary table), `SELECT, INSERT, UPDATE, DELETE` on every table in `public` except the rows the operator owns (`subscription_plans`, `stripe_addon_prices`, `llms`, `oramacore_clusters`: `SELECT` only), and `USAGE, SELECT` on its sequences, now and as default privileges. No DDL, no `TRUNCATE`, no other schema. Same header rule as schema 4 |
+| 6 | `<cr>-controldb-index-builder-grants` | `index-builder-grants.sql` | none (`applyEveryVersion`) | The `index_builder` role ([#822](https://github.com/oramasearch/orama-operator/issues/822)) holds **no** privilege: every privilege on the tables and sequences of `public` and `CREATE` on the schema is revoked, now and as default privileges. It grants nothing; a `REVOKE` from a missing role fails the Job, so `Applied` also proves CNPG created the role. Same header rule as schema 4 |
 
 - **Why a second schema for 0008.** A database built from the 0000 to 0007 file already has
   `crawler_configs`, so the first schema's Job skips it; 0008 appended there would never reach
@@ -1110,7 +1114,7 @@ the next. A streaming replica receives the primary's schema and owns none.
   running dashboard keeps the owner's credentials until its role can sign in, and then rolls once.
   A read-tier replica's dashboard keeps the owner's credentials until replica credentials are wired.
   The owner (`<cr>-controldb-app`) is left to the `PostgresSchema` Jobs, the cluster-row Job and
-  pgAdmin; index-builder and analytics-processor still use it
+  pgAdmin; analytics-processor still uses it
   ([#99](https://github.com/oramasearch/orama-operator/issues/99) follow-ups below).
   `TestControlDBSchemasAgainstPostgres` signs in as the role and checks it can read every table and
   do the dashboard's writes, including the delete triggers, and is refused DDL, `TRUNCATE`, writes
@@ -1119,6 +1123,23 @@ the next. A streaming replica receives the primary's schema and owns none.
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
 CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
+
+- **The index-builder role** ([#822](https://github.com/oramasearch/orama-operator/issues/822),
+  `controldb_index_builder_role.go`). index-builder's only Postgres client is Prisma, for large-index
+  builds, against four tables of its own schema (`indexes_forced_to`, `google_cloud_clusters`,
+  `google_cloud_clusters_machines`, `google_cloud_clusters_deployments`) that are not in the control DB
+  and that nothing migrates. Large-index builds are not carried over to Prod 2 (decided under Steve's
+  2026-11-14 delegation, the recommendation on #822). So `spec.managed.roles` declares
+  `index_builder`, `login: true`, no other attribute, `connectionLimit: 10`, password
+  `<cr>-controldb-index-builder` (same shape as the dashboard's), and its grants (schema 6) leave it
+  nothing beyond what `PUBLIC` holds (`CONNECT`, `TEMPORARY`, `USAGE` on `public`). index-builder's
+  `DATABASE_URL` comes from that Secret; the Deployment is not written until schema 6 reports its
+  current version `Applied`, so a running one keeps the owner's credential until then and rolls once.
+  A large-index build fails on a permission error instead of a missing table, and the owner
+  credential is no longer in the pod. A read-tier replica keeps the owner's credential, as the
+  dashboard does. If large-index builds are carried over later, their tables go in a schema of
+  their own, `index_builder`, and the role gets `SELECT` on the first three and `SELECT, INSERT,
+  UPDATE` on `google_cloud_clusters_deployments`.
 
 > **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
 > exposing storage size + the DB name as CR fields; a Service alias the app can use.

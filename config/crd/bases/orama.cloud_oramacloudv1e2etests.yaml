@@ -84,13 +84,16 @@ spec:
               image:
                 default: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
                 description: |-
-                  Image is the RUNNER base image for the embedded functional e2e suite
-                  (assets/e2e-functional.sh). It must provide `sh`; the Job installs curl + jq into it
-                  before running the suite. Default is a pinned alpine (has apk). Override only with
-                  another curl/jq-capable base.
+                  Image is the RUNNER image for the embedded functional e2e suite
+                  (assets/e2e-functional.sh). The default (empty, or the pinned alpine default) is the
+                  operator's runner: the prebuilt oramasearch/e2e-runner with curl + jq once it is pinned
+                  (operator#1158), until then the alpine into which the Job installs them. Another image
+                  must provide `sh`, curl and jq; nothing is installed into it once the prebuilt runner is pinned.
                 type: string
               pullSecretName:
-                description: PullSecretName lets the Job pull a private test image.
+                description: |-
+                  PullSecretName lets the Job pull a private test image.
+                  Empty, the Job uses the target stack's spec.pullSecretName.
                 type: string
               targetRef:
                 description: |-

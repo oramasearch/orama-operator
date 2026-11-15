@@ -311,7 +311,7 @@ func TestCloudV1IngressesRequestOriginTLS(t *testing.T) {
 			if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != b.host {
 				t.Errorf("rules = %+v, want the component's host only", ing.Spec.Rules)
 			}
-			if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != defaultIngressClassName {
+			if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != stackIngressClassName(oc) {
 				t.Errorf("class = %v, want it left as the component renders it", ing.Spec.IngressClassName)
 			}
 

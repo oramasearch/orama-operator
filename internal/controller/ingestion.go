@@ -35,16 +35,24 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 		if err := r.checkKeyRefs(ctx, oc, refs); err != nil {
 			return err
 		}
-		if err := r.reconcileApp(ctx, oc, appDef{
-			component: "index-builder",
-			image:     componentImage(oc, "index-builder", "index-builder"),
-			port:      8080,
-			env:       append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
-			// controlDBAppSecret is its DATABASE_URL (pgURIEnv): a new control DB has a new password.
-			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), typesenseAuthSecretName(oc), decrypterAuthSecretName(oc), indexBuilderAuthSecretName(oc), deploymentAPISecretName(oc), discoAuthSecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
-			resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
-		}); err != nil {
+		// index-builder signs in to the control DB as its own role (#822): until that role's grants
+		// apply, the Deployment is left as it is.
+		ready, err := r.indexBuilderRoleReady(ctx, oc)
+		if err != nil {
 			return err
+		}
+		if ready {
+			if err := r.reconcileApp(ctx, oc, appDef{
+				component: "index-builder",
+				image:     componentImage(oc, "index-builder", "index-builder"),
+				port:      8080,
+				env:       append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
+				// indexBuilderDBSecret holds its DATABASE_URL (indexBuilderDBEnv): a new password rolls it.
+				credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), typesenseAuthSecretName(oc), decrypterAuthSecretName(oc), indexBuilderAuthSecretName(oc), deploymentAPISecretName(oc), discoAuthSecretName(oc), indexBuilderDBSecret(oc)}, keyRefSecrets(refs)...),
+				resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -162,7 +170,9 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		{Name: "APIFY_ACT_ENDPOINT", Value: "https://api.apify.com/v2/acts/placeholder/runs"},
 		{Name: "APIFY_DATASET_ENDPOINT", Value: "https://api.apify.com/v2/datasets/placeholder/items"},
 		{Name: "REDIS_URL", Value: redisURL(oc)},
-		pgURIEnv(oc, "DATABASE_URL"), // CNPG-generated URI (real password), not a placeholder (#32)
+		// Its own role's URI (#822), which holds no privilege in the control DB; the owner's where it
+		// has no role (indexBuilderDBEnv). A real URI, never a placeholder (#32).
+		indexBuilderDBEnv(oc),
 		{Name: "DISCO_URL", Value: "http://" + n + "-disco:8080"},
 		{Name: "DISCO_PEERS", Value: ""},
 		secretKeyEnv("DISCO_SECRET_KEY", discoAuthSecretName(oc), "DISCO_SECRET"),

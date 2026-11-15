@@ -10,6 +10,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -38,10 +39,39 @@ const (
 	// e2eComponent labels the runner's pod as a component of the target stack, so the stack's
 	// network sandbox applies default-deny to it and admits it through its e2e allowances.
 	e2eComponent = "e2e"
-	// e2eRunnerImage is the default runner: a minimal base that provides sh; the Job installs
-	// curl + jq into it and runs the mounted functional suite. Pinned for determinism.
+	// e2eRunnerImage is the legacy runner: a minimal base that provides sh, into which the Job
+	// installs curl + jq at start. It is also the CRD's default for spec.image. Pinned for
+	// determinism; used only while e2eRunnerPrebuiltImage is empty.
 	e2eRunnerImage = "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+	// e2eRunnerPrebuiltImage is the runner with curl and jq already installed (hack/e2e-runner,
+	// operator#1158), the private oramasearch/e2e-runner pinned by digest. Empty until that image
+	// is built and pushed; once set, the Job runs it by default and installs nothing at start.
+	e2eRunnerPrebuiltImage = ""
 )
+
+// e2eRunnerLegacyImages are the spec.image values that mean "the operator's runner": empty, the
+// short alpine name older tests used, and the CRD default that existing objects carry.
+var e2eRunnerLegacyImages = []string{"", "alpine:3.20", e2eRunnerImage}
+
+// e2eRunner is the runner image and command for a test whose spec.image is image, given the
+// prebuilt runner (e2eRunnerPrebuiltImage). With a prebuilt runner, the operator's runner is that
+// image and no image gets a package installed at start: a custom image must contain curl and jq.
+// Without one, the legacy alpine installs curl and jq first, as before #1158.
+func e2eRunner(image, prebuilt string) (string, []string) {
+	runner := image
+	if slices.Contains(e2eRunnerLegacyImages, image) {
+		runner = e2eRunnerImage
+		if prebuilt != "" {
+			runner = prebuilt
+		}
+	}
+	if prebuilt != "" {
+		return runner, []string{"sh", "-c",
+			"command -v curl >/dev/null && command -v jq >/dev/null || { echo 'e2e runner image lacks curl or jq' >&2; exit 2; }; exec sh " + e2eScriptPath}
+	}
+	return runner, []string{"sh", "-c",
+		"apk add --no-cache curl jq >/dev/null 2>&1 || apk add --no-cache curl jq; exec sh " + e2eScriptPath}
+}
 
 // e2eFunctionalScript is the comprehensive functional suite (curl + jq) that exercises every
 // critical OramaCore function in multiple variations against a live OramaCloudV1. It is embedded
@@ -193,12 +223,9 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// The runner base image provides `sh`; the Job installs curl + jq and runs the mounted suite.
-	// spec.Image can override it (e.g. a pre-baked runner) but must contain sh + a package manager.
-	runner := t.Spec.Image
-	if runner == "" || runner == "alpine:3.20" {
-		runner = e2eRunnerImage
-	}
+	// The runner provides sh, curl and jq (e2eRunner): the prebuilt oramasearch/e2e-runner once it
+	// is pinned, until then the legacy alpine that installs them at start (#1158).
+	runner, runnerCommand := e2eRunner(t.Spec.Image, e2eRunnerPrebuiltImage)
 	cmName := t.Name + "-e2e-config"
 	jobName := t.Name + "-e2e"
 
@@ -258,14 +285,18 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 
-	// 2. The Job: a single runner container that installs curl+jq and runs the embedded
+	// 2. The Job: a single runner container with curl+jq that runs the embedded
 	//    functional suite (which self-bootstraps a clean-slate collection/index before asserting).
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, job, func() error {
 		// Job spec is immutable after creation — only populate it on create.
 		if !exists {
+			// The test's pull secret, else the target stack's, which pulls its private images and
+			// so the private prebuilt runner too.
 			var pull []corev1.LocalObjectReference
 			if t.Spec.PullSecretName != "" {
 				pull = []corev1.LocalObjectReference{{Name: t.Spec.PullSecretName}}
+			} else if target != nil && target.Spec.PullSecretName != "" {
+				pull = []corev1.LocalObjectReference{{Name: target.Spec.PullSecretName}}
 			}
 			configVol := corev1.VolumeMount{Name: "e2e-config", MountPath: "/etc/e2e", ReadOnly: true}
 			job.Labels = map[string]string{"app.kubernetes.io/managed-by": "orama-cloud-v1-operator", "orama.cloud/e2e": t.Name}
@@ -285,10 +316,9 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 						Containers: []corev1.Container{{
 							Name:  "e2e",
 							Image: runner,
-							// Install curl + jq into the runner, then exec the mounted suite. The
-							// master key (admin + analytics assertions) comes from the target's reference.
-							Command: []string{"sh", "-c",
-								"apk add --no-cache curl jq >/dev/null 2>&1 || apk add --no-cache curl jq; exec sh " + e2eScriptPath},
+							// Exec the mounted suite (e2eRunner). The master key (admin + analytics
+							// assertions) comes from the target's reference.
+							Command: runnerCommand,
 							Env: append([]corev1.EnvVar{
 								{Name: "CONFIG_PATH", Value: e2eConfigPath},
 								masterKey,

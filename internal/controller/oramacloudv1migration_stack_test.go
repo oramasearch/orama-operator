@@ -209,8 +209,8 @@ func TestControlDBMigrationRoleLoginFollowsMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 		roles, _, err := unstructured.NestedSlice(cluster.Object, "spec", "managed", "roles")
-		// The migration role and the dashboard's (#99, controldb_roles_test.go).
-		if err != nil || len(roles) != 2 || roles[1].(map[string]interface{})["name"] != dashboardRole {
+		// The migration role, the dashboard's (#99) and index-builder's (#822, controldb_roles_test.go).
+		if err != nil || len(roles) != 3 || roles[1].(map[string]interface{})["name"] != dashboardRole {
 			t.Fatalf("managed roles = %v (%v)", roles, err)
 		}
 		return roles[0].(map[string]interface{})

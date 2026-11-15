@@ -218,7 +218,8 @@ func deleteIfExists(ctx context.Context, c client.Client, obj client.Object) err
 // ingressClassName is the IngressClass the operator binds a Cloud v1 stack's Ingresses to:
 // spec.components.ingressClassName, defaulting to the helmfile-installed ingress-nginx.
 func ingressClassName(oc *oramav1alpha1.OramaCloudV1) string {
-	return ingressClassOrDefault(oc.Spec.Components.IngressClassName)
+	// The stack's own ingress-nginx (operator#573); spec.components.ingressClassName is ignored.
+	return stackIngressClassName(oc)
 }
 
 // defaultIngressClassName is ingress-nginx's class, every resource's default until its cluster's

@@ -87,8 +87,8 @@ func TestDashboardManagedRoleAndSecret(t *testing.T) {
 		"login": true, "superuser": false, "createdb": false, "createrole": false, "replication": false, "bypassrls": false,
 		"inherit": true, "connectionLimit": int64(40), "passwordSecret": map[string]interface{}{"name": "v1-controldb-dashboard"},
 	}
-	if len(roles) != 2 || !reflect.DeepEqual(roles[1], want) {
-		t.Fatalf("managed roles = %v, want the migration role then %v", roles, want)
+	if len(roles) != 3 || !reflect.DeepEqual(roles[1], want) {
+		t.Fatalf("managed roles = %v, want the migration role then %v, then index-builder's", roles, want)
 	}
 	sec := &corev1.Secret{}
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: "v1-controldb-dashboard"}, sec); err != nil {
@@ -109,7 +109,7 @@ func TestDashboardManagedRoleAndSecret(t *testing.T) {
 	}
 }
 
-// The dashboard's grants are the last control DB schema: rows of public, read-only on the rows the
+// The dashboard's grants follow the migration grants: rows of public, read-only on the rows the
 // operator owns, the temporary table its delete trigger needs, never DDL, TRUNCATE or another schema,
 // applied again whenever a schema that creates tables changes and never for a Stripe price.
 func TestDashboardGrantsSQL(t *testing.T) {
@@ -118,7 +118,7 @@ func TestDashboardGrantsSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := schemas[len(schemas)-1]
+	last := schemas[4]
 	if last.suffix != dashboardGrantsSchemaSuffix || !last.everyVersion || last.key != "dashboard-grants.sql" || last.guard != "crawler_configs" {
 		t.Fatalf("last schema = %+v", last)
 	}
