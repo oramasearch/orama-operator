@@ -87,6 +87,11 @@ A `PeerLink` on the managing cluster:
 3. writes each end's credentials Secret on that end's cluster (through the `KubernetesCluster`'s
    kubeconfig; an empty `clusterRef` is the managing cluster itself), with the other end's identity
    and address. A `PeerConnection` with no `spec.remote` uses that address.
+   **A tenant-named remote that is an address must be public** (orama-operator#783): `spec.remote`
+   inside a private, CGNAT, ULA, loopback, link-local (metadata) or reserved range is refused, and an
+   address literal is rendered through the same exceptions as a CIDR egress rule, so the gateway can
+   never be pointed at a node's kubelet or the API server. The PeerLink's own remote, written by the
+   managing cluster, is not restricted.
 
 Deleting the `PeerLink` deletes both Secrets. A Secret of the same name that the `PeerLink` did not
 write is never overwritten. Each end watches Secret changes and withdraws its gateway when its

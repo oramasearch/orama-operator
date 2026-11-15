@@ -249,6 +249,15 @@ func validatePeerRemote(remote string) string {
 	if err != nil || number < 1 || number > 65535 {
 		return "remote port must be between 1 and 65535"
 	}
+	// orama-operator#783: a tenant-named address must be a public one. Private, CGNAT, ULA,
+	// loopback, link-local (metadata) and reserved addresses are what no egress rule may reach.
+	if address, err := netip.ParseAddr(host); err == nil {
+		for _, value := range workspacePublicIPExceptions {
+			if excluded, err := netip.ParsePrefix(value); err == nil && excluded.Contains(address.Unmap()) {
+				return fmt.Sprintf("remote %s is inside %s, which a peer remote may not name", address, excluded)
+			}
+		}
+	}
 	return ""
 }
 
@@ -537,7 +546,9 @@ func (r *PeerConnectionReconciler) reconcilePresent(ctx context.Context, peer *o
 		return oramav1alpha1.PeerConnectionStatus{}, err
 	}
 	imports := peerImportListeners(peer)
-	allowances, err := peerAllowances(ctx, r.Client, peer, remote, imports, exports)
+	// Only a tenant-named remote (spec.remote) is held to public addresses; the PeerLink's remote is
+	// written by the managing cluster (orama-operator#783).
+	allowances, err := peerAllowances(ctx, r.Client, peer, remote, peer.Spec.Remote == "", imports, exports)
 	if err != nil {
 		return oramav1alpha1.PeerConnectionStatus{}, err
 	}
@@ -636,6 +647,7 @@ func peerAllowances(
 	reader client.Reader,
 	peer *oramav1alpha1.PeerConnection,
 	remote string,
+	remoteFromCredentials bool,
 	imports []peerImportListener,
 	exports []peerExportTarget,
 ) ([]oramav1alpha1.NetworkSandboxPolicy, error) {
@@ -650,7 +662,21 @@ func peerAllowances(
 		if address.Is6() {
 			bits = 128
 		}
-		remotePeers = []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: netip.PrefixFrom(address, bits).String()}}}
+		literal := netip.PrefixFrom(address, bits)
+		if remoteFromCredentials {
+			remotePeers = []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: literal.String()}}}
+		} else {
+			// A tenant-named address goes through the same exceptions as a CIDR egress rule: never a
+			// private, reserved or cluster address, such as a node's kubelet or the API server.
+			cluster, err := clusterAddressExceptions(ctx, reader)
+			if err != nil {
+				return nil, err
+			}
+			remotePeers, err = cidrRulePeers(literal, cluster)
+			if err != nil {
+				return nil, fmt.Errorf("peer %s: %w", peer.Spec.PeerID, err)
+			}
+		}
 	} else {
 		var err error
 		remotePeers, err = publicInternetPeers(ctx, reader)
