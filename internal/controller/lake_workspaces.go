@@ -142,6 +142,11 @@ func (r *LakeWorkspacesReconciler) Reconcile(ctx context.Context, request ctrl.R
 	if schema.phase != "Ready" {
 		return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil
 	}
+	// Tenant code runs only where the cluster enforces network policy (operator#699).
+	if message := tenantWorkloadsRefused(ctx, r.apiReader(), &lake); message != "" {
+		logf.FromContext(ctx).Info("workspaces not synchronized: " + message)
+		return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil
+	}
 	changing := r.pollLakeWorkspaces(ctx, &lake)
 	if changing {
 		return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil

@@ -100,6 +100,11 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		message := fmt.Sprintf("LakeEnvironment must be in Lake namespace %q", lakeNamespace)
 		return r.finishEnvironmentStatus(ctx, &environment, nil, "", pendingDomainStatuses(&environment, message), oramav1alpha1.LakeEnvironmentPhaseDegraded, "WrongNamespace", message)
 	}
+	// Tenant code runs only where the cluster enforces network policy (operator#699). Where it does
+	// not, a running workload is left as it is rather than changed or deleted.
+	if message := tenantWorkloadsRefused(ctx, r.reader(), &lake); message != "" {
+		return r.finishEnvironmentStatus(ctx, &environment, nil, "", pendingDomainStatuses(&environment, message), oramav1alpha1.LakeEnvironmentPhaseDegraded, reasonTenantNetworkPolicyNotEnforced, message)
+	}
 
 	workloadNamespace := lakeEnvironmentNamespace(&environment)
 	if err := r.reconcileEnvironmentNamespace(ctx, &environment, workloadNamespace); err != nil {

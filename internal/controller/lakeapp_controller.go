@@ -130,6 +130,11 @@ func (r *LakeAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if reason, message := validateLakeApp(&lake, &app); reason != "" {
 		return r.finishLakeAppStatus(ctx, &app, nil, lakeAppHost(&lake, &app), oramav1alpha1.LakeAppPhaseDegraded, false, reason, message)
 	}
+	// Tenant code runs only where the cluster enforces network policy (operator#699). Where it does
+	// not, a running workload is left as it is rather than changed or deleted.
+	if message := tenantWorkloadsRefused(ctx, r.reader(), &lake); message != "" {
+		return r.finishLakeAppStatus(ctx, &app, nil, lakeAppHost(&lake, &app), oramav1alpha1.LakeAppPhaseDegraded, false, reasonTenantNetworkPolicyNotEnforced, message)
+	}
 
 	workloadNamespace := lakeAppNamespace(&app)
 	if err := r.reconcileLakeAppNamespace(ctx, &app, workloadNamespace); err != nil {

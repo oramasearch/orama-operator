@@ -69,6 +69,10 @@ type LakeReconciler struct {
 	ServiceEvents <-chan event.GenericEvent
 	// APIReader lists lake pods without a cache (no cluster-wide pod informer). Nil uses Client.
 	APIReader client.Reader
+	// NetworkPolicyCheck reads whether the cluster enforces network policy (operator#699,
+	// lake_network_policy_enforcement.go). Nil is the Cilium check every cluster runs; it is not a
+	// switch, only the point where a test supplies a fake result.
+	NetworkPolicyCheck networkPolicyEnforcementCheck
 	// workloadResources throttles the workload resources pass per Lake (lake#643), and the app
 	// transfer pass with it (lake#661).
 	workloadResources workloadResourcesClock
@@ -375,8 +379,18 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Lake-owned control rows (connections, services, stores, agents, builds): best-effort, never fail the Lake.
 	// The tables exist only once the schema has applied, so the poll waits for it.
+	// Tenant code (workspace namespaces, services, stores, agents, builds, methodology, apps and
+	// environments, all made from those rows) runs only where the cluster enforces network policy
+	// (operator#699). Where it does not, the rows are not synchronized: nothing new starts and
+	// nothing running is changed, and the Lake reports Degraded with the reason. What already runs
+	// is left in place rather than deleted, so a transient failed read never removes tenant data.
+	networkPolicy := r.lakeNetworkPolicyEnforcement(ctx, &lake)
+	if !networkPolicy.Enforced {
+		log.Info("tenant workloads refused: network policy is not enforced",
+			"reason", networkPolicy.Condition.Reason, "message", networkPolicy.Condition.Message)
+	}
 	controlRowsChanging := false
-	if lakeControlRowsEnabled(&lake) && schemaReady {
+	if lakeControlRowsEnabled(&lake) && schemaReady && networkPolicy.Enforced {
 		controlRowsChanging = r.reconcileLakeServices(ctx, &lake, ns, labels)
 	}
 
@@ -431,6 +445,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if replicasRefused != "" {
 		readiness = append(readiness, lakeComponentReadiness{"Degraded", "ReplicasRefused", replicasRefused})
 	}
+	if !networkPolicy.Enforced {
+		readiness = append(readiness, lakeComponentReadiness{"Degraded", networkPolicy.Condition.Reason, networkPolicy.Condition.Message})
+	}
 	phase, readyCondition := lakeAggregateReadiness(&lake, readiness)
 	dataServices, dataServicesSummary := lakeDataServiceStatus(&lake)
 	desiredConditions := lake.Status.Conditions
@@ -445,6 +462,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		conditionsChanged = true
 	}
 	if apimeta.SetStatusCondition(&desiredConditions, lakeFeaturesCondition(&lake)) {
+		conditionsChanged = true
+	}
+	if apimeta.SetStatusCondition(&desiredConditions, networkPolicy.Condition) {
 		conditionsChanged = true
 	}
 	// ClerkReady exists only on a Lake with spec.clerk.

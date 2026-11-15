@@ -372,6 +372,16 @@ observations. `Ready=True` (`LakeReady`) requires all of the following:
 - When Zetta is enabled, the owned cluster reports `Ready` with every desired node ready.
 - Enabled backup configuration is valid. Backup completion remains a separate `BackupReady`
   observation.
+- The cluster enforces network policy (`NetworkPolicyEnforced=True`, operator#699): the
+  `ciliumnetworkpolicies.cilium.io` CRD is installed and the Cilium agent DaemonSet
+  `kube-system/cilium` has at least one agent ready. Where it does not, the Lake is `Degraded`
+  and **runs no new tenant code**: its control rows are not synchronized, so no workspace
+  namespace, service, store, agent, build or methodology workload is created or changed, and its
+  `LakeApp` and `LakeEnvironment` resources report `NetworkPolicyNotEnforced`. What already runs is
+  left in place rather than deleted, so a failed read never removes tenant data. Lake itself, its
+  Postgres and its Zetta keep running: they are Orama's code, and the Lake must stay up to report
+  the reason. There is no switch; see
+  [`../infrastructure/README.md`](../infrastructure/README.md#every-cluster-enforces-network-policy-with-cilium-operator699).
 
 An unfinished rollout or dependency reports `Progressing` with an explanatory `Ready=False`
 condition. Schema failure, Deployment replica failure or an exceeded progress deadline, a degraded
