@@ -383,7 +383,8 @@ never changed or deleted. This path is independent of `previewWildcard` and supp
 when the Lake itself has no public ingress.
 
 `auth: lake` is the default. It adds nginx's `auth-url` annotation pointing at
-`http://lake-<lake>.<namespace>.svc.cluster.local:80[/w/<workspace id>]/v1/apps/auth`. The fully
+`http://lake-<lake>.<namespace>.svc.cluster.local:8080[/w/<workspace id>]/v1/apps/auth`, Lake's
+proxy port, where lake believes the visitor address ingress-nginx reports (lake#1132). The fully
 qualified Service name is required by ingress-nginx's resolver. Lake verifies the browser's session
 and space membership before the request reaches the app. `auth: public` omits the annotation.
 Lake's `apps` table stores public access as `none`; the row mapping reads it as `public`.

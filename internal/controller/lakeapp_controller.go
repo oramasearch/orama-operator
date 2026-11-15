@@ -1634,7 +1634,7 @@ func lakeAppAuthURL(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) string
 		"http://lake-%s.%s.svc.cluster.local:%d",
 		lake.Name,
 		lakeNamespace(lake),
-		lakeServicePort,
+		lakeProxyServicePort,
 	)
 	if app.Spec.Sync != nil {
 		baseURL += "/w/" + app.Spec.Sync.WorkspaceID

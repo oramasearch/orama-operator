@@ -233,19 +233,31 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    after a node move when the volume root is already correct. Operator-created claims are never
    replaced, resized, or deleted because the store spec changes.
 6. **Deployment + disruption budget** `lake-<name>` — `spec.image` run as built, `spec.args`, port
-   `spec.port` (default 4900), readiness `GET /readyz`, liveness `GET /healthz`,
+   `spec.port` (default 4900) and the proxy port above it (see item 7), readiness `GET /readyz`, liveness `GET /healthz`,
    `spec.replicas`, resource defaults or `spec.resources`, `imagePullSecrets` from
    `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store`,
    `LAKE_APPS_WILDCARD`, `LAKE_APPS_RUNTIME_IMAGE`, `LAKE_METHODOLOGY_RUNTIME_IMAGE`,
    `LAKE_MCP_RUNNER_IMAGE` and the agents' variables (including `LAKE_INTERNAL_URL`, lake's
    in-cluster address) on every Lake, `LAKE_OPERATOR_ZETTA_URL` and `LAKE_OPERATOR_ZETTA_TOKEN` (item 8),
-   `LAKE_PUBLIC_HOST` from `spec.host` when `spec.env` does not state it, plus `spec.env` entries whose
+   `LAKE_PUBLIC_HOST` from `spec.host` when `spec.env` does not state it, `LAKE_PROXY_PORT` and
+   `LAKE_TRUSTED_PROXY_CIDRS=none` (item 7, never from `spec.env`), plus `spec.env` entries whose
    names do not conflict with operator-owned variables. Pods run as
    uid/gid 10001 with the restricted container baseline. A spec change rolls the Deployment once;
    how the pods are replaced depends on the store's access modes, see [Rollouts](#rollouts). Replicated Deployments get a
    `maxUnavailable: 1` PodDisruptionBudget and the default soft hostname spread, or
    `spec.topologySpreadConstraints` when supplied. Scaling to one replica removes the budget.
-7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
+7. **Service** `lake-<name>` — ClusterIP `http` 80 → `spec.port`, and `proxy` 8080 → lake's proxy
+   listener, `spec.port` + 1 (4901 by default; `spec.port` − 1 at 65535), opened by
+   `LAKE_PROXY_PORT` ([lake#1132](https://github.com/oramasearch/lake/issues/1132),
+   `internal/controller/lake_proxy_listener.go`). Lake believes the client address in `X-Real-IP`
+   only on the proxy port, and with `LAKE_TRUSTED_PROXY_CIDRS=none` from no peer on the main one.
+   The Lake Ingress (item 12), the custom-domain Ingress ([`custom-domains.md`](custom-domains.md))
+   and LakeApp auth subrequests use `proxy`, and zetta-tunnel's ingress
+   gateway follows the Ingress; only ingress-nginx and the gateway may reach it
+   (`allow-ingress-nginx`, [network sandbox](../infrastructure/network-sandbox.md)). Every in-cluster
+   caller (`LAKE_INTERNAL_URL`, agents, workspaces, builds, methodologies, e2e) uses `http`. **The lake
+   image with the listener must run on every Lake before an operator release with this rolls**: an
+   older image opens no proxy port, and the Ingress would have nothing to send to.
 8. **Zetta data plane** — owned `OramaZettaCluster` `lake-<name>-zetta` in the Lake namespace,
    configured from `spec.zetta` (enabled, image, replicas, per-node storage, env, and reachability).
    It inherits `spec.pullSecretName` and has operator-schema provisioning **on**: it is also the

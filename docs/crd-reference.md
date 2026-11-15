@@ -1700,7 +1700,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.namespace` | Namespace the workloads land in (default `lake-dev`). Created if missing; never deleted by the operator. |
 | `spec.image` | The lake image, run as built. **Required, no default**; the sample uses the private `oramasearch/lake:v1-sandbox`. |
 | `spec.pullSecretName` | imagePullSecret attached to the pods, for a private `spec.image`. Must exist in `spec.namespace`. |
-| `spec.port` | Container port the Service (port 80) and probes target. Default 4900, lake's `--listen` default. Readiness is `GET /readyz`; liveness is `GET /healthz`. |
+| `spec.port` | Container port the Service (port 80) and probes target. Default 4900, lake's `--listen` default. Readiness is `GET /readyz`; liveness is `GET /healthz`. The port above it (below it at 65535) is lake's proxy listener (`LAKE_PROXY_PORT`, Service port `proxy` 8080, lake#1132), which the Ingress uses; keep it free. |
 | `spec.args` | Args for the image's entrypoint; empty runs the image as built (lake listens on `0.0.0.0:4900`). |
 | `spec.replicas` | Deployment replicas (default 1). |
 | `spec.resources` | Complete Kubernetes container resource override. Default requests: CPU `50m`, memory `128Mi`; default limit: memory `512Mi`, with no CPU limit. |

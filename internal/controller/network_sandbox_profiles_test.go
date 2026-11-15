@@ -150,6 +150,43 @@ func TestLakeNetworkSandboxListsOnlyJustifiedNarrowPaths(t *testing.T) {
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: lake.Spec.Namespace, Name: networkSandboxDefaultDenyName}, &deny); err != nil {
 		t.Fatalf("default deny was not rendered: %v", err)
 	}
+	assertOnlyTheProxiesReachLakeProxyPort(t, lake, &sandbox)
+}
+
+// lake#1132: lake believes X-Real-IP on its proxy port, so only ingress-nginx and zetta-tunnel's
+// ingress gateway may reach it. No other allowance (operator, agents, workspaces, builds,
+// methodologies, e2e) names that port, and the default deny drops everything else.
+func assertOnlyTheProxiesReachLakeProxyPort(t *testing.T, lake *oramav1alpha1.Lake, sandbox *oramav1alpha1.NetworkSandbox) {
+	t.Helper()
+	proxyPort := lakeProxyContainerPort(lake)
+	if proxyPort == int32(lakeContainerPort(lake)) {
+		t.Fatalf("proxy port %d is the main port", proxyPort)
+	}
+	wantPeers := []networkingv1.NetworkPolicyPeer{
+		namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}),
+		zettaTunnelIngressPeer(),
+	}
+	admitted := false
+	for _, allowance := range sandbox.Spec.Policies {
+		for _, rule := range allowance.Spec.Ingress {
+			for _, port := range rule.Ports {
+				if port.Port == nil || port.Port.IntVal != proxyPort {
+					continue
+				}
+				if allowance.Name != "allow-ingress-nginx" {
+					t.Errorf("%s admits Lake's proxy port %d", allowance.Name, proxyPort)
+					continue
+				}
+				if !reflect.DeepEqual(rule.From, wantPeers) {
+					t.Errorf("Lake's proxy port admits %+v, want only ingress-nginx and the tunnel gateway", rule.From)
+				}
+				admitted = true
+			}
+		}
+	}
+	if !admitted {
+		t.Errorf("no allowance admits ingress-nginx to Lake's proxy port %d", proxyPort)
+	}
 }
 
 func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) {

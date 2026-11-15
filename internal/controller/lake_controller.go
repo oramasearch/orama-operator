@@ -327,9 +327,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 		svc.Labels = labels
 		svc.Spec.Selector = labels
-		svc.Spec.Ports = []corev1.ServicePort{{
-			Name: "http", Port: lakeServicePort, TargetPort: intstr.FromInt(int(port)),
-		}}
+		// The proxy port (lake#1132) is the Ingress backend; every in-cluster caller uses http.
+		svc.Spec.Ports = []corev1.ServicePort{
+			{Name: "http", Port: lakeServicePort, TargetPort: intstr.FromInt(int(port))},
+			{Name: lakeProxyPortName, Port: lakeProxyServicePort, TargetPort: intstr.FromInt(int(lakeProxyContainerPort(&lake)))},
+		}
 		return controllerutil.SetControllerReference(&lake, svc, r.Scheme)
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile service: %w", err)
@@ -759,10 +761,13 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 			TopologySpreadConstraints:     lakeTopologySpreadConstraints(lake, replicas, labels),
 			Affinity:                      affinity,
 			Containers: []corev1.Container{{
-				Name:            "lake",
-				Image:           image,
-				Args:            lake.Spec.Args,
-				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
+				Name:  "lake",
+				Image: image,
+				Args:  lake.Spec.Args,
+				Ports: []corev1.ContainerPort{
+					{Name: "http", ContainerPort: port},
+					{Name: lakeProxyPortName, ContainerPort: lakeProxyContainerPort(lake)},
+				},
 				Env:             slices.Concat(lakeEnv(lake, sealing), lakeClerkEnv(lake, clerk), lakePaymentsEnv(lake, payments)),
 				Resources:       *resources,
 				SecurityContext: containerSecurityContext,
@@ -1236,6 +1241,8 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		"LAKE_SERVICE_DIR":               {},
 		"LAKE_STORE_ROOT":                {},
 		zettaEgressAllowEnv:              {},
+		lakeProxyPortEnv:                 {},
+		lakeTrustedProxyCIDRsEnv:         {},
 	}
 	var explicitAppsWildcard *corev1.EnvVar
 	for i := range lake.Spec.Env {
@@ -1256,6 +1263,8 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		// through it, all in the cluster. The namespace's network policy decides which of them.
 		{Name: zettaEgressAllowEnv, Value: lakeDeploymentEgressAllow},
 	}
+	// The proxy listener (lake#1132, lake_proxy_listener.go): the Ingress's own way in.
+	env = append(env, lakeProxyEnv(lake)...)
 	if explicitAppsWildcard != nil {
 		env = append(env, *explicitAppsWildcard.DeepCopy())
 		reserved["LAKE_APPS_WILDCARD"] = struct{}{}
@@ -1869,7 +1878,7 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 					Paths: []networkingv1.HTTPIngressPath{{
 						Path: "/", PathType: &prefix,
 						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-							Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+							Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeProxyServicePort}}},
 					}},
 				}},
 			})
@@ -2004,7 +2013,7 @@ func (r *LakeReconciler) reconcileLakeWildcardIngresses(ctx context.Context, lak
 					Paths: []networkingv1.HTTPIngressPath{{
 						Path: "/", PathType: &prefix,
 						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-							Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+							Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeProxyServicePort}}},
 					}},
 				}},
 			}}

@@ -566,7 +566,7 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: lakeAppWorkloadObjectName(app)}, &ingress); err != nil {
 		t.Fatal(err)
 	}
-	wantAuthURL := "http://lake-apps-test.lake.svc.cluster.local:80/w/" + testWorkspaceID + "/v1/apps/auth"
+	wantAuthURL := "http://lake-apps-test.lake.svc.cluster.local:8080/w/" + testWorkspaceID + "/v1/apps/auth"
 	if ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] != wantAuthURL {
 		t.Fatalf("auth-url = %q, want %q", ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"], wantAuthURL)
 	}
