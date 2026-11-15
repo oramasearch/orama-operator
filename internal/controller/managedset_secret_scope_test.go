@@ -415,7 +415,7 @@ func TestAnOrderedLakeSetOnANonprodClusterGetsNoProductionSecret(t *testing.T) {
 		Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: "lake-prod", HostDomain: "lake.live"}}
 	const name = "order-0123456789ab"
 	ordered, err := orderLakeSet(orderPass{source: source, set: prod, member: map[string]any{}},
-		CloudOrder{ID: "0123456789ab"}, name, "orama-nonprod-cluster-01", name+".lake.live")
+		CloudOrder{ID: "0123456789ab"}, name, "orama-nonprod-cluster-01", name+".lake.live", false)
 	if err != nil {
 		t.Fatal(err)
 	}

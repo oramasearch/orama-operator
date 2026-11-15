@@ -27,7 +27,9 @@ var (
 )
 
 const (
-	clickHouseUser        = "app"
+	clickHouseUser = "app"
+	// clickHouseProfile is the settings profile of the app user.
+	clickHouseProfile     = "app"
 	clickHouseDatabase    = "default"
 	clickHouseHTTPPort    = 8123
 	clickHouseNativePort  = 9000
@@ -98,16 +100,40 @@ func clickHousePodTemplates(container, image string, resources map[string]interf
 	}}
 }
 
+// clickHouseAppGrants are the app user's only privileges: everything on its own database.
+func clickHouseAppGrants() []interface{} {
+	return []interface{}{"GRANT ALL ON " + clickHouseDatabase + ".*"}
+}
+
 func (k clickHouseServiceKind) build(in catalogService, password string) []catalogResource {
 	objects := k.objects(in)
 	digest := sha256.Sum256([]byte(password))
 	configuration := map[string]interface{}{
 		// Only the SHA-256 reaches the spec; the password itself stays in the Secret.
+		//
+		// The app user is the tenant's, never an administrator (operator#771). Its grants replace
+		// the implicit ALL a users.xml user has on everything: ALL on the service's database only,
+		// so no SYSTEM commands (SHUTDOWN, DROP caches, RELOAD config), no access management (it can
+		// create no user or role), and no SOURCES (the file, url, remote and s3 table functions,
+		// which would read the server's files or reach other hosts). ClickHouse refuses grants
+		// together with access_management or allow_databases, and access_management defaults off.
+		// The system tables a client needs to read its own schema are open without a grant.
+		// networks/ip stays open because the workspace's NetworkPolicy decides who reaches the
+		// server; pod addresses are not known ahead of time.
 		"users": map[string]interface{}{
 			clickHouseUser + "/password_sha256_hex": hex.EncodeToString(digest[:]),
 			clickHouseUser + "/networks/ip":         []interface{}{"::/0"},
-			clickHouseUser + "/profile":             "default",
+			clickHouseUser + "/profile":             clickHouseProfile,
 			clickHouseUser + "/quota":               "default",
+			clickHouseUser + "/grants/query":        clickHouseAppGrants(),
+		},
+		// The app user's own profile, so nothing a later change makes to "default" reaches it:
+		// reads and writes, DDL in its database, no introspection functions (addressToLine and the
+		// like read the server binary's memory map).
+		"profiles": map[string]interface{}{
+			clickHouseProfile + "/readonly":                      int64(0),
+			clickHouseProfile + "/allow_ddl":                     int64(1),
+			clickHouseProfile + "/allow_introspection_functions": int64(0),
 		},
 		"clusters": []interface{}{map[string]interface{}{
 			"name":   clickHouseClusterName,

@@ -52,12 +52,23 @@ import (
 // annotation, and is described entirely by the order's row and the source, so a recreated
 // management cluster creates the same resources again from the same rows. Nothing is ever
 // deleted here.
+//
+// An order is provisioned only while it is paid for (operator#862, lake#972). lake's
+// `cloud_order_desired_state` view gives each order `present` or `suspended`, on Postgres's clock
+// at every read. A suspended order is not claimed, nothing is made for it, and a resource it lost
+// is not made again; an order whose LakeSet exists keeps it, its Lake, its data and its name, with
+// the Lake's compute stopped (`replicas: 0`). When a renewal makes the same order present again,
+// the next pass gives the Lake its replica back.
 
 const (
 	cloudOrderPaid         = "paid"
 	cloudOrderProvisioning = "provisioning"
 	cloudOrderReady        = "ready"
 	cloudOrderFailed       = "failed"
+	cloudOrderCancelled    = "cancelled"
+	// cloudOrderHeld is what advance reports for an order held back or stopped because it is
+	// suspended. It is not a lake state.
+	cloudOrderHeld = "suspended"
 
 	offerPrivateWarehouse = "private_warehouse"
 	offerDedicatedCluster = "dedicated_cluster"
@@ -169,17 +180,20 @@ func (r *LakeOrderSourceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	pass := orderPass{source: &source, set: &set, member: member}
 	var members []oramav1alpha1.LakeOrderSourceMemberStatus
 	var orders []oramav1alpha1.LakeOrderStatus
-	var provisioning, ready, failed int32
-	var unreachable, tableMissing []string
+	var provisioning, ready, failed, suspended int32
+	var unreachable, tableMissing, entitlementsMissing []string
 	for _, m := range set.Spec.Clusters {
 		target := orderSourceMember{ClusterRef: m.ClusterRef, Name: m.Name, Namespace: firstNonEmpty(m.Namespace, lakeSetKind.namespacePrefix+m.Name)}
 		entry := oramav1alpha1.LakeOrderSourceMemberStatus{Cluster: m.ClusterRef, Name: m.Name}
 		rows, store, err := r.readOrders(passCtx, open, target, claimant)
 		if err != nil {
 			entry.Message = err.Error()
-			if errors.Is(err, errCloudOrdersTableMissing) {
+			switch {
+			case errors.Is(err, errCloudOrdersTableMissing):
 				tableMissing = append(tableMissing, m.Name)
-			} else {
+			case errors.Is(err, errCloudOrderEntitlementsMissing):
+				entitlementsMissing = append(entitlementsMissing, m.Name)
+			default:
 				unreachable = append(unreachable, m.Name+" on "+m.ClusterRef+" ("+err.Error()+")")
 			}
 			members = append(members, entry)
@@ -198,19 +212,26 @@ func (r *LakeOrderSourceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				ready++
 			case cloudOrderFailed:
 				failed++
+			case cloudOrderHeld:
+				suspended++
+				orders = append(orders, oramav1alpha1.LakeOrderStatus{ID: order.ID, Member: m.Name, Offer: order.Offer,
+					Region: order.Region, LakeSet: outcome.lakeSet, Suspended: true, Message: outcome.waiting})
 			}
 		}
 		closeCloudOrderStore(store)
 	}
 	sort.Slice(orders, func(i, j int) bool { return orders[i].ID < orders[j].ID })
 	status.Members, status.Orders = members, orders
-	status.Provisioning, status.ReadyOrders, status.Failed = provisioning, ready, failed
+	status.Provisioning, status.ReadyOrders, status.Failed, status.Suspended = provisioning, ready, failed, suspended
 
 	switch {
 	case len(unreachable) > 0:
 		setPhase(clusterPhaseDegraded, "MemberUnreachable", "orders cannot be read from "+strings.Join(unreachable, "; "))
 	case len(tableMissing) > 0:
 		setPhase(clusterPhasePending, "TableMissing", "waiting for lake's cloud_orders table (lake#831) on "+strings.Join(tableMissing, ", "))
+	case len(entitlementsMissing) > 0:
+		setPhase(clusterPhasePending, "EntitlementsMissing", "waiting for lake's cloud_order_desired_state view (lake#972, 0097_cloud_order_entitlements) on "+
+			strings.Join(entitlementsMissing, ", ")+"; no order is provisioned there until it exists")
 	case provisioning > 0:
 		setPhase(setPhaseProgressing, "Provisioning", fmt.Sprintf("%d order(s) being provisioned", provisioning))
 	default:
@@ -252,6 +273,22 @@ type orderPass struct {
 // A paid order is claimed first; an order another claimant holds is never touched.
 func (r *LakeOrderSourceReconciler) advance(ctx context.Context, store CloudOrderStore, pass orderPass, claimant string, order CloudOrder) (string, orderOutcome) {
 	log := logf.FromContext(ctx).WithValues("order", order.ID, "offer", order.Offer)
+	if order.State != cloudOrderPaid && order.ClaimedBy != claimant {
+		// Another claimant's, or no claim: never touched.
+		return "", orderOutcome{}
+	}
+	if order.DesiredState == cloudOrderSuspended {
+		state, outcome := r.hold(ctx, pass, order)
+		switch order.State {
+		case cloudOrderFailed:
+			// lake gives every failed and cancelled order `suspended`: whatever they left is
+			// held stopped, and they are counted as what they are.
+			return cloudOrderFailed, orderOutcome{}
+		case cloudOrderCancelled:
+			return "", orderOutcome{}
+		}
+		return state, outcome
+	}
 	switch order.State {
 	case cloudOrderPaid:
 		claimed, err := store.Claim(ctx, order.ID, claimant)
@@ -264,20 +301,32 @@ func (r *LakeOrderSourceReconciler) advance(ctx context.Context, store CloudOrde
 			return "", orderOutcome{}
 		}
 		log.Info("claimed a paid order")
-	case cloudOrderProvisioning:
-	case cloudOrderReady:
-		// Its resources are made again if missing, so a recreated management cluster has them. Its
-		// LakeSet keeps its cluster, and a dedicated cluster is not copied from the template again.
-		if outcome := r.provision(ctx, pass, order); outcome.failure != "" {
-			log.Info("a ready order's resources cannot be kept as described", "reason", outcome.failure)
+	case cloudOrderProvisioning, cloudOrderReady:
+		// The list was read at the start of the pass: read the entitlement again right before
+		// anything is written for the order.
+		desired, err := store.DesiredState(ctx, order.ID)
+		if err != nil {
+			log.Error(err, "the order's entitlement cannot be read again; nothing is written for it on this pass")
+			return order.State, orderOutcome{waiting: "rereading the order's entitlement: " + err.Error()}
 		}
-		return cloudOrderReady, orderOutcome{}
+		if desired == cloudOrderSuspended {
+			order.DesiredState = desired
+			return r.hold(ctx, pass, order)
+		}
+		if order.State == cloudOrderReady {
+			// Its resources are made again if missing, so a recreated management cluster has them. Its
+			// LakeSet keeps its cluster, and a dedicated cluster is not copied from the template again.
+			// A Lake stopped while the order was suspended gets its replica back here.
+			if outcome := r.provision(ctx, pass, order); outcome.failure != "" {
+				log.Info("a ready order's resources cannot be kept as described", "reason", outcome.failure)
+			}
+			return cloudOrderReady, orderOutcome{}
+		}
 	case cloudOrderFailed:
 		return cloudOrderFailed, orderOutcome{}
 	default:
-		return "", orderOutcome{}
-	}
-	if order.ClaimedBy != "" && order.ClaimedBy != claimant && order.State != cloudOrderPaid {
+		// cancelled while present cannot happen (lake makes a cancelled order suspended); it is
+		// held like a suspended one by the check above.
 		return "", orderOutcome{}
 	}
 	outcome := r.provision(ctx, pass, order)
@@ -298,12 +347,48 @@ func (r *LakeOrderSourceReconciler) advance(ctx context.Context, store CloudOrde
 			log.Error(err, "the order cannot be marked ready; it is tried again on the next pass")
 			return cloudOrderProvisioning, orderOutcome{waiting: "marking the order ready", lakeSet: outcome.lakeSet}
 		}
-		if moved {
-			log.Info("the order is ready", "host", outcome.host)
+		if !moved {
+			// The move checks the entitlement in the same statement: refused means it ended
+			// while the Lake came up (or the order is no longer this claimant's). It is read
+			// again on the next pass, and held there if suspended.
+			return cloudOrderProvisioning, orderOutcome{waiting: "the order could not be marked ready; its entitlement is read again on the next pass", lakeSet: outcome.lakeSet}
 		}
+		log.Info("the order is ready", "host", outcome.host)
 		return cloudOrderReady, outcome
 	}
 	return cloudOrderProvisioning, outcome
+}
+
+// hold keeps a suspended order from running (operator#862). It claims nothing and makes nothing,
+// so a suspended order's missing resources are not made again. An order whose LakeSet exists
+// keeps it as it is, with its Lake's compute stopped: the member is written with `replicas: 0`,
+// and nothing else changes, so its data, its volumes, its name and its host are kept. A dedicated
+// cluster's KubernetesCluster, platform and operator are kept as they are. Nothing is deleted.
+func (r *LakeOrderSourceReconciler) hold(ctx context.Context, pass orderPass, order CloudOrder) (string, orderOutcome) {
+	log := logf.FromContext(ctx).WithValues("order", order.ID, "offer", order.Offer)
+	name := orderResourceName(order.ID)
+	var current oramav1alpha1.LakeSet
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil {
+		if apierrors.IsNotFound(err) {
+			return cloudOrderHeld, orderOutcome{waiting: "suspended: the order is not paid for; nothing is provisioned until lake shows it present again"}
+		}
+		return cloudOrderHeld, orderOutcome{waiting: "suspended; LakeSet " + name + " cannot be read: " + err.Error()}
+	}
+	if current.Labels[orderIDLabel] != order.ID || len(current.Spec.Clusters) == 0 {
+		return cloudOrderHeld, orderOutcome{waiting: "suspended: the order is not paid for; nothing is provisioned until lake shows it present again"}
+	}
+	host := name + "." + pass.source.Spec.HostDomain
+	lakeSet, err := orderLakeSet(pass, order, name, current.Spec.Clusters[0].ClusterRef, host, true)
+	if err != nil {
+		return cloudOrderHeld, orderOutcome{waiting: err.Error(), lakeSet: name}
+	}
+	if err := r.ensure(ctx, pass.source, order, lakeSet, func(existing client.Object) {
+		existing.(*oramav1alpha1.LakeSet).Spec = lakeSet.Spec
+	}); err != nil {
+		return cloudOrderHeld, orderOutcome{waiting: "suspended; LakeSet " + name + " cannot be written: " + err.Error(), lakeSet: name}
+	}
+	log.V(1).Info("the order is suspended; its Lake's compute is stopped and its data kept")
+	return cloudOrderHeld, orderOutcome{waiting: "suspended: the order is not paid for; its Lake is stopped (replicas 0) and its data kept", lakeSet: name}
 }
 
 // provision creates or keeps an order's resources and reports how far they are.
@@ -329,7 +414,7 @@ func (r *LakeOrderSourceReconciler) provision(ctx context.Context, pass orderPas
 	if outcome.failure != "" || outcome.waiting != "" {
 		return outcome
 	}
-	lakeSet, err := orderLakeSet(pass, order, name, cluster, host)
+	lakeSet, err := orderLakeSet(pass, order, name, cluster, host, false)
 	if err != nil {
 		return orderOutcome{waiting: err.Error()}
 	}
@@ -548,12 +633,18 @@ func dedicatedClusterObjects(template *oramav1alpha1.KubernetesCluster, releases
 }
 
 // orderLakeSet is the LakeSet of an order: the source set's template and secrets, and one member
-// on the chosen cluster with the source's member settings, its host and its node name.
-func orderLakeSet(pass orderPass, order CloudOrder, name, cluster, host string) (*oramav1alpha1.LakeSet, error) {
-	member := mergeSpec(pass.member, map[string]any{
+// on the chosen cluster with the source's member settings, its host and its node name. A
+// suspended order's member has `replicas: 0`: its Lake keeps every resource and its data, and runs
+// no lake process. A present one has no such override, so its Lake runs its replica again.
+func orderLakeSet(pass orderPass, order CloudOrder, name, cluster, host string, suspended bool) (*oramav1alpha1.LakeSet, error) {
+	override := map[string]any{
 		"host": host,
 		"args": []any{"--listen", "0.0.0.0:4900", "--node", name},
-	})
+	}
+	if suspended {
+		override["replicas"] = 0
+	}
+	member := mergeSpec(pass.member, override)
 	raw, err := json.Marshal(member)
 	if err != nil {
 		return nil, err
@@ -581,7 +672,7 @@ func orderMemberSpec(source *oramav1alpha1.LakeOrderSource) (map[string]any, err
 			return nil, err
 		}
 	}
-	for _, field := range []string{"host", "args", "apexHost", "region", "regions", "namespace"} {
+	for _, field := range []string{"host", "args", "apexHost", "region", "regions", "namespace", "replicas"} {
 		if _, set := member[field]; set {
 			return nil, fmt.Errorf("spec.member sets %s, which the operator sets for each order: remove it", field)
 		}

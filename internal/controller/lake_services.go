@@ -662,9 +662,35 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	for _, svc := range present {
 		aliases[svc.ID] = svc.Slug
 	}
-	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, credentials, aliases)
+	// Each connection is its own Secret in its workspace namespace (operator#773). An image that
+	// still reads the aggregate mount gets lake-<lake>-services too, written first, and a slug's own
+	// Secret only once the aggregate carries it, so either one being there means lake can read it.
+	targets := map[string]serviceConnectionTarget{}
+	for _, svc := range present {
+		targets[svc.Slug] = serviceConnectionTarget{namespace: svc.WorkspaceNamespace, id: svc.ID}
+	}
+	for _, svc := range workspaceZettas {
+		targets[svc.Slug] = serviceConnectionTarget{namespace: svc.WorkspaceNamespace, id: svc.ID}
+	}
+	for i := range stores {
+		targets[stores[i].Slug] = serviceConnectionTarget{namespace: stores[i].WorkspaceNamespace, id: stores[i].ID}
+	}
+	delivered := credentials
+	if r.lakeAggregateServicesNeeded(ctx, lake, namespace) {
+		aggregate, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, credentials, aliases)
+		if err != nil {
+			log.Error(err, "service credentials deferred")
+		}
+		delivered = map[string][]byte{}
+		for slug := range aggregate {
+			delivered[slug] = credentials[slug]
+		}
+	} else if err := r.removeLakeAggregateServicesSecret(ctx, lake, namespace); err != nil {
+		log.Error(err, "cannot remove the aggregate services Secret no Lake pod mounts")
+	}
+	written, err := r.reconcileServiceConnectionSecrets(ctx, lake, keep, delivered, targets)
 	if err != nil {
-		log.Error(err, "service credentials deferred")
+		log.Error(err, "some service connection Secrets deferred")
 	}
 	if err := r.removeLakeWorkspacesSecret(ctx, lake, namespace); err != nil {
 		log.Error(err, "cannot remove the superseded workspace credential Secret")
@@ -1181,8 +1207,8 @@ func (r *LakeReconciler) deletePostgresService(ctx context.Context, lake *oramav
 	return serviceResult{}, false, nil
 }
 
-// removeServiceCredential drops a service's key from lake-<lake>-services.
-func (r *LakeReconciler) removeServiceCredential(ctx context.Context, lake *oramav1alpha1.Lake, namespace, slug string) error {
+// removeAggregateServiceCredential drops a service's key from lake-<lake>-services.
+func (r *LakeReconciler) removeAggregateServiceCredential(ctx context.Context, lake *oramav1alpha1.Lake, namespace, slug string) error {
 	var secret corev1.Secret
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: lakeServicesSecret(lake.Name)}, &secret); err != nil {
 		return client.IgnoreNotFound(err)
@@ -1195,6 +1221,15 @@ func (r *LakeReconciler) removeServiceCredential(ctx context.Context, lake *oram
 	}
 	delete(secret.Data, serviceCredentialKey(slug))
 	return r.Update(ctx, &secret)
+}
+
+// removeServiceCredential drops a service's or store's connection everywhere it is delivered:
+// its own Secret in its workspace namespace and its key in lake-<lake>-services.
+func (r *LakeReconciler) removeServiceCredential(ctx context.Context, lake *oramav1alpha1.Lake, namespace, slug string) error {
+	if err := removeServiceConnectionSecrets(ctx, r.Client, lake, slug); err != nil {
+		return err
+	}
+	return r.removeAggregateServiceCredential(ctx, lake, namespace, slug)
 }
 
 // reconcileLakeServicesSecret maintains lake-<lake>-services: one <slug>.json per present service

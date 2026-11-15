@@ -188,6 +188,9 @@ func (s *DeploymentControlPlane) Handler() http.Handler {
 	mux.HandleFunc("/v1/rollback_deployment", s.serveRollbackDeployment)
 	mux.HandleFunc("/v1/deployment_status", s.serveDeploymentStatus)
 	mux.HandleFunc("/mcp", s.serveMCP)
+	// Not part of liquid's deployment contract: lake's own on-demand service connection
+	// (lake_service_connections.go, operator#773), with its own Lake credential.
+	mux.HandleFunc(lakeServiceConnectionPath, s.serveServiceConnection)
 	return mux
 }
 

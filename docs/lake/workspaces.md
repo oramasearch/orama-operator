@@ -120,7 +120,9 @@ Zetta's connection, read-only: once the cluster `<lake>-ws-<12 hex>` in the row'
 namespace is Lake-controlled, labelled with the workspace, `Ready` with its one node, and its
 `<cluster>-zetta-admin` Secret holds a token, the poll writes
 `{"kind":"zetta","endpoint":"http://<cluster>-zetta.<namespace>.svc.cluster.local:4800","token":…}`
-under `<slug>.json` and under the service id. While such a cluster is still starting the poll keeps
+under `<slug>.json` and under the service id, and into its own Secret
+`lake-<lake>-<slug>-connection` in the workspace namespace (operator#773). The workspace reconciler
+reports the workspace delivered once that Secret holds the current connection. While such a cluster is still starting the poll keeps
 its fast (2 s) cadence. A connection that cannot be read keeps the key already there.
 
 The workspace reconciler reports the workspace `Ready` (and its Zetta `service_status` `Ready`) only

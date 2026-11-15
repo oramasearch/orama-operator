@@ -41,13 +41,15 @@ func main() {
 	}
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
 	var zettaTunnelImage, cloudflaredImage string
-	var controlPlaneCertFile, controlPlaneKeyFile string
+	var controlPlaneCertFile, controlPlaneKeyFile, controlPlaneCAFile, controlPlaneServiceURL string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
 	flag.StringVar(&controlPlaneCertFile, "control-plane-cert-file", "/var/run/orama/control-plane/tls.crt", "deployment control-plane TLS certificate")
 	flag.StringVar(&controlPlaneKeyFile, "control-plane-key-file", "/var/run/orama/control-plane/tls.key", "deployment control-plane TLS private key")
+	flag.StringVar(&controlPlaneCAFile, "control-plane-ca-file", "/var/run/orama/control-plane/ca.crt", "the control plane's CA certificate, given to Lake pods that ask it for service connections")
+	flag.StringVar(&controlPlaneServiceURL, "control-plane-service-url", "", "the control plane's in-cluster https URL, where lake asks for one service connection at a time (operator#773); empty keeps every Lake on the mounted services Secret")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election")
 	flag.StringVar(&lakeSQLiteImage, "lake-sqlite-image", controller.DefaultLakeSQLiteImage,
 		"the lake-sqlite image for a Lake's sqlite services when its spec.services.sqliteImage is empty")
@@ -391,6 +393,9 @@ func main() {
 		APIReader:         mgr.GetAPIReader(),
 		Clientset:         clientset,
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		// Only with the control plane listening: lake has nothing to ask otherwise.
+		ServiceConnectionURL:    serviceConnectionURL(controlPlaneAddr, controlPlaneServiceURL),
+		ServiceConnectionCAFile: controlPlaneCAFile,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)
@@ -592,4 +597,13 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// serviceConnectionURL is the URL Lake pods ask for service connections at, or empty when the
+// control plane does not listen.
+func serviceConnectionURL(bindAddress, serviceURL string) string {
+	if bindAddress == "" {
+		return ""
+	}
+	return serviceURL
 }

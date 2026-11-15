@@ -399,9 +399,13 @@ type LakeSnapshotsSpec struct {
 // LakeAppsSpec configures the shared settings used by LakeApp resources. Every Lake synchronizes
 // lake's apps table into LakeApp resources; there is no switch (operator#539).
 type LakeAppsSpec struct {
-	// Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>. Empty
-	// uses the Lake's spec.host, so an app is <app>.<lake host> (myapp.lake-dev.oramadev.net).
-	// lake receives it as LAKE_APPS_WILDCARD, and with DNSSecretRef the operator keeps the
+	// Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>. It has
+	// no default, and it must be a registrable domain of its own: one equal to, a parent of or a
+	// child of the Lake's host, public host, apex host or preview wildcard, or under the same
+	// registrable domain as any of them, is refused (condition AppsWildcardReady, reason
+	// AppsWildcardSharesLakeSite), because an app could then set cookies for Lake (#762). Empty or
+	// refused, no app is served (reason AppsWildcardUnset or AppsWildcardSharesLakeSite). lake
+	// receives it as LAKE_APPS_WILDCARD, and with DNSSecretRef the operator keeps the
 	// *.<wildcard> DNS record.
 	// +optional
 	Wildcard string `json:"wildcard,omitempty"`
@@ -945,6 +949,12 @@ type LakeImageManifest struct {
 	// StripeProducts are the products the image bills under: the Lake's PaymentCatalog.
 	// +optional
 	StripeProducts []LakeStripeProduct `json:"stripeProducts,omitempty"`
+	// ServiceConnectionsOnDemand is true when the image's manifest environment lists
+	// LAKE_SERVICE_CONNECTION_URL: lake then asks the operator for one service's connection when it
+	// needs it, and the operator stops mounting every service credential into the Lake pod
+	// (operator#773, docs/lake/services.md#connections-on-demand).
+	// +optional
+	ServiceConnectionsOnDemand bool `json:"serviceConnectionsOnDemand,omitempty"`
 }
 
 // LakeStripeProduct is one product a lake image bills under.

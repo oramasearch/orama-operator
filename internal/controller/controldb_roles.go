@@ -135,24 +135,7 @@ func (r *OramaCloudV1Reconciler) dashboardRoleReady(ctx context.Context, oc *ora
 	if !dashboardSignsInAsItsRole(oc) {
 		return true, nil
 	}
-	ps := &oramav1alpha1.PostgresSchema{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + dashboardGrantsSchemaSuffix}, ps); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	schemas, err := controlDBSchemas(oc)
-	if err != nil {
-		return false, err
-	}
-	// Current means the version this operator renders, not one an older operator applied.
-	for _, s := range schemas {
-		if s.suffix == dashboardGrantsSchemaSuffix && ps.Spec.Version != schemaVersion(s.sql) {
-			return false, nil
-		}
-	}
-	return postgresSchemaCurrent(ps), nil
+	return r.grantsSchemaReady(ctx, oc, dashboardGrantsSchemaSuffix)
 }
 
 // dashboardDBEnv is the dashboard's control DB credentials, DATABASE_URL and POSTGRES_PASSWORD: its
@@ -174,4 +157,162 @@ func dashboardDBSecrets(oc *oramav1alpha1.OramaCloudV1) []string {
 		return nil
 	}
 	return []string{dashboardRoleSecretName(oc)}
+}
+
+// analytics-processor's own control DB role (#823, principle 4). The processor reads and writes
+// only its run log, analytics.runs. At every start, with create_tables (which the operator sets for
+// ClickHouse, and which the binary applies to Postgres too), it runs CREATE SCHEMA analytics
+// (ignoring 42P06, but Postgres checks CREATE on the database first), CREATE TABLE IF NOT EXISTS
+// analytics.runs (Postgres checks CREATE on the schema first) and LOCK TABLE analytics.runs IN
+// ACCESS EXCLUSIVE MODE NOWAIT (which needs UPDATE), then SELECT and INSERT
+// (orama-cloud-v1-bridge analytics-processor src/clients/postgres.rs).
+//
+// The schema and its table stay owned by the CNPG owner role, which creates them in the grants file
+// when they are missing, so an existing stack's run log is kept as it is and no ownership moves (an
+// ALTER ... OWNER would need the owner to be a member of the new role, which it cannot grant
+// itself). The role gets exactly the privileges those statements check: CONNECT and CREATE on the
+// database, USAGE and CREATE on schema analytics, and SELECT, INSERT and UPDATE on analytics.runs.
+// Nothing in schema public. CREATE on the database also lets it create a schema of its own; that is
+// the one privilege wider than its work, and goes when the processor no longer issues CREATE SCHEMA.
+
+const (
+	// analyticsProcessorRole is analytics-processor's control DB role.
+	analyticsProcessorRole = "analytics_processor"
+	// analyticsProcessorRoleConnectionLimit bounds its sessions: sqlx's default pool is 10 per pod,
+	// and the processor runs one pod.
+	analyticsProcessorRoleConnectionLimit = 10
+	// analyticsProcessorSchema and analyticsProcessorRunsTable are the processor's config values
+	// (analyticsProcessorConfigYAML postgres.schema and runs_table).
+	analyticsProcessorSchema    = "analytics"
+	analyticsProcessorRunsTable = "runs"
+	// analyticsProcessorGrantsSchemaSuffix names the PostgresSchema that applies its grants.
+	analyticsProcessorGrantsSchemaSuffix = "-controldb-analytics-processor-grants"
+)
+
+// analyticsProcessorRoleSecretName is <cr>-controldb-analytics-processor: username and password for
+// CNPG, and uri, the processor's postgres.url.
+func analyticsProcessorRoleSecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-controldb-analytics-processor"
+}
+
+// analyticsProcessorSignsInAsItsRole is where the processor uses its own role: where the dashboard
+// does (dashboardSignsInAsItsRole), a control DB primary that applies the schemas.
+func analyticsProcessorSignsInAsItsRole(oc *oramav1alpha1.OramaCloudV1) bool {
+	return dashboardSignsInAsItsRole(oc)
+}
+
+// analyticsProcessorManagedRole is the CNPG managed role the processor signs in as. Every field
+// CNPG defaults is set, so a steady stack renders what the API stores.
+func analyticsProcessorManagedRole(oc *oramav1alpha1.OramaCloudV1) map[string]interface{} {
+	return map[string]interface{}{
+		"name":            analyticsProcessorRole,
+		"comment":         "analytics-processor's control DB client (operator#823)",
+		"ensure":          "present",
+		"login":           true,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         true,
+		"connectionLimit": int64(analyticsProcessorRoleConnectionLimit),
+		"passwordSecret":  map[string]interface{}{"name": analyticsProcessorRoleSecretName(oc)},
+	}
+}
+
+// ensureAnalyticsProcessorRoleSecret creates <cr>-controldb-analytics-processor once, with a random
+// 48-character hex password, a basic-auth Secret CNPG watches (cnpg.io/reload). It is never changed.
+func (r *OramaCloudV1Reconciler) ensureAnalyticsProcessorRoleSecret(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	pass, err := randHex(24)
+	if err != nil {
+		return fmt.Errorf("generate %s: %w", analyticsProcessorRoleSecretName(oc), err)
+	}
+	lbls := labelsFor(oc, "controldb")
+	lbls["cnpg.io/reload"] = "true"
+	uri := fmt.Sprintf("postgresql://%s:%s@%s-controldb-rw.%s:5432/%s", analyticsProcessorRole, pass, oc.Name, oc.Namespace, controlDBName)
+	return r.createSecretIfAbsent(ctx, oc, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: analyticsProcessorRoleSecretName(oc), Namespace: oc.Namespace, Labels: lbls},
+		Type:       corev1.SecretTypeBasicAuth,
+		Data:       map[string][]byte{"username": []byte(analyticsProcessorRole), "password": []byte(pass), "uri": []byte(uri)},
+	})
+}
+
+// analyticsProcessorRunsTableDDL is the processor's own CREATE TABLE IF NOT EXISTS for its run log
+// (create_run_table), so the owner creates the same table the processor would.
+const analyticsProcessorRunsTableDDL = `CREATE TABLE IF NOT EXISTS analytics.runs (
+    id UUID PRIMARY KEY,
+    range_start TIMESTAMPTZ NOT NULL,
+    range_end TIMESTAMPTZ NOT NULL,
+    start_locked_at TIMESTAMPTZ NOT NULL,
+    locked_at TIMESTAMPTZ NOT NULL,
+    ended_at TIMESTAMPTZ,
+    processed_rows_count BIGINT NOT NULL,
+    indexes_processed_count BIGINT NOT NULL
+);
+`
+
+// analyticsProcessorGrantsSQL creates schema analytics and its run log when missing (never altering
+// an existing one) and gives the processor role the privileges its statements check, and no more.
+func analyticsProcessorGrantsSQL(before []controlDBSchema) string {
+	var b strings.Builder
+	b.WriteString(grantsHeader("analytics-processor's grants (operator#823)", before))
+	role := analyticsProcessorRole
+	fmt.Fprintf(&b, "CREATE SCHEMA IF NOT EXISTS %s;\n", analyticsProcessorSchema)
+	b.WriteString(analyticsProcessorRunsTableDDL)
+	// CREATE on the database: the processor's CREATE SCHEMA is checked against it before Postgres
+	// finds the schema exists.
+	fmt.Fprintf(&b, "DO $$ BEGIN EXECUTE format('GRANT CONNECT, CREATE ON DATABASE %%I TO %s', current_database()); END $$;\n", role)
+	fmt.Fprintf(&b, "GRANT USAGE, CREATE ON SCHEMA %s TO %s;\n", analyticsProcessorSchema, role)
+	fmt.Fprintf(&b, "GRANT SELECT, INSERT, UPDATE ON %s.%s TO %s;\n", analyticsProcessorSchema, analyticsProcessorRunsTable, role)
+	fmt.Fprintf(&b, "REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON %s.%s FROM %s;\n", analyticsProcessorSchema, analyticsProcessorRunsTable, role)
+	return b.String()
+}
+
+// grantsSchemaReady reports whether the PostgresSchema <cr><suffix> applied the version this
+// operator renders, which also means CNPG had created its role (a GRANT to a missing role fails the
+// Job).
+func (r *OramaCloudV1Reconciler) grantsSchemaReady(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, suffix string) (bool, error) {
+	ps := &oramav1alpha1.PostgresSchema{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + suffix}, ps); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		return false, err
+	}
+	for _, s := range schemas {
+		if s.suffix == suffix && ps.Spec.Version != schemaVersion(s.sql) {
+			return false, nil
+		}
+	}
+	return postgresSchemaCurrent(ps), nil
+}
+
+// analyticsProcessorRoleReady reports whether the processor may sign in as its role. Until its
+// grants apply the processor is not written, so a running one keeps the owner's credentials.
+func (r *OramaCloudV1Reconciler) analyticsProcessorRoleReady(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (bool, error) {
+	if !analyticsProcessorSignsInAsItsRole(oc) {
+		return true, nil
+	}
+	return r.grantsSchemaReady(ctx, oc, analyticsProcessorGrantsSchemaSuffix)
+}
+
+// analyticsProcessorPGURIEnv is the processor's postgres.url: its own role's from
+// <cr>-controldb-analytics-processor where it signs in as its role, otherwise the owner's.
+func analyticsProcessorPGURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
+	if !analyticsProcessorSignsInAsItsRole(oc) {
+		return pgURIEnv(oc, name)
+	}
+	return secretKeyEnv(name, analyticsProcessorRoleSecretName(oc), "uri")
+}
+
+// analyticsProcessorDBSecret is the control DB Secret the processor reads, for its credentials hash.
+func analyticsProcessorDBSecret(oc *oramav1alpha1.OramaCloudV1) string {
+	if !analyticsProcessorSignsInAsItsRole(oc) {
+		return controlDBAppSecret(oc)
+	}
+	return analyticsProcessorRoleSecretName(oc)
 }

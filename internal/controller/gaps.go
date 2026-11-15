@@ -169,7 +169,9 @@ func analyticsImportPrerequisites(oc *oramav1alpha1.OramaCloudV1) error {
 // startup — so the operator renders that file via an init container and mounts it; the template's
 // hash is on the pod, so a changed reader count rolls it. The init container takes each value by
 // secretKeyRef: the analytics key from <cr>-analytics-api-key (#386), the ClickHouse password from
-// the component Secret and the CNPG-generated Postgres URI from <cr>-controldb-app (pgURIEnv). Neither
+// the component Secret and the Postgres URI of its own role, analytics_processor, from
+// <cr>-controldb-analytics-processor (#823; the owner's <cr>-controldb-app on a read-tier replica,
+// analyticsProcessorPGURIEnv). Neither
 // container loads the component Secret whole, so a MASTER_API_KEY an older operator seeded there
 // never reaches the pod: the processor holds no master key.
 //
@@ -185,6 +187,11 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		return r.removeUnlabeledProcessorConfig(ctx, oc)
 	}
 	if err := r.guardAnalyticsImport(ctx, oc); err != nil {
+		return err
+	}
+	// The processor signs in to the control DB as its own role (#823): until that role's grants
+	// apply, the processor is left as it is.
+	if ready, err := r.analyticsProcessorRoleReady(ctx, oc); err != nil || !ready {
 		return err
 	}
 	config := analyticsProcessorConfigYAML(oc)
@@ -212,7 +219,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		Env: []corev1.EnvVar{
 			analyticsKeyEnv(oc),
 			clickhousePasswordEnv(oc),
-			pgURIEnv(oc, "PG_URI"),
+			analyticsProcessorPGURIEnv(oc, "PG_URI"),
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config-tmpl", MountPath: "/tmpl"},
@@ -232,7 +239,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		podAnnotations: map[string]string{configHashKey: hex.EncodeToString(sum[:])},
 		// Every Secret the render init reads, so a changed analytics key, ClickHouse or Postgres
 		// password rolls the processor.
-		credentialSecrets: []string{analyticsKeySecretName(oc), clickhouseSecret, controlDBAppSecret(oc)},
+		credentialSecrets: []string{analyticsKeySecretName(oc), clickhouseSecret, analyticsProcessorDBSecret(oc)},
 		volumes: []corev1.Volume{
 			{Name: "config-tmpl", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}}},

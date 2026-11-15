@@ -25,7 +25,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -135,7 +134,7 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps-test", UID: types.UID("test-lake")},
 		Spec: oramav1alpha1.LakeSpec{Image: "oramasearch/lake:test", Namespace: "lake", Host: "lake.example.test", PullSecretName: "docker-pull", Apps: oramav1alpha1.LakeAppsSpec{
-			Wildcard: "apps.example.test", RuntimeImage: "oramasearch/app-runtime:0.1.0",
+			Wildcard: "apps-example.test", RuntimeImage: "oramasearch/app-runtime:0.1.0",
 		}},
 	}
 	for _, object := range []client.Object{
@@ -153,9 +152,13 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 		ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB(lake.Name) + "-app", Namespace: "lake"},
 		Data:       map[string][]byte{"uri": []byte("postgresql://test:private@localhost/lake")},
 	}
+	// The bound service's own connection Secret in the app's workspace namespace (operator#773).
 	connections := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: "lake"},
-		Data:       map[string][]byte{testPostgresID: []byte(`{"uri":"postgresql://user:private@db/app"}`)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: serviceConnectionSecret(lake.Name, "svc-0123456789ab"), Namespace: testWorkspaceName,
+			Labels: serviceConnectionLabels(lake, "svc-0123456789ab", testPostgresID),
+		},
+		Data: map[string][]byte{serviceConnectionKey: []byte(`{"uri":"postgresql://user:private@db/app"}`)},
 	}
 	pullSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "docker-pull", Namespace: "lake"},
@@ -163,9 +166,6 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 		Data: map[string][]byte{
 			corev1.DockerConfigJsonKey: []byte(`{"auths":{"https://index.docker.io/v1/":{"username":"hub","password":"hub-token"}}}`),
 		},
-	}
-	if err := controllerutil.SetControllerReference(lake, connections, kubeClient.Scheme()); err != nil {
-		t.Fatal(err)
 	}
 	for _, object := range []client.Object{credentials, connections, pullSecret} {
 		if err := kubeClient.Create(ctx, object); err != nil {
@@ -266,7 +266,7 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 	setNamedLakeAppDeploymentReady(t, h.ctx, kubeClient, namespace, lakeAppWorkloadObjectName(app), 1)
 	h.reconcileApp()
 	h.poll()
-	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard.apps.example.test" {
+	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard.apps-example.test" {
 		t.Fatalf("status did not flow back: %+v", status)
 	}
 	assertSyncedAppSteady(t, h)
@@ -646,7 +646,7 @@ func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 		t.Fatalf("app was not ready before rollout checks: %+v", status)
 	}
 
-	h.store.rows[0].Host = "sales-dashboard-v2.apps.example.test"
+	h.store.rows[0].Host = "sales-dashboard-v2.apps-example.test"
 	h.store.rows[0].Generation++
 	h.converge()
 	app = h.app()
@@ -657,7 +657,7 @@ func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 	if app.Generation <= deployment.Generation {
 		t.Fatalf("test setup did not separate generations: app=%d Deployment=%d", app.Generation, deployment.Generation)
 	}
-	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps.example.test" {
+	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps-example.test" {
 		t.Fatalf("ingress-only update lost ready status: %+v", status)
 	}
 
@@ -682,7 +682,7 @@ func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 	setNamedLakeAppDeploymentReady(t, h.ctx, h.client, deploymentKey.Namespace, deploymentKey.Name, 1)
 	h.reconcileApp()
 	h.poll()
-	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps.example.test" {
+	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps-example.test" {
 		t.Fatalf("rolled app status = %+v", status)
 	}
 
@@ -708,7 +708,7 @@ func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 	setNamedLakeAppDeploymentReady(t, h.ctx, h.client, deploymentKey.Namespace, deploymentKey.Name, 1)
 	h.reconcileApp()
 	h.poll()
-	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps.example.test" {
+	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps-example.test" {
 		t.Fatalf("restarted app status = %+v", status)
 	}
 }
@@ -778,7 +778,7 @@ func TestLakeAppsOrphansAndReadFailures(t *testing.T) {
 }
 
 func TestLakeAppsRejectForeignBindingsAndNames(t *testing.T) {
-	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"}, Spec: oramav1alpha1.LakeSpec{Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps.example.test"}}}
+	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"}, Spec: oramav1alpha1.LakeSpec{Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps-example.test"}}}
 	for _, name := range []string{"foreign customer", "missing service", "unsafe filename", "outside host", "invalid env", "mutable image"} {
 		t.Run(name, func(t *testing.T) {
 			row := testLakeAppRow()
@@ -826,7 +826,7 @@ func TestLakeAppsRefuseForeignCRForUpdateAndDelete(t *testing.T) {
 }
 
 func TestLakeAppRowAuthNoneIsPublic(t *testing.T) {
-	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"}, Spec: oramav1alpha1.LakeSpec{Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps.example.test"}}}
+	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"}, Spec: oramav1alpha1.LakeSpec{Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps-example.test"}}}
 	row := testLakeAppRow()
 	services := []LakeService{{ID: testPostgresID, CustomerID: row.CustomerID, WorkspaceID: row.WorkspaceID, Name: "db", Desired: "present"}}
 	row.Auth = "none"

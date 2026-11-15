@@ -186,6 +186,13 @@ func methodologyWorkClaim(slug string) string        { return slug + "-work" }
 func methodologyCredentialSecret(slug string) string { return slug + "-credential" }
 func methodologyPullSecret(slug string) string       { return slug + "-pull" }
 
+// methodologyRuntimePullSecret is the pull Secret of the pods that run the platform's methodology
+// runtime image (stage, collect, stage-model). It is the only one that may carry the Lake's
+// platform pull Secret (spec.pullSecretName), and only when the pod's image is the platform runtime
+// image; the tenant's own image (the sandbox and serve pods) is pulled with methodologyPullSecret,
+// which holds lake's registry credential alone (#801, LSR-139).
+func methodologyRuntimePullSecret(slug string) string { return slug + "-runtime-pull" }
+
 // lakePublicHost is the host lake's registry is reached at from outside the cluster, which is
 // where kubelet pulls a built image from: LAKE_PUBLIC_HOST in spec.env (what lake's build_json
 // uses), else spec.host.
@@ -485,7 +492,7 @@ func methodologyStagePod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun, zone
 		[]string{methodologyCLI, "stage", "--lake", "$(LAKE_URL)", "--run", "$(RUN_ID)",
 			"--credential-file", methodologyCredentialDir + "/" + methodologyCredentialFile, "--out", methodologyWorkPath + "/in"},
 		methodologyTransferEnv(lake, run), methodologyTransferResources(),
-		methodologyWorkClaim(run.Slug), methodologyPullSecret(run.Slug), methodologyCredentialSecret(run.Slug))
+		methodologyWorkClaim(run.Slug), methodologyRuntimePullSecret(run.Slug), methodologyCredentialSecret(run.Slug))
 	if len(zones) > 0 {
 		pod.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
@@ -619,7 +626,7 @@ func methodologyCollectPod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun, ex
 	}
 	return methodologyPod(run.RuntimeImage, command,
 		methodologyTransferEnv(lake, run), methodologyTransferResources(),
-		methodologyWorkClaim(run.Slug), methodologyPullSecret(run.Slug), methodologyCredentialSecret(run.Slug))
+		methodologyWorkClaim(run.Slug), methodologyRuntimePullSecret(run.Slug), methodologyCredentialSecret(run.Slug))
 }
 
 // methodologySandboxPod runs the code that is not trusted. It names no Secret volume and no Secret
@@ -637,33 +644,55 @@ func methodologySandboxPod(run *LakeMethodologyRun, image string) corev1.PodSpec
 
 func (r *LakeReconciler) reconcileMethodologyPullSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string,
 	run *LakeMethodologyRun, credential string, labels map[string]string) error {
-	return r.reconcileMethodologyPullSecretFor(ctx, lake, namespace, run.Slug, methodologyPullUser, credential, labels)
+	return r.reconcileMethodologyPullSecretFor(ctx, lake, namespace, run.Slug, run.RuntimeImage, methodologyPullUser, credential, labels)
 }
 
-// reconcileMethodologyPullSecretFor writes `<slug>-pull`: the Lake's pull Secret entries plus lake's
-// public host with Basic `user` and the credential (methodology-run for a run,
-// methodology-deployment for a served model).
+// reconcileMethodologyPullSecretFor writes the two pull Secrets of a run or a served model:
+//
+//   - `<slug>-pull`, for the pods that run the tenant's own image (the sandbox, the server): lake's
+//     public host with Basic `user` and the credential, and nothing else. The platform pull Secret
+//     never reaches a tenant-selected image, so a tenant cannot pull a private platform image by
+//     naming it (#801, LSR-139).
+//   - `<slug>-runtime-pull`, for the pods that run the methodology runtime (stage, collect,
+//     stage-model): the same lake entry, plus the Lake's platform pull Secret entries only when the
+//     runtime image is the platform's (lakeMethodologyRuntimeImage). A row naming another runtime
+//     image gets no platform credential.
 func (r *LakeReconciler) reconcileMethodologyPullSecretFor(ctx context.Context, lake *oramav1alpha1.Lake, namespace,
-	slug, user, credential string, labels map[string]string) error {
-	var source *corev1.Secret
-	if lake.Spec.PullSecretName != "" {
-		source = &corev1.Secret{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: lakeNamespace(lake), Name: lake.Spec.PullSecretName}, source); err != nil {
+	slug, runtimeImage, user, credential string, labels map[string]string) error {
+	var platform *corev1.Secret
+	if lake.Spec.PullSecretName != "" && methodologyRuntimeIsPlatform(lake, runtimeImage) {
+		platform = &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: lakeNamespace(lake), Name: lake.Spec.PullSecretName}, platform); err != nil {
 			return fmt.Errorf("read the Lake's pull Secret: %w", err)
 		}
 	}
-	config, ok := mergeRegistryDockerConfig(source, lakePublicHost(lake), user, []byte(credential))
+	tenant, ok := mergeRegistryDockerConfig(nil, lakePublicHost(lake), user, []byte(credential))
+	if !ok {
+		return errors.New("lake's registry credential could not be encoded")
+	}
+	runtime, ok := mergeRegistryDockerConfig(platform, lakePublicHost(lake), user, []byte(credential))
 	if !ok {
 		return fmt.Errorf("the Lake's pull Secret %q has invalid dockerconfigjson data", lake.Spec.PullSecretName)
 	}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyPullSecret(slug), Namespace: namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		secret.Labels = labels
-		secret.Type = corev1.SecretTypeDockerConfigJson
-		secret.Data = map[string][]byte{corev1.DockerConfigJsonKey: config}
-		return controllerutil.SetControllerReference(lake, secret, r.Scheme)
-	})
-	return err
+	for name, config := range map[string][]byte{methodologyPullSecret(slug): tenant, methodologyRuntimePullSecret(slug): runtime} {
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+			secret.Labels = labels
+			secret.Type = corev1.SecretTypeDockerConfigJson
+			secret.Data = map[string][]byte{corev1.DockerConfigJsonKey: config}
+			return controllerutil.SetControllerReference(lake, secret, r.Scheme)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// methodologyRuntimeIsPlatform reports whether image is the platform methodology runtime the
+// operator gives lake (LAKE_METHODOLOGY_RUNTIME_IMAGE), the only image the platform pull Secret is
+// used for in a methodology pod.
+func methodologyRuntimeIsPlatform(lake *oramav1alpha1.Lake, image string) bool {
+	return image != "" && image == lakeMethodologyRuntimeImage(lake)
 }
 
 func (r *LakeReconciler) reconcileMethodologyWorkClaim(ctx context.Context, lake *oramav1alpha1.Lake, namespace string,
@@ -1148,6 +1177,7 @@ func (r *LakeReconciler) removeMethodologyRun(ctx context.Context, lake *oramav1
 		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: methodologyCollectJob(run.Slug), Namespace: namespace}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyCredentialSecret(run.Slug), Namespace: namespace}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyPullSecret(run.Slug), Namespace: namespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyRuntimePullSecret(run.Slug), Namespace: namespace}},
 		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: methodologyWorkClaim(run.Slug), Namespace: namespace}},
 	}
 	for _, object := range objects {

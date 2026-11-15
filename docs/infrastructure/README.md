@@ -416,9 +416,21 @@ Kubernetes `NetworkPolicy`. Those isolate nothing on a dataplane that does not e
 - **The `aks` provider's `network.dataplane` and `network.policy` accept only `cilium`** (CRD enum,
   default `cilium`), on `KubernetesClusterProvider` and `AksCluster`. `azureManagedClusterBody` refuses
   anything else for a resource stored before the enum, before any request reaches Azure.
-- **A Lake cannot run where Cilium policy is missing.** Its `NetworkSandbox` needs the
-  `ciliumnetworkpolicies.cilium.io` kind (`networksandbox_controller.go`), so the Lake's reconcile fails
-  with the reason instead of running unisolated.
+- **A Lake runs no tenant code where Cilium does not enforce policy.** On every reconcile the
+  operator reads from the Kubernetes API that the `ciliumnetworkpolicies.cilium.io` CRD is installed
+  and that the Cilium agent DaemonSet `kube-system/cilium` (the name on AKS's Azure CNI powered by
+  Cilium and in the upstream chart) schedules at least one pod and has at least one ready
+  (`lake_network_policy_enforcement.go`). It does not wait for every agent: a joining node's agent
+  starts after the node, and AKS keeps pods off the node with the `node.cilium.io/agent-not-ready`
+  taint until it runs, so requiring all of them would stop tenant workloads on each scale-up.
+  Where the check fails, the Lake reports `NetworkPolicyEnforced=False` and `Degraded` with the
+  reason (`CiliumPolicyKindMissing`, `CiliumAgentMissing`, `CiliumAgentNotReady`), and the Lake's
+  control-row sync, the LakeApps and LakeWorkspaces passes, and the LakeApp and LakeEnvironment
+  controllers start or change no tenant workload. Each of them runs the check itself (one result
+  reused for 30 seconds), so nothing depends on the Lake's status having been written first. What
+  already runs is left in place, so a failed read never deletes tenant data. The NetworkSandbox
+  controller also fails without the CRD. There is no flag or value to turn the check off: a cluster
+  passes it only by running Cilium.
 
 | Cluster | Installed by | Policy engine | How it is known |
 |---|---|---|---|

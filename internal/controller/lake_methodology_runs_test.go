@@ -420,8 +420,21 @@ func TestTheSandboxCarriesNoCredentialAndRunsLocked(t *testing.T) {
 	if entry := config.Auths["lake.example.test"]; entry["username"] != "methodology-run" || entry["password"] != token {
 		t.Fatalf("lake registry entry %v", entry)
 	}
-	if _, found := config.Auths["https://index.docker.io/v1/"]; !found {
-		t.Fatal("the Lake's own pull Secret entries are kept for the runtime image")
+	if len(config.Auths) != 1 {
+		t.Fatalf("the tenant image's pull Secret holds lake's registry alone, never the platform's (#801): %v", config.Auths)
+	}
+	var runtimePull corev1.Secret
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testRunNS, Name: testRunSlug + "-runtime-pull"}, &runtimePull); err != nil {
+		t.Fatal(err)
+	}
+	var runtimeConfig struct {
+		Auths map[string]map[string]string `json:"auths"`
+	}
+	if err := json.Unmarshal(runtimePull.Data[corev1.DockerConfigJsonKey], &runtimeConfig); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := runtimeConfig.Auths["https://index.docker.io/v1/"]; !found {
+		t.Fatal("the Lake's own pull Secret entries are kept for the platform runtime image")
 	}
 	var claim corev1.PersistentVolumeClaim
 	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testRunNS, Name: testRunSlug + "-work"}, &claim); err != nil {

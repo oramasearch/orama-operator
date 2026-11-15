@@ -108,18 +108,17 @@ func (r *LakeAppReconciler) reconcileSyncedLakeAppSecrets(ctx context.Context, l
 		}
 		data["zetta"] = binding
 	}
-	if len(app.Spec.Bindings.Services) > 0 {
-		connections := &corev1.Secret{}
-		key := client.ObjectKey{Namespace: app.Namespace, Name: lakeServicesSecret(lake.Name)}
-		if err := r.Get(ctx, key, connections); err != nil || !metav1.IsControlledBy(connections, lake) {
-			return result, "BindingPending", "waiting for the Lake-owned services Secret", nil
+	// A bound service's connection is read from its own Secret in the app's workspace namespace
+	// only (operator#773): a service of another workspace is never found, whatever the app names.
+	for _, id := range app.Spec.Bindings.Services {
+		connection, err := serviceConnectionByID(ctx, r.Client, lake, namespace, id)
+		if err != nil {
+			return result, "", "", err
 		}
-		for _, id := range app.Spec.Bindings.Services {
-			if len(connections.Data[id]) == 0 || !validAppServiceName(app.Spec.Bindings.ServiceNames[id]) {
-				return result, "BindingPending", "waiting for a requested service connection", nil
-			}
-			data[id] = connections.Data[id]
+		if len(connection) == 0 || !validAppServiceName(app.Spec.Bindings.ServiceNames[id]) {
+			return result, "BindingPending", "waiting for a requested service connection in the app's workspace", nil
 		}
+		data[id] = connection
 	}
 	if len(data) > 0 {
 		bindingsName := lakeAppBindingsName(app)

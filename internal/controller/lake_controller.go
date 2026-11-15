@@ -52,6 +52,12 @@ type LakeReconciler struct {
 	// OperatorNamespace is the namespace of the manager pod that reads Lake's control database and
 	// Zetta API. Empty omits those in-cluster ingress allowances in local unit tests.
 	OperatorNamespace string
+	// ServiceConnectionURL is the control plane's in-cluster https base URL, where a lake image
+	// that reads LAKE_SERVICE_CONNECTION_URL asks for one service connection at a time
+	// (lake_service_connections.go, operator#773). Empty keeps every Lake on the aggregate mount.
+	ServiceConnectionURL string
+	// ServiceConnectionCAFile is the control plane's CA certificate, given to the Lake pod.
+	ServiceConnectionCAFile string
 	// ServiceStores opens lake's control Postgres for the managed-services poll. Nil uses pgx;
 	// tests substitute a fake store.
 	ServiceStores LakeServiceStoreOpener
@@ -69,6 +75,10 @@ type LakeReconciler struct {
 	ServiceEvents <-chan event.GenericEvent
 	// APIReader lists lake pods without a cache (no cluster-wide pod informer). Nil uses Client.
 	APIReader client.Reader
+	// NetworkPolicyCheck reads whether the cluster enforces network policy (operator#699,
+	// lake_network_policy_enforcement.go). Nil is the Cilium check every cluster runs; it is not a
+	// switch, only the point where a test supplies a fake result.
+	NetworkPolicyCheck networkPolicyEnforcementCheck
 	// workloadResources throttles the workload resources pass per Lake (lake#643), and the app
 	// transfer pass with it (lake#661).
 	workloadResources workloadResourcesClock
@@ -275,6 +285,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeAdminToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile admin token: %w", err)
 	}
+	// The credential, CA and namespace label an on-demand image uses to ask for one service
+	// connection (lake_service_connections.go, operator#773).
+	if err := r.reconcileLakeServiceConnectionAccess(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.reconcileLakeDeployToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile deployment token: %w", err)
 	}
@@ -361,7 +376,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	deploy := &appsv1.Deployment{}
 	if schemaReady {
 		deploy, err = r.reconcileLakeDeployment(
-			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing, clerk, payments,
+			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing, clerk, payments, manifest.Status,
 		)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
@@ -375,8 +390,18 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Lake-owned control rows (connections, services, stores, agents, builds): best-effort, never fail the Lake.
 	// The tables exist only once the schema has applied, so the poll waits for it.
+	// Tenant code (workspace namespaces, services, stores, agents, builds, methodology, apps and
+	// environments, all made from those rows) runs only where the cluster enforces network policy
+	// (operator#699). Where it does not, the rows are not synchronized: nothing new starts and
+	// nothing running is changed, and the Lake reports Degraded with the reason. What already runs
+	// is left in place rather than deleted, so a transient failed read never removes tenant data.
+	networkPolicy := r.lakeNetworkPolicyEnforcement(ctx, &lake)
+	if !networkPolicy.Enforced {
+		log.Info("tenant workloads refused: network policy is not enforced",
+			"reason", networkPolicy.Condition.Reason, "message", networkPolicy.Condition.Message)
+	}
 	controlRowsChanging := false
-	if lakeControlRowsEnabled(&lake) && schemaReady {
+	if lakeControlRowsEnabled(&lake) && schemaReady && networkPolicy.Enforced {
 		controlRowsChanging = r.reconcileLakeServices(ctx, &lake, ns, labels)
 	}
 
@@ -431,6 +456,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if replicasRefused != "" {
 		readiness = append(readiness, lakeComponentReadiness{"Degraded", "ReplicasRefused", replicasRefused})
 	}
+	if !networkPolicy.Enforced {
+		readiness = append(readiness, lakeComponentReadiness{"Degraded", networkPolicy.Condition.Reason, networkPolicy.Condition.Message})
+	}
 	phase, readyCondition := lakeAggregateReadiness(&lake, readiness)
 	dataServices, dataServicesSummary := lakeDataServiceStatus(&lake)
 	desiredConditions := lake.Status.Conditions
@@ -445,6 +473,12 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		conditionsChanged = true
 	}
 	if apimeta.SetStatusCondition(&desiredConditions, lakeFeaturesCondition(&lake)) {
+		conditionsChanged = true
+	}
+	if apimeta.SetStatusCondition(&desiredConditions, networkPolicy.Condition) {
+		conditionsChanged = true
+	}
+	if apimeta.SetStatusCondition(&desiredConditions, lakeAppsWildcardCondition(&lake)) {
 		conditionsChanged = true
 	}
 	// ClerkReady exists only on a Lake with spec.clerk.
@@ -722,6 +756,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 	sealing lakeSealingMaterial,
 	clerk lakeClerkState,
 	payments lakePaymentsState,
+	manifest *oramav1alpha1.LakeImageManifest,
 ) (*appsv1.Deployment, error) {
 	terminationGracePeriodSeconds := int64(lakeTerminationGracePeriodSeconds)
 	strategy, affinity := lakeRollout(replicas, storeAccessModes, lake.Spec.Rollout.OverlapOnSharedStore, labels)
@@ -806,6 +841,11 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 					DefaultMode: &mode,
 				}},
 			})
+		}
+		if lakeServicesEnabled(lake) && lakeServiceConnectionsOnDemand(lake, manifest, r.ServiceConnectionURL) {
+			// The image asks the operator for one connection when it needs it (operator#773): no
+			// service credential is mounted.
+			applyLakeServiceConnectionsOnDemand(lake, &deployment.Spec.Template, r.ServiceConnectionURL)
 		}
 		if len(lakeAgentLibrary(lake)) > 0 {
 			// The library agents' bus credentials (lake docs/api/agent-bus.md), one file each.

@@ -215,10 +215,13 @@ func deleteIfExists(ctx context.Context, c client.Client, obj client.Object) err
 	return nil
 }
 
-// ingressClassName is the IngressClass the operator binds a Cloud v1 stack's Ingresses to:
-// spec.components.ingressClassName, defaulting to the helmfile-installed ingress-nginx.
+// ingressClassName is the IngressClass the operator binds a Cloud v1 stack's Ingresses to: always
+// ingress-nginx. spec.components.ingressClassName "zetta-tunnel" is no longer honoured for Cloud v1
+// (#575, #805): the shared gateway refuses Cloud v1 Ingresses and no v1 pod admits it, so the value
+// would only take the stack's hosts offline. The field stays in the CRD so existing objects remain
+// valid.
 func ingressClassName(oc *oramav1alpha1.OramaCloudV1) string {
-	return ingressClassOrDefault(oc.Spec.Components.IngressClassName)
+	return defaultIngressClassName
 }
 
 // defaultIngressClassName is ingress-nginx's class, every resource's default until its cluster's

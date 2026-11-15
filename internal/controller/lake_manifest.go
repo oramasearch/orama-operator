@@ -106,6 +106,11 @@ type lakeManifestDocument struct {
 			Name string `json:"name"`
 		} `json:"products"`
 	} `json:"stripe"`
+	// Environment lists the variables the image reads; the operator looks only for the ones that
+	// change how it delivers something (lakeServiceConnectionURLEnv).
+	Environment []struct {
+		Name string `json:"name"`
+	} `json:"environment"`
 }
 
 // lakeManifestPod is what the manifest Job's pod reported.
@@ -436,19 +441,26 @@ func lakeManifestFromDocument(document lakeManifestDocument) (*oramav1alpha1.Lak
 	}
 	events := slices.Clone(document.Stripe.WebhookEvents)
 	sort.Strings(events)
+	onDemand := false
+	for _, variable := range document.Environment {
+		if variable.Name == lakeServiceConnectionURLEnv {
+			onDemand = true
+		}
+	}
 	return &oramav1alpha1.LakeImageManifest{
-		Supported:           true,
-		Version:             document.Version,
-		Revision:            document.Revision,
-		SchemaVersion:       document.Schema.Version,
-		LatestMigration:     document.Schema.LatestMigration,
-		GuardTable:          document.Schema.GuardTable,
-		GuardTables:         slices.Clone(document.Schema.GuardTables),
-		Migrations:          slices.Clone(document.Schema.Migrations),
-		MigrateArgs:         append(slices.Clone(document.Migrate.Args), document.Migrate.WaitFlag, lakeMigrateWaitSeconds),
-		DatabaseEnv:         document.Migrate.DatabaseEnv,
-		StripeWebhookEvents: slices.Compact(events),
-		StripeProducts:      products,
+		ServiceConnectionsOnDemand: onDemand,
+		Supported:                  true,
+		Version:                    document.Version,
+		Revision:                   document.Revision,
+		SchemaVersion:              document.Schema.Version,
+		LatestMigration:            document.Schema.LatestMigration,
+		GuardTable:                 document.Schema.GuardTable,
+		GuardTables:                slices.Clone(document.Schema.GuardTables),
+		Migrations:                 slices.Clone(document.Schema.Migrations),
+		MigrateArgs:                append(slices.Clone(document.Migrate.Args), document.Migrate.WaitFlag, lakeMigrateWaitSeconds),
+		DatabaseEnv:                document.Migrate.DatabaseEnv,
+		StripeWebhookEvents:        slices.Compact(events),
+		StripeProducts:             products,
 	}, nil
 }
 

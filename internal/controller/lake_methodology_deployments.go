@@ -197,7 +197,7 @@ func methodologyDeploymentStagePod(lake *oramav1alpha1.Lake, deployment *LakeMet
 			{Name: "HOME", Value: "/tmp"},
 		},
 		methodologyTransferResources(), methodologyModelClaim(deployment.Slug),
-		methodologyPullSecret(deployment.Slug), methodologyCredentialSecret(deployment.Slug))
+		methodologyRuntimePullSecret(deployment.Slug), methodologyCredentialSecret(deployment.Slug))
 	if len(zones) > 0 {
 		pod.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
@@ -411,7 +411,7 @@ func (r *LakeReconciler) reconcileMethodologyDeployment(ctx context.Context, lak
 		return status, true, err
 	}
 	status.CredentialSHA256 = credentialDigest(credential)
-	if err := r.reconcileMethodologyPullSecretFor(ctx, lake, ns, deployment.Slug, methodologyDeploymentPull, credential, labels); err != nil {
+	if err := r.reconcileMethodologyPullSecretFor(ctx, lake, ns, deployment.Slug, deployment.RuntimeImage, methodologyDeploymentPull, credential, labels); err != nil {
 		return status, true, err
 	}
 	if err := r.reconcileMethodologyClaim(ctx, lake, ns, methodologyModelClaim(deployment.Slug), labels); err != nil {
@@ -517,6 +517,7 @@ func (r *LakeReconciler) removeMethodologyDeployment(ctx context.Context, lake *
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: deployment.Slug, Namespace: namespace}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyCredentialSecret(deployment.Slug), Namespace: namespace}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyPullSecret(deployment.Slug), Namespace: namespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyRuntimePullSecret(deployment.Slug), Namespace: namespace}},
 		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: methodologyModelClaim(deployment.Slug), Namespace: namespace}},
 	}
 	for _, object := range objects {

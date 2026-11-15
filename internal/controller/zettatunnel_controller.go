@@ -187,6 +187,9 @@ func validateZettaTunnel(tunnel *oramav1alpha1.ZettaTunnel) string {
 			return "clientCAPEM must contain only CA certificates"
 		}
 	}
+	if _, err := zettaTunnelClientCAFingerprints(tunnel.Spec.ClientCAPEM); err != nil {
+		return err.Error()
+	}
 	return ""
 }
 

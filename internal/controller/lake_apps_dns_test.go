@@ -24,7 +24,7 @@ func TestLakeAppsWildcardDNSLifecycle(t *testing.T) {
 	scheme := newLakeAppScheme(t)
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-uid"},
-		Spec: oramav1alpha1.LakeSpec{Namespace: "lake", Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps.example.test"},
+		Spec: oramav1alpha1.LakeSpec{Namespace: "lake", Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps-example.test"},
 			DNSSecretRef: &corev1.LocalObjectReference{Name: "cloudflare"}},
 	}
 	class := "nginx"
@@ -61,7 +61,7 @@ func TestLakeAppsWildcardDNSLifecycle(t *testing.T) {
 	}
 	reconcile()
 	records := list()
-	if len(records) != 1 || records[0].Spec.Name != "*.apps.example.test" || records[0].Spec.Content != "192.0.2.20" || !records[0].Spec.Proxied || !metav1.IsControlledBy(&records[0], lake) {
+	if len(records) != 1 || records[0].Spec.Name != "*.apps-example.test" || records[0].Spec.Content != "192.0.2.20" || !records[0].Spec.Proxied || !metav1.IsControlledBy(&records[0], lake) {
 		t.Fatalf("wildcard DNS = %+v", records)
 	}
 	version := records[0].ResourceVersion

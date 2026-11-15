@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -92,6 +93,7 @@ type LakeAppReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;secrets;resourcequotas;limitranges,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
@@ -128,6 +130,23 @@ func (r *LakeAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	if reason, message := validateLakeApp(&lake, &app); reason != "" {
 		return r.finishLakeAppStatus(ctx, &app, nil, lakeAppHost(&lake, &app), oramav1alpha1.LakeAppPhaseDegraded, false, reason, message)
+	}
+	// Tenant code runs only where the cluster enforces network policy (operator#699). Where it does
+	// not, a running workload is left as it is rather than changed or deleted.
+	if message := tenantWorkloadsRefused(ctx, r.reader(), &lake); message != "" {
+		return r.finishLakeAppStatus(ctx, &app, nil, lakeAppHost(&lake, &app), oramav1alpha1.LakeAppPhaseDegraded, false, reasonTenantNetworkPolicyNotEnforced, message)
+	}
+	// An app named under the apps wildcard is served only when the wildcard is a site of its own
+	// (#762). A synchronized app is always named under it; a hand-written one only without its own
+	// host. A refused wildcard stops the app (its Ingress, Service, Deployment, certificate and DNS
+	// go), so it is never left serving under the Lake's site.
+	if app.Spec.Sync != nil || app.Spec.Host == "" {
+		if reason, message := lakeAppsWildcardProblem(&lake); reason != "" {
+			if err := r.teardownLakeAppWorkload(ctx, &app, lakeAppNamespace(&app)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return r.finishLakeAppStatus(ctx, &app, nil, "", oramav1alpha1.LakeAppPhaseDegraded, false, reason, message)
+		}
 	}
 
 	workloadNamespace := lakeAppNamespace(&app)
@@ -690,10 +709,7 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		addLakeAppSecretDigest(digests, targetName, data)
 	}
 
-	pullName := lake.Spec.PullSecretName
-	if mode == oramav1alpha1.LakeAppModeImage && app.Spec.PullSecretName != "" {
-		pullName = app.Spec.PullSecretName
-	}
+	pullName := lakeAppPlatformPullSecretName(lake, app, mode)
 	if app.Spec.Sync != nil && (pullName != "" || lake.Spec.Host != "") {
 		data, reason, message, err := r.mergedLakeAppPullSecret(ctx, lake, app, namespace, pullName)
 		if err != nil || reason != "" {
@@ -724,6 +740,24 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 	}
 	result.Digest = lakeAppSecretDigest(digests)
 	return result, "", "", nil
+}
+
+// lakeAppPlatformPullSecretName is the source pull Secret whose entries go into the app's pull
+// Secret, or "" for none. The Lake's platform pull Secret (spec.pullSecretName) is used only for
+// the platform's own app runtime image (runtime mode, lakeAppsRuntimeImage). An image-mode app runs
+// an image its owner chose, so it never gets the platform's registry authority: a tenant naming a
+// private platform image by digest would otherwise have the kubelet pull it with Orama's
+// credential (#801, LSR-139). An image-mode app gets only its own spec.pullSecretName (set on a
+// LakeApp written by hand, never by a synchronized row) and, when synchronized, lake's registry
+// token for the Lake's host.
+func lakeAppPlatformPullSecretName(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, mode string) string {
+	if mode == oramav1alpha1.LakeAppModeImage {
+		if app.Spec.Sync != nil {
+			return ""
+		}
+		return app.Spec.PullSecretName
+	}
+	return lake.Spec.PullSecretName
 }
 
 func (r *LakeAppReconciler) mergedLakeAppPullSecret(
@@ -1467,6 +1501,11 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 	}
 	revisionHistoryLimit := int32(10)
 	workloadName := lakeAppWorkloadObjectName(app)
+	// Its own user namespace when every node supports one (operator#763, user_namespaces.go).
+	userNamespaces, _, err := clusterSupportsUserNamespaces(ctx, r.Client)
+	if err != nil {
+		return err
+	}
 	deployment := &appsv1.Deployment{ObjectMeta: lakeAppObjectMeta(app, workloadName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		deployment.Labels = labels
@@ -1476,7 +1515,7 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Template.Labels = labels
 		deployment.Spec.Template.Annotations = lakeAppPodAnnotations(app, secrets)
-		deployment.Spec.Template.Spec = lakeAppPodSpec(lake, app, secrets)
+		deployment.Spec.Template.Spec = withLakeAppUserNamespace(lakeAppPodSpec(lake, app, secrets), app, userNamespaces)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("reconcile app Deployment: %w", err)
@@ -1514,7 +1553,7 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	workloadName := lakeAppWorkloadObjectName(app)
 	tlsOwner := lakeTLSOwnerValue("LakeApp", app.Namespace+"/"+app.Name)
 	if host == "" {
-		if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, nil); err != nil {
+		if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, nil, lakeOwnCertificate); err != nil {
 			return err
 		}
 		if err := r.deleteLakeAppTLS(ctx, namespace, workloadName); err != nil {
@@ -1530,7 +1569,7 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	// The Lake's Issuer solves DNS-01 in its credential's zone and HTTP-01 for any other host
 	// (operator#632, docs/lake/origin-tls.md).
 	tlsHosts := lakeIssuableHosts(lake, []string{host}, "")
-	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, tlsHosts)
+	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, tlsHosts, lakeOwnCertificate)
 	if err != nil {
 		return fmt.Errorf("app certificate: %w", err)
 	}
@@ -2045,6 +2084,9 @@ func (r *LakeAppReconciler) requestsForLakeAppSourceSecret(ctx context.Context, 
 	if requests := r.requestsForLakeAppObject(ctx, object); len(requests) > 0 {
 		return requests
 	}
+	if requests := r.requestsForServiceConnection(ctx, secret); requests != nil {
+		return requests
+	}
 	var apps oramav1alpha1.LakeAppList
 	if err := r.List(ctx, &apps, client.InNamespace(secret.Namespace)); err != nil {
 		return nil
@@ -2055,6 +2097,29 @@ func (r *LakeAppReconciler) requestsForLakeAppSourceSecret(ctx context.Context, 
 		if r.lakeAppReferencesSecret(ctx, app, secret.Name) {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)})
 		}
+	}
+	return requests
+}
+
+// requestsForServiceConnection wakes the synced apps of a connection Secret's workspace namespace
+// that bind its service (operator#773). Nil when the Secret is not a service connection.
+func (r *LakeAppReconciler) requestsForServiceConnection(ctx context.Context, secret *corev1.Secret) []reconcile.Request {
+	if secret.Labels[serviceConnectionKindLabel] != serviceConnectionKindValue {
+		return nil
+	}
+	id := secret.Labels[serviceConnectionIDLabel]
+	var apps oramav1alpha1.LakeAppList
+	if err := r.List(ctx, &apps); err != nil {
+		return []reconcile.Request{}
+	}
+	requests := []reconcile.Request{}
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		if app.Spec.Sync == nil || app.Spec.Bindings == nil || app.Spec.LakeRef != secret.Labels[serviceConnectionLakeLabel] ||
+			app.Spec.Sync.WorkspaceNamespace != secret.Namespace || !slices.Contains(app.Spec.Bindings.Services, id) {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)})
 	}
 	return requests
 }

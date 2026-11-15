@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -32,10 +33,35 @@ type fakeOrderDB struct {
 	events  []string // "<id> <from>-><to>"
 	missing bool     // no cloud_orders table yet
 	opens   int
+	// expired holds the orders whose entitlement has ended: lake's cloud_order_desired_state view
+	// says `suspended` for them, as it does for every failed or cancelled order.
+	expired map[string]bool
+	// noEntitlements: the cloud_orders table without 0097's view.
+	noEntitlements bool
+	// rereadFails makes DesiredState fail, as a dropped connection does mid-pass.
+	rereadFails bool
+}
+
+// desired is the view's desired_state for one order, under db.mu.
+func (db *fakeOrderDB) desired(o *CloudOrder) string {
+	switch {
+	case db.expired[o.ID]:
+		return cloudOrderSuspended
+	case o.State == cloudOrderPaid || o.State == cloudOrderProvisioning || o.State == cloudOrderReady:
+		return cloudOrderPresent
+	}
+	return cloudOrderSuspended
+}
+
+// expire ends an order's entitlement, or (false) renews it, as lake's signed webhooks do.
+func (db *fakeOrderDB) expire(id string, ended bool) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.expired[id] = ended
 }
 
 func newFakeOrderDB(orders ...CloudOrder) *fakeOrderDB {
-	db := &fakeOrderDB{orders: map[string]*CloudOrder{}, reasons: map[string]string{}}
+	db := &fakeOrderDB{orders: map[string]*CloudOrder{}, reasons: map[string]string{}, expired: map[string]bool{}}
 	for i := range orders {
 		o := orders[i]
 		db.orders[o.ID] = &o
@@ -69,20 +95,38 @@ func (s fakeOrderStore) ListOrders(_ context.Context, claimant string) ([]CloudO
 	if s.db.missing {
 		return nil, errCloudOrdersTableMissing
 	}
+	if s.db.noEntitlements {
+		return nil, errCloudOrderEntitlementsMissing
+	}
 	var out []CloudOrder
 	for _, o := range s.db.orders {
 		if o.State == cloudOrderPaid || (o.ClaimedBy == claimant && o.State != cloudOrderPaid) {
-			out = append(out, *o)
+			row := *o
+			row.DesiredState = s.db.desired(o)
+			out = append(out, row)
 		}
 	}
 	return out, nil
+}
+
+func (s fakeOrderStore) DesiredState(_ context.Context, id string) (string, error) {
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
+	if s.db.rereadFails {
+		return "", errors.New("connection reset")
+	}
+	o := s.db.orders[id]
+	if o == nil {
+		return cloudOrderSuspended, nil
+	}
+	return s.db.desired(o), nil
 }
 
 func (s fakeOrderStore) Claim(_ context.Context, id, claimant string) (bool, error) {
 	s.db.mu.Lock()
 	defer s.db.mu.Unlock()
 	o := s.db.orders[id]
-	if o == nil || o.State != cloudOrderPaid {
+	if o == nil || o.State != cloudOrderPaid || s.db.desired(o) == cloudOrderSuspended {
 		return false, nil
 	}
 	o.State, o.ClaimedBy = cloudOrderProvisioning, claimant
@@ -95,6 +139,10 @@ func (s fakeOrderStore) finish(id, claimant, to, host, reason string) (bool, err
 	defer s.db.mu.Unlock()
 	o := s.db.orders[id]
 	if o == nil || o.State != cloudOrderProvisioning || o.ClaimedBy != claimant {
+		return false, nil
+	}
+	if to == cloudOrderReady && s.db.desired(o) == cloudOrderSuspended {
+		// readyCloudOrderSQL checks the entitlement in the same statement.
 		return false, nil
 	}
 	o.State = to
@@ -270,6 +318,13 @@ var orderScenarios = []struct {
 	{"nothing is claimed before lake's table exists, and a bad source claims nothing", scenarioNothingClaimed},
 	{"a ready dedicated cluster does not follow the template cluster", scenarioDedicatedClusterIsCopiedOnce},
 	{"a ready private warehouse stays on its cluster when the set's members change", scenarioWarehouseStaysPlaced},
+	{"an expired order is never claimed, and claims nothing until renewed", scenarioExpiredPaidOrderIsNotClaimed},
+	{"a ready order whose subscription ends is stopped, keeps its data, and restarts on renewal", scenarioReadyOrderSuspendedAndRestored},
+	{"an order whose entitlement ends while it is provisioning is never marked ready", scenarioInFlightExpiry},
+	{"a suspended order's lost resources are not made again", scenarioSuspendedNotRecreated},
+	{"a failed reread of the entitlement writes nothing for the order", scenarioRereadFailureWritesNothing},
+	{"nothing is claimed while lake has no entitlement view", scenarioNoEntitlementView},
+	{"a suspended dedicated cluster keeps its cluster, platform and operator", scenarioSuspendedDedicatedClusterRetained},
 }
 
 func TestLakeOrders(t *testing.T) {
@@ -782,5 +837,213 @@ func TestLakeOrderSourceNameTooLongClaimsNothing(t *testing.T) {
 	}
 	if eu.order(warehouseOrder).State != cloudOrderPaid {
 		t.Fatal("a refused source claimed an order")
+	}
+}
+
+// lakeReplicasOf reads an order's LakeSet member's replicas override: nil when the member sets none.
+func lakeReplicasOf(h *orderHarness, name string) (*float64, bool) {
+	h.t.Helper()
+	var set oramav1alpha1.LakeSet
+	if !h.get(name, &set) {
+		return nil, false
+	}
+	member, err := jsonObject(set.Spec.Clusters[0].Spec.Raw, "member")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if v, ok := member["replicas"].(float64); ok {
+		return &v, true
+	}
+	return nil, true
+}
+
+// A paid order whose entitlement has already ended (no signed snapshot, or it lapsed before the
+// operator read it) is not claimed and nothing is made; it is claimed once renewed.
+func scenarioExpiredPaidOrderIsNotClaimed(h *orderHarness) {
+	t := h.t
+	eu := newFakeOrderDB(CloudOrder{ID: warehouseOrder, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid})
+	eu.expire(warehouseOrder, true)
+	h.dbs = map[string]*fakeOrderDB{"shared": eu, "shared-us": newFakeOrderDB()}
+	h.reconcile()
+	if o := eu.order(warehouseOrder); o.State != cloudOrderPaid || o.ClaimedBy != "" {
+		t.Fatalf("an expired paid order was claimed: %+v", o)
+	}
+	if h.get("order-0a1b2c3d4e5f", &oramav1alpha1.LakeSet{}) {
+		t.Fatal("a LakeSet was made for an expired order")
+	}
+	if s := h.source(); s.Status.Suspended != 1 || len(s.Status.Orders) != 1 || !s.Status.Orders[0].Suspended {
+		t.Fatalf("source status does not show the suspended order: %+v", s.Status)
+	}
+	eu.expire(warehouseOrder, false)
+	h.reconcile()
+	if o := eu.order(warehouseOrder); o.State != cloudOrderProvisioning {
+		t.Fatalf("a renewed order is %s, want provisioning", o.State)
+	}
+}
+
+// Subscription end on a ready order: the Lake is stopped (replicas 0) and every resource and its
+// identity kept; the order stays ready in lake. Renewal gives the replica back.
+func scenarioReadyOrderSuspendedAndRestored(h *orderHarness) {
+	t := h.t
+	eu := newFakeOrderDB(CloudOrder{ID: warehouseOrder, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid})
+	h.dbs = map[string]*fakeOrderDB{"shared": eu, "shared-us": newFakeOrderDB()}
+	name := "order-0a1b2c3d4e5f"
+	h.reconcile()
+	h.setReady(name)
+	h.reconcile()
+	if o := eu.order(warehouseOrder); o.State != cloudOrderReady {
+		t.Fatalf("order is %s, want ready", o.State)
+	}
+	if replicas, found := lakeReplicasOf(h, name); !found || replicas != nil {
+		t.Fatalf("a paid-for Lake must run: replicas override %v", replicas)
+	}
+	var before oramav1alpha1.LakeSet
+	h.get(name, &before)
+
+	eu.expire(warehouseOrder, true)
+	h.reconcile()
+	replicas, found := lakeReplicasOf(h, name)
+	if !found {
+		t.Fatal("suspension deleted the order's LakeSet; its data must be kept")
+	}
+	if replicas == nil || *replicas != 0 {
+		t.Fatalf("a suspended order's Lake must be stopped: replicas %v", replicas)
+	}
+	var after oramav1alpha1.LakeSet
+	h.get(name, &after)
+	if after.UID != before.UID || after.Labels[orderIDLabel] != warehouseOrder || after.Spec.DeletionPolicy != oramav1alpha1.SetDeletionRetain ||
+		after.Spec.Clusters[0].ClusterRef != before.Spec.Clusters[0].ClusterRef || !strings.Contains(string(after.Spec.Clusters[0].Spec.Raw), `"host":"order-0a1b2c3d4e5f.lake.live"`) {
+		t.Fatalf("suspension changed the order's identity or retention: %+v", after)
+	}
+	if o := eu.order(warehouseOrder); o.State != cloudOrderReady || o.Host != name+".lake.live" {
+		t.Fatalf("suspension must not move the order in lake: %+v", o)
+	}
+	expectEvents(t, eu, warehouseOrder, "paid->provisioning", "provisioning->ready")
+	if s := h.source(); s.Status.Suspended != 1 || s.Status.ReadyOrders != 0 {
+		t.Fatalf("source status: %+v", s.Status)
+	}
+
+	eu.expire(warehouseOrder, false)
+	h.reconcile()
+	if replicas, _ := lakeReplicasOf(h, name); replicas != nil {
+		t.Fatalf("a renewed order's Lake must run again: replicas %v", *replicas)
+	}
+	if s := h.source(); s.Status.Suspended != 0 || s.Status.ReadyOrders != 1 {
+		t.Fatalf("source status after renewal: %+v", s.Status)
+	}
+}
+
+// Grace expiry while provisioning: the order is claimed and its LakeSet made, its entitlement ends,
+// then its LakeSet turns Ready. It is not marked ready, and its Lake is stopped.
+func scenarioInFlightExpiry(h *orderHarness) {
+	t := h.t
+	eu := newFakeOrderDB(CloudOrder{ID: warehouseOrder, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid})
+	h.dbs = map[string]*fakeOrderDB{"shared": eu, "shared-us": newFakeOrderDB()}
+	name := "order-0a1b2c3d4e5f"
+	h.reconcile()
+	h.setReady(name)
+	eu.expire(warehouseOrder, true)
+	h.reconcile()
+	if o := eu.order(warehouseOrder); o.State != cloudOrderProvisioning {
+		t.Fatalf("an order whose entitlement ended in flight is %s, want still provisioning", o.State)
+	}
+	expectEvents(t, eu, warehouseOrder, "paid->provisioning")
+	if replicas, _ := lakeReplicasOf(h, name); replicas == nil || *replicas != 0 {
+		t.Fatalf("its Lake must be stopped: %v", replicas)
+	}
+}
+
+// Missing-resource recreation stops at suspension: a suspended order's LakeSet, lost (a recreated
+// management cluster), is not made again until the order is renewed.
+func scenarioSuspendedNotRecreated(h *orderHarness) {
+	t := h.t
+	eu := newFakeOrderDB(CloudOrder{ID: warehouseOrder, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid})
+	h.dbs = map[string]*fakeOrderDB{"shared": eu, "shared-us": newFakeOrderDB()}
+	name := "order-0a1b2c3d4e5f"
+	h.reconcile()
+	h.setReady(name)
+	h.reconcile()
+	var set oramav1alpha1.LakeSet
+	h.get(name, &set)
+	if err := h.c.Delete(context.Background(), &set); err != nil {
+		t.Fatal(err)
+	}
+	eu.expire(warehouseOrder, true)
+	h.reconcile()
+	if h.get(name, &oramav1alpha1.LakeSet{}) {
+		t.Fatal("a suspended order's LakeSet was made again")
+	}
+	eu.expire(warehouseOrder, false)
+	h.reconcile()
+	if !h.get(name, &oramav1alpha1.LakeSet{}) {
+		t.Fatal("a renewed ready order's LakeSet must be made again")
+	}
+}
+
+// A partial failure: the entitlement cannot be read again before the writes. Nothing is written
+// for the order on that pass, and its state is not moved.
+func scenarioRereadFailureWritesNothing(h *orderHarness) {
+	t := h.t
+	eu := newFakeOrderDB(CloudOrder{ID: warehouseOrder, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderProvisioning,
+		ClaimedBy: "orama-operator/LakeOrderSource/lake-live"})
+	eu.rereadFails = true
+	h.dbs = map[string]*fakeOrderDB{"shared": eu, "shared-us": newFakeOrderDB()}
+	h.reconcile()
+	if h.get("order-0a1b2c3d4e5f", &oramav1alpha1.LakeSet{}) {
+		t.Fatal("resources were written without the entitlement read again")
+	}
+	if o := eu.order(warehouseOrder); o.State != cloudOrderProvisioning || len(eu.eventsOf(warehouseOrder)) != 0 {
+		t.Fatalf("the order was moved: %+v", o)
+	}
+	eu.mu.Lock()
+	eu.rereadFails = false
+	eu.mu.Unlock()
+	h.reconcile()
+	if !h.get("order-0a1b2c3d4e5f", &oramav1alpha1.LakeSet{}) {
+		t.Fatal("the order must resume once its entitlement can be read")
+	}
+}
+
+// lake without 0097: no order is claimed, because a paid-for order cannot be told from an expired one.
+func scenarioNoEntitlementView(h *orderHarness) {
+	t := h.t
+	eu := newFakeOrderDB(CloudOrder{ID: warehouseOrder, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid})
+	eu.noEntitlements = true
+	h.dbs = map[string]*fakeOrderDB{"shared": eu, "shared-us": newFakeOrderDB()}
+	h.reconcile()
+	if o := eu.order(warehouseOrder); o.State != cloudOrderPaid {
+		t.Fatalf("an order was claimed without the entitlement view: %+v", o)
+	}
+	if s := h.source(); s.Status.Phase != clusterPhasePending || !strings.Contains(s.Status.Message, "cloud_order_desired_state") {
+		t.Fatalf("status %+v", s.Status)
+	}
+}
+
+// Retention of a dedicated cluster: suspension stops its Lake and keeps its KubernetesCluster,
+// platform and operator as they are.
+func scenarioSuspendedDedicatedClusterRetained(h *orderHarness) {
+	t := h.t
+	us := newFakeOrderDB(CloudOrder{ID: dedicatedOrder, Offer: offerDedicatedCluster, CloudProvider: "azure", Region: "canadacentral", State: cloudOrderPaid})
+	h.dbs = map[string]*fakeOrderDB{"shared": newFakeOrderDB(), "shared-us": us}
+	h.providerReady()
+	name := "order-1b2c3d4e5f6a"
+	h.reconcile()
+	h.setReady(name)
+	h.reconcile()
+	us.expire(dedicatedOrder, true)
+	h.reconcile()
+	if !h.get(name, &oramav1alpha1.KubernetesCluster{}) || !h.get(name, &oramav1alpha1.OramaOperator{}) || !h.get(name+"-cert-manager", &oramav1alpha1.ClusterHelmRelease{}) {
+		t.Fatal("suspension removed the dedicated cluster's resources")
+	}
+	if replicas, _ := lakeReplicasOf(h, name); replicas == nil || *replicas != 0 {
+		t.Fatalf("the dedicated cluster's Lake must be stopped: %v", replicas)
+	}
+}
+
+// A source member that sets replicas is refused: the operator sets it while an order is suspended.
+func TestLakeOrderSourceMemberMayNotSetReplicas(t *testing.T) {
+	source := &oramav1alpha1.LakeOrderSource{Spec: oramav1alpha1.LakeOrderSourceSpec{Member: rawJSON(`{"replicas":1}`)}}
+	if _, err := orderMemberSpec(source); err == nil || !strings.Contains(err.Error(), "replicas") {
+		t.Fatalf("got %v, want a refusal naming replicas", err)
 	}
 }

@@ -260,7 +260,7 @@ func TestOnlyTheBrokerReadsTheBrokerAdmin(t *testing.T) {
 func TestHarvestMasterSignsInAsHarvest(t *testing.T) {
 	h := newEngineHarness(t, stackOC(nil), engineSecret())
 	h.mustRun()
-	harvest, cache := h.secret("v1-broker-harvest"), h.secret("v1-cache-auth")
+	harvest, cache := h.secret("v1-broker-harvest"), h.secret("v1-cache-harvest-master")
 	tmpl := h.templates()["harvest-master"]
 	env := expandEnv(t, containerIn(t, tmpl.Spec, "harvest-master").Env, map[string]*corev1.Secret{harvest.Name: harvest, cache.Name: cache})
 	if want := "amqp://" + brokerHarvestUser + ":" + string(harvest.Data["password"]) + "@v1-broker:5672"; env["AMQP_HOST"] != want {

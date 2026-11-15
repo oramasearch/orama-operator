@@ -22,7 +22,7 @@ import (
 // sync copies to spec.sync.restartGeneration and the workload writes on the pod template.
 func TestARestartChangesThePodTemplateAndNothingElseDoes(t *testing.T) {
 	ctx := context.Background()
-	lake := rowTrustLake("apps.example.test")
+	lake := rowTrustLake("apps-example.test")
 	row := testLakeAppRow()
 	spec, err := lakeAppRowSpec(lake, &row, rowTrustServices(&row))
 	if err != nil {

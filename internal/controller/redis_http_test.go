@@ -37,7 +37,8 @@ func TestRedisHTTPShimServesTheDashboardsUpstashClient(t *testing.T) {
 	if len(tok.OwnerReferences) != 1 || tok.OwnerReferences[0].Name != "v1" || tok.Labels[componentLabel] != credentialsComponent {
 		t.Errorf("v1-redis-http owner %+v, component %q", tok.OwnerReferences, tok.Labels[componentLabel])
 	}
-	cache := h.secret("v1-cache-auth")
+	// The shim signs in to Redis as its own user, redis-http (#825).
+	cache := h.secret("v1-cache-redis-http")
 	secrets := map[string]*corev1.Secret{tok.Name: tok, cache.Name: cache, testMasterSecret: h.secret(testMasterSecret)}
 
 	dep := &appsv1.Deployment{}
@@ -74,8 +75,8 @@ func TestRedisHTTPShimServesTheDashboardsUpstashClient(t *testing.T) {
 	if env["SRH_MODE"] != "env" || env["SRH_TOKEN"] != token {
 		t.Errorf("SRH_MODE %q, SRH_TOKEN is the token: %v", env["SRH_MODE"], env["SRH_TOKEN"] == token)
 	}
-	if env["SRH_CONNECTION_STRING"] != "redis://:"+string(cache.Data["password"])+"@v1-cache:6379" {
-		t.Error("SRH_CONNECTION_STRING does not expand to the cache password")
+	if env["SRH_CONNECTION_STRING"] != "redis://redis-http:"+string(cache.Data["password"])+"@v1-cache:6379" {
+		t.Error("SRH_CONNECTION_STRING does not expand to the redis-http user's password")
 	}
 	for _, e := range c.Env {
 		if e.Value != "" && (e.Value == token || e.Value == string(cache.Data["password"])) {

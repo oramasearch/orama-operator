@@ -44,7 +44,8 @@ func importOC(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCloudV1
 // newImportHarness reconciles oc once with the engine's Secret in place.
 func newImportHarness(t *testing.T, oc *oramav1alpha1.OramaCloudV1, objs ...client.Object) *engineHarness {
 	t.Helper()
-	h := newEngineHarness(t, append([]client.Object{oc, engineSecret()}, objs...)...)
+	// The processor signs in as its own role once its grants apply (#823); here they have.
+	h := newEngineHarness(t, append([]client.Object{oc, engineSecret(), appliedGrantsSchema(t, oc, analyticsProcessorGrantsSchemaSuffix)}, objs...)...)
 	h.mustRun()
 	return h
 }

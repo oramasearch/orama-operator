@@ -185,7 +185,11 @@ the server lacks it, as CNPG would, and drops it at the end only if it created i
 for the `dashboard` role (`LOGIN`, operator#99) and signs in as it to check its grants: every public
 table readable, the dashboard's writes and delete triggers working, and DDL, `TRUNCATE`, writes to
 the operator-owned rows and other schemas refused. That sign-in has no password, so the server must
-trust local connections (Homebrew's default `pg_hba.conf` does).
+trust local connections (Homebrew's default `pg_hba.conf` does). It also creates `analytics_processor` (`LOGIN`, operator#823) and runs
+analytics-processor's own statements as it, on an empty database and on one whose run log the owner
+already holds with a row: `CREATE SCHEMA` refused only as already existing, `CREATE TABLE IF NOT
+EXISTS`, the `ACCESS EXCLUSIVE` lock, `SELECT` and `INSERT`, and no `public`, `DELETE`, `TRUNCATE`
+or DDL on the run log.
 
 The control DB's cluster-row script (`TestControlDBClusterRowAgainstPostgres`, operator#443) runs
 against local Postgres with `CONTROLDB_TEST_POSTGRES=1` (connection
@@ -313,7 +317,9 @@ go run ./cmd --control-plane-bind-address=""
 
 This disables the deployment listener for the local reconciler loop. To exercise that listener,
 provide a TLS certificate and key with `--control-plane-cert-file` and `--control-plane-key-file`;
-the server has no plaintext mode. The chart projects cert-manager's serving Secret at
+the server has no plaintext mode. `--control-plane-service-url` (empty by default, so a local run keeps every
+Lake on the mounted services Secret) and `--control-plane-ca-file` tell Lake pods where to ask for one
+service connection ([lake/services.md](lake/services.md#connections-on-demand-operator773)). The chart projects cert-manager's serving Secret at
 `/var/run/orama/control-plane` on every cluster. The deployment credential, TLS renewal, and chart
 NetworkPolicy tests run without a cluster; see [control-plane/README.md](control-plane/README.md).
 

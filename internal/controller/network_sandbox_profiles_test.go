@@ -298,6 +298,14 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 		if strings.Contains(allowance.Name, "external-postgres") {
 			t.Fatalf("stored controlDB.mode external opened %q", allowance.Name)
 		}
+		// No Cloud v1 pod admits zetta-tunnel's shared ingress gateway (#575, LSR-210 #805).
+		for _, rule := range allowance.Spec.Ingress {
+			for _, peer := range rule.From {
+				if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == zettaTunnelIngressNamespace {
+					t.Fatalf("%s admits the zetta-tunnel ingress gateway", allowance.Name)
+				}
+			}
+		}
 	}
 }
 

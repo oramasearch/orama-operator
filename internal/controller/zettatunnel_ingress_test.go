@@ -78,8 +78,8 @@ func TestIngressGatewayServesEveryOperatorHostItCanAndRefusesTheRest(t *testing.
 			map[string]string{"nginx.ingress.kubernetes.io/proxy-body-size": "64m"}),
 		testTLSSecret(t, "lake-system", "lake-tls", "lake.example.com"),
 		testBackend("lake-system", "lake-prod", 80, 8080),
-		// Cloud v1 dashboard still on nginx, with a certificate: served too, so a cutover only moves DNS.
-		testOperatorIngress("v1", "v1-dashboard", "OramaCloudV1", "nginx", "app.example.com", "app-tls", "v1-dashboard", 3000, nil),
+		// A Zetta host still on nginx, with a certificate: served too, so a cutover only moves DNS.
+		testOperatorIngress("v1", "v1-dashboard", "OramaZettaCluster", "nginx", "app.example.com", "app-tls", "v1-dashboard", 3000, nil),
 		testTLSSecret(t, "v1", "app-tls", "app.example.com"),
 		testBackend("v1", "v1-dashboard", 3000, 3000),
 		// Zetta without a certificate yet (#457): refused, never served over plain HTTP.
@@ -93,7 +93,7 @@ func TestIngressGatewayServesEveryOperatorHostItCanAndRefusesTheRest(t *testing.
 		testOperatorIngress("other", "foreign", "", "nginx", "foreign.example.com", "foreign-tls", "foreign", 80, nil),
 		testTLSSecret(t, "other", "foreign-tls", "foreign.example.com"),
 		// The same host claimed by a second Ingress with another certificate: refused.
-		testOperatorIngress("v2", "v2-dashboard", "OramaCloudV1", "zetta-tunnel", "app.example.com", "other-tls", "v2-dashboard", 3000, nil),
+		testOperatorIngress("v2", "v2-dashboard", "OramaZettaCluster", "zetta-tunnel", "app.example.com", "other-tls", "v2-dashboard", 3000, nil),
 		testTLSSecret(t, "v2", "other-tls", "app.example.com"),
 		testBackend("v2", "v2-dashboard", 3000, 3000),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "orama-system"}},

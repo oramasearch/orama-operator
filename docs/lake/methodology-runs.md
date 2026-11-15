@@ -97,10 +97,19 @@ and 30 minutes.
 **Pulling the built image.** The image lives in lake's registry. The operator resolves a succeeded
 build to `<public host>/<space>/<name>@<digest>`, as lake's `build_json` does (public host:
 `LAKE_PUBLIC_HOST` in `spec.env`, else `spec.host`), unless lake set `image` itself (it must then be
-pinned by digest). Each run gets a pull Secret `<slug>-pull`: the Lake's `spec.pullSecretName`
-entries (for the runtime image) plus the public host with Basic user `methodology-run` and the run's
-credential. Only kubelet reads it; nothing in the sandbox can. Lake accepts that credential for
-reads of that run's image only.
+pinned by digest). Each run gets two pull Secrets, read by kubelet only
+([#801](https://github.com/oramasearch/orama-operator/issues/801), LSR-139):
+
+- `<slug>-pull`, for the sandbox, which runs the tenant's built image: the public host with Basic
+  user `methodology-run` and the run's credential, **and nothing else**. The platform pull Secret
+  never pulls a tenant's image.
+- `<slug>-runtime-pull`, for the stage and collect pods, which run the methodology runtime: the same
+  entry, plus the Lake's `spec.pullSecretName` entries only when the run's runtime image is the
+  platform's (`spec.methodologies.runtimeImage`, or the operator's default). A row naming any other
+  runtime image gets no platform credential.
+
+Nothing in the sandbox can read either. Lake accepts the run's credential for reads of that run's
+image only.
 
 ## Phases
 
@@ -181,7 +190,8 @@ it in the same namespace, with the same split between the code and the credentia
 | Object | What it is |
 |---|---|
 | Secret `<slug>-credential` | the deployment's credential `lmd.<deployment id>.<secret>`; its SHA-256 goes to `methodology_deployment_status` |
-| Secret `<slug>-pull` | the Lake's pull entries plus lake's registry with Basic user `methodology-deployment` and the credential, for kubelet only |
+| Secret `<slug>-pull` | lake's registry with Basic user `methodology-deployment` and the credential, and nothing else, for kubelet only; the serve pod (the tenant's image) uses it |
+| Secret `<slug>-runtime-pull` | the same, plus the Lake's pull entries when the runtime image is the platform's; the stage pod (the runtime image) uses it (#801) |
 | PVC `<slug>-model` | the model volume (`spec.methodologies.workVolumeSize`, `storageClassName`), ReadWriteOnce |
 | Job `<slug>-stage` | the pristine runtime image, role `stage` (the transfer policy: DNS and lake only): `methodology stage-model --lake $(LAKE_URL) --deployment $(DEPLOYMENT_ID) --credential-file /var/run/orama/credential --out /work/model`, which pages the model's artifact from lake's `methodology_deployment_input` and checks its size and SHA-256. For a GPU model it is pinned to the zones where its GPU class has nodes, as a run's stage pod is |
 | Deployment `<slug>` | one replica (`Recreate`), role `serve`: the methodology's image, `methodology serve --model /work/model --source /methodology --port 8080`, the model volume **read-only**, no Secret mounted, no `LAKE_*`/`ZETTA_*` environment, no service account token, no service links, the run pods' security context, requests equal to limits from the row, the GPU class as its nodeSelector, `restartPolicy: Always`, readiness and liveness on `GET /healthz` |

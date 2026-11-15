@@ -100,6 +100,11 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		message := fmt.Sprintf("LakeEnvironment must be in Lake namespace %q", lakeNamespace)
 		return r.finishEnvironmentStatus(ctx, &environment, nil, "", pendingDomainStatuses(&environment, message), oramav1alpha1.LakeEnvironmentPhaseDegraded, "WrongNamespace", message)
 	}
+	// Tenant code runs only where the cluster enforces network policy (operator#699). Where it does
+	// not, a running workload is left as it is rather than changed or deleted.
+	if message := tenantWorkloadsRefused(ctx, r.reader(), &lake); message != "" {
+		return r.finishEnvironmentStatus(ctx, &environment, nil, "", pendingDomainStatuses(&environment, message), oramav1alpha1.LakeEnvironmentPhaseDegraded, reasonTenantNetworkPolicyNotEnforced, message)
+	}
 
 	workloadNamespace := lakeEnvironmentNamespace(&environment)
 	if err := r.reconcileEnvironmentNamespace(ctx, &environment, workloadNamespace); err != nil {
@@ -699,7 +704,7 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Cont
 		previewHost = host
 	}
 	tlsHosts := lakeIssuableHosts(lake, hosts, previewHost)
-	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), tlsHosts)
+	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), tlsHosts, lakeShareWildcard)
 	if err != nil {
 		return nil, fmt.Errorf("environment certificates: %w", err)
 	}
@@ -951,7 +956,7 @@ func environmentTLSOwner(environment *oramav1alpha1.LakeEnvironment) string {
 // deleteEnvironmentTLS removes the environment's Certificates, their copies and the edge CA Secret.
 func (r *LakeEnvironmentReconciler) deleteEnvironmentTLS(ctx context.Context, lake *oramav1alpha1.Lake, environment *oramav1alpha1.LakeEnvironment, namespace string) error {
 	name := environmentWorkloadName(environment)
-	if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), nil); err != nil {
+	if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), nil, lakeShareWildcard); err != nil {
 		return err
 	}
 	if err := deleteLakeTLSCopies(ctx, r.Client, namespace, name, nil); err != nil {

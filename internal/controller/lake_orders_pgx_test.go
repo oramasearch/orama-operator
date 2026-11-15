@@ -90,13 +90,17 @@ func TestCloudOrdersPgxStoreAgainstPostgres(t *testing.T) {
 		paid      = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 		second    = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"
 		submitted = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
+		expired   = "3d4e5f6a-7b8c-4d9e-8f0a-2b3c4d5e6f7a"
 	)
 	// Lake's NOT NULL columns without a default are contact_name, contact_email and amount_cents;
 	// a provider or region not given is '' (lake's default), never NULL.
-	if _, err := db.Exec(ctx, `INSERT INTO cloud_orders (id, offer, path, cloud_provider, region, contact_name, contact_email, company, amount_cents, stripe_subscription_id, state) VALUES
-		($1, 'private_warehouse', 'checkout', '', 'swedencentral', 'Ada', 'a@example.com', 'A', 100000, 'sub_a', 'paid'),
-		($2, 'dedicated_cluster', 'checkout', 'azure', 'canadacentral', 'Ben', 'b@example.com', 'B', 500000, 'sub_b', 'paid'),
-		($3, 'on_prem', 'order_form', '', '', 'Cy', 'c@example.com', 'C', 1000000, NULL, 'submitted')`, paid, second, submitted); err != nil {
+	// The first two are paid for a day from now (lake's 0097 entitlement); the fourth's access
+	// ended at the epoch's first second, so it is past its grace too.
+	if _, err := db.Exec(ctx, `INSERT INTO cloud_orders (id, offer, path, cloud_provider, region, contact_name, contact_email, company, amount_cents, stripe_customer_id, stripe_subscription_id, entitlement_access_until, state) VALUES
+		($1, 'private_warehouse', 'checkout', '', 'swedencentral', 'Ada', 'a@example.com', 'A', 100000, 'cus_a', 'sub_a', extract(epoch FROM now())::bigint + 86400, 'paid'),
+		($2, 'dedicated_cluster', 'checkout', 'azure', 'canadacentral', 'Ben', 'b@example.com', 'B', 500000, 'cus_b', 'sub_b', extract(epoch FROM now())::bigint + 86400, 'paid'),
+		($3, 'on_prem', 'order_form', '', '', 'Cy', 'c@example.com', 'C', 1000000, NULL, NULL, 0, 'submitted'),
+		($4, 'private_warehouse', 'checkout', '', 'swedencentral', 'Di', 'd@example.com', 'D', 100000, 'cus_d', 'sub_d', 1, 'paid')`, paid, second, submitted, expired); err != nil {
 		t.Fatal(err)
 	}
 
@@ -104,8 +108,15 @@ func TestCloudOrdersPgxStoreAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(orders) != 2 || orders[0].ID != paid || orders[0].Region != "swedencentral" || orders[1].CloudProvider != "azure" {
-		t.Fatalf("listed %+v, want the two paid orders and not the submitted form", orders)
+	if len(orders) != 3 || orders[0].ID != paid || orders[0].Region != "swedencentral" || orders[1].CloudProvider != "azure" || orders[2].ID != expired {
+		t.Fatalf("listed %+v, want the three paid orders and not the submitted form", orders)
+	}
+	if orders[0].DesiredState != cloudOrderPresent || orders[1].DesiredState != cloudOrderPresent || orders[2].DesiredState != cloudOrderSuspended {
+		t.Fatalf("desired states %+v, want present, present, suspended", orders)
+	}
+	// An expired order is listed (reconciled, not skipped) and never claimed.
+	if claimed, err := open().Claim(ctx, expired, claimant); err != nil || claimed {
+		t.Fatalf("an expired order was claimed: %v %v", claimed, err)
 	}
 
 	// Eight pollers, each on its own connection, claim the same order at once: one wins.
@@ -150,19 +161,32 @@ func TestCloudOrdersPgxStoreAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(held) != 2 || held[0].State != cloudOrderProvisioning || held[0].ClaimedBy != winner {
+	if len(held) != 3 || held[0].State != cloudOrderProvisioning || held[0].ClaimedBy != winner {
 		t.Fatalf("after a restart the holder lists %+v", held)
 	}
 	if again, err := restarted.Claim(ctx, paid, winner); err != nil || again {
 		t.Fatalf("a held order was claimed again: %v %v", again, err)
 	}
-	if other, err := open().ListOrders(ctx, loser); err != nil || len(other) != 1 || other[0].ID != second {
-		t.Fatalf("another claimant lists %+v (%v), want only the other paid order", other, err)
+	if other, err := open().ListOrders(ctx, loser); err != nil || len(other) != 2 || other[0].ID != second || other[1].ID != expired {
+		t.Fatalf("another claimant lists %+v (%v), want only the other paid orders", other, err)
 	}
 
 	// Only the holder moves it on, and only once.
 	if moved, err := restarted.MarkReady(ctx, paid, loser, "x.lake.live"); err != nil || moved {
 		t.Fatalf("a non-holder moved the order: %v %v", moved, err)
+	}
+	// The move to ready rechecks the entitlement in the same statement: lapsed, it is refused.
+	if _, err := db.Exec(ctx, `UPDATE cloud_orders SET entitlement_access_until = 1 WHERE id = $1`, paid); err != nil {
+		t.Fatal(err)
+	}
+	if desired, err := restarted.DesiredState(ctx, paid); err != nil || desired != cloudOrderSuspended {
+		t.Fatalf("a lapsed order reads %q (%v), want suspended", desired, err)
+	}
+	if moved, err := restarted.MarkReady(ctx, paid, winner, "order-0a1b2c3d4e5f.lake.live"); err != nil || moved {
+		t.Fatalf("a lapsed order was marked ready: %v %v", moved, err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE cloud_orders SET entitlement_access_until = extract(epoch FROM now())::bigint + 86400 WHERE id = $1`, paid); err != nil {
+		t.Fatal(err)
 	}
 	if moved, err := restarted.MarkReady(ctx, paid, winner, "order-0a1b2c3d4e5f.lake.live"); err != nil || !moved {
 		t.Fatalf("the holder could not mark it ready: %v %v", moved, err)

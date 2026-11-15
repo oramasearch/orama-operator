@@ -59,7 +59,15 @@ The relay runs while any `ZettaTunnel` exists, in the operator-created namespace
   `externalTrafficPolicy: Local` so audit records keep the developer's source address. TLS passes
   through: the relay itself verifies the developer's certificate.
 - ConfigMap `zetta-tunnel-relay-grants`: `grants.json` is the zetta-tunnel grants file
-  (`{"grants":[{"id","workspace","endpoint","expires_at"}]}`) of every live grant, sorted by id;
+  (`{"grants":[{"id","workspace","endpoint","expires_at","client_ca_sha256"}]}`) of every live grant,
+  sorted by id. `client_ca_sha256` is the sorted lowercase-hex SHA-256 of the DER of each distinct CA
+  certificate in that grant's `spec.clientCAPEM` (1 to 16; a `ZettaTunnel` with more is refused as
+  invalid). From zetta-tunnel v0.2.0 the relay accepts a developer certificate for a grant only when
+  one of that grant's own CAs signed it, so one customer's CA in the shared bundle cannot open
+  another customer's grant (LSR-074, [#844](https://github.com/oramasearch/orama-operator/issues/844),
+  [zetta-tunnel#35](https://github.com/oramasearch/zetta-tunnel/pull/35)). The v0.2.0 relay refuses
+  a grants file without the field and an older relay refuses one with it, so the operator code and
+  the `oramasearch/zetta-tunnel:v0.2.0` pin ship together;
   `client-ca.pem` is the relay's developer trust bundle, the union of the live grants'
   `client_ca_pem`. The bundle also holds one placeholder CA whose key was discarded when it was made,
   so the file is never empty and trusts nobody when there are no grants. Mounted without `subPath`,

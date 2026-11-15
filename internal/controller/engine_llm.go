@@ -341,11 +341,17 @@ func (r *OramaCloudV1Reconciler) requestsForSecret(ctx context.Context, object c
 func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
 	names := []string{brokerAdminSecretName(oc), brokerUsersSecretName(oc), cacheAuthSecretName(oc), redisHTTPSecretName(oc), hpesSecretName(oc), analyticsKeySecretName(oc), brokerHarvestSecretName(oc),
 		harvestSignSecretName(oc), harvestNotificationSecretName(oc), discoAuthSecretName(oc), pgAdminAuthSecretName(oc)}
+	for _, c := range cacheClients {
+		names = append(names, cacheClientSecretName(oc, c.user))
+	}
 	if oc.Spec.Components.AnalyticsProcessor.Enabled || oc.Spec.Components.Ingestion.Enabled {
 		names = append(names, controlDBAppSecret(oc))
 	}
 	if oc.Spec.Components.Dashboard.Enabled {
 		names = append(names, dashboardDBSecrets(oc)...)
+	}
+	if oc.Spec.Components.AnalyticsProcessor.Enabled {
+		names = append(names, analyticsProcessorDBSecret(oc))
 	}
 	if name, _ := masterAPIKeyRef(oc); name != "" {
 		names = append(names, name)

@@ -7,9 +7,13 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -337,7 +341,12 @@ func TestZettaTunnelGrantReachesOnlyItsTargetAndRevocationEndsIt(t *testing.T) {
 		Endpoint:  "tunnel-" + testTunnelGrantID + ".workspace.svc.cluster.local:7444",
 		ExpiresAt: f.now.Add(2 * time.Hour).Format(time.RFC3339),
 	}
-	if len(document.Grants) != 1 || document.Grants[0] != want {
+	if fingerprints, err := zettaTunnelClientCAFingerprints(string(f.clientCA.CertPEM)); err != nil {
+		t.Fatal(err)
+	} else {
+		want.ClientCASHA256 = fingerprints
+	}
+	if len(document.Grants) != 1 || !reflect.DeepEqual(document.Grants[0], want) {
 		t.Fatalf("grants file = %+v", document)
 	}
 	if !strings.Contains(grants.Data[zettaTunnelClientCAKey], strings.TrimSpace(string(f.clientCA.CertPEM))) {
@@ -605,4 +614,79 @@ func parseTestCertificate(t *testing.T, data []byte) *x509.Certificate {
 		t.Fatal(err)
 	}
 	return cert
+}
+
+// Every projected grant carries the fingerprints of its own customer's CA and of no other (#844,
+// LSR-074): the relay checks the issuer of a developer certificate against them.
+func TestEveryRelayGrantCarriesItsOwnCustomerCAFingerprint(t *testing.T) {
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	caPEM := func(name string) []byte {
+		ca, err := newTunnelCA(name, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ca.CertPEM
+	}
+	first := caPEM("customer-one")
+	second := caPEM("customer-two")
+	tunnelFor := func(grantID, workspace string, caPEM []byte) oramav1alpha1.ZettaTunnel {
+		return oramav1alpha1.ZettaTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: zettaTunnelEndpointName(grantID), Namespace: workspace},
+			Spec: oramav1alpha1.ZettaTunnelSpec{
+				TunnelGrantSpec: oramav1alpha1.TunnelGrantSpec{
+					GrantID:     grantID,
+					CustomerID:  "11111111-1111-4111-8111-111111111111",
+					WorkspaceID: "22222222-2222-4222-8222-222222222222",
+					TargetID:    "33333333-3333-4333-8333-333333333333",
+					TargetKind:  oramav1alpha1.TunnelTargetService,
+					Port:        5432,
+					ExpiresAt:   metav1.NewTime(now.Add(time.Hour)),
+				},
+				ClientCAPEM: string(caPEM),
+			},
+		}
+	}
+	tunnels := []oramav1alpha1.ZettaTunnel{
+		tunnelFor("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "ws-one", first),
+		// A repeated certificate is projected once.
+		tunnelFor("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "ws-two", append(append([]byte{}, second...), second...)),
+	}
+	grants, _, _ := liveZettaTunnelGrants(tunnels, now)
+	if len(grants) != 2 {
+		t.Fatalf("grants = %+v", grants)
+	}
+	fingerprint := func(caPEM []byte) string {
+		certs, err := pemCertificates(caPEM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(certs[0].Raw)
+		return hex.EncodeToString(sum[:])
+	}
+	for i, want := range []string{fingerprint(first), fingerprint(second)} {
+		got := grants[i].ClientCASHA256
+		if len(got) != 1 || got[0] != want {
+			t.Fatalf("grant %s client_ca_sha256 = %v, want only [%s]", grants[i].ID, got, want)
+		}
+	}
+	document, err := zettaTunnelGrantsData(grants, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(document[zettaTunnelGrantsKey], `"client_ca_sha256":["`+fingerprint(first)+`"]`) {
+		t.Fatalf("grants.json does not carry client_ca_sha256: %s", document[zettaTunnelGrantsKey])
+	}
+
+	// More CAs than the relay accepts make the ZettaTunnel invalid, so it is never projected.
+	var many []byte
+	for i := 0; i <= zettaTunnelMaxClientCAs; i++ {
+		many = append(many, caPEM(fmt.Sprintf("ca-%d", i))...)
+	}
+	tooMany := tunnelFor("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "ws-three", many)
+	if validateZettaTunnel(&tooMany) == "" {
+		t.Fatal("a ZettaTunnel with 17 client CAs is valid")
+	}
+	if grants, _, _ := liveZettaTunnelGrants([]oramav1alpha1.ZettaTunnel{tooMany}, now); len(grants) != 0 {
+		t.Fatalf("a grant with 17 client CAs was projected: %+v", grants)
+	}
 }

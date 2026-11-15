@@ -12,7 +12,7 @@ Every Lake runs it; there is no switch. Every field is optional:
 ```yaml
 spec:
   apps:
-    wildcard: apps.oramadev.net    # empty: the Lake's spec.host
+    wildcard: lake-dev-apps.example  # required to serve apps; a registrable domain of its own (#762)
     ingressClass: nginx
     runtimeImage: oramasearch/app-runtime:<immutable-tag>   # empty: the operator's default
   dnsSecretRef:
@@ -112,9 +112,11 @@ credentials belong in lake's secret store, never these JSON columns. `bindings_j
 
 `zetta` can be null or absent. The sync checks each service ID against a present `services` row
 in the same workspace and resolves its name. Duplicate or unsafe filenames fail validation.
-The Service reconciler publishes an ID key alongside its existing `<slug>.json` key in the
-Lake-owned `lake-<lake>-services` Secret; both contain the same connection document. Only requested
-ID keys are copied to `app-bindings` in the app namespace. The pod mounts them as
+The services poll writes each service's connection into its own Secret,
+`lake-<lake>-<slug>-connection`, in the service's workspace namespace (operator#773). A requested
+service ID is read from that Secret **in the app's own workspace namespace only**, so a service of
+another workspace is never bound; only requested connections are copied to `app-bindings` in the app
+namespace. The pod mounts them as
 `/var/run/orama/bindings/services/<service name>`. Withdrawn services lose both keys; an app whose
 connection is unavailable stops its workload and reports binding progress.
 
@@ -263,16 +265,26 @@ The Lake-level settings are:
 - the operator passes that image to lake as `LAKE_APPS_RUNTIME_IMAGE`, so
   lake's generated build Dockerfile uses the configured private base image rather than an implicit
   Docker Hub library image;
-- `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`; empty uses the
-  Lake's own `spec.host`, so an app is `<app>.<lake host>` (`myapp.lake-dev.oramadev.net`). The
-  operator injects it into lake as `LAKE_APPS_WILDCARD` so lake can validate and create app hosts.
-  HTTPS on these two-level names needs a certificate per zone ([#515](https://github.com/oramasearch/orama-operator/issues/515));
+- `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`. **It has no
+  default and must be a site of its own** (see [Apps are a site of their own](#apps-are-a-site-of-their-own)).
+  The operator injects it into lake as `LAKE_APPS_WILDCARD` (empty when unset or refused) so lake
+  can validate and create app hosts. HTTPS on two-level names needs a certificate per zone
+  ([#515](https://github.com/oramasearch/orama-operator/issues/515));
 - `spec.apps.ingressClass`: the app Ingress class, defaulting to `nginx`.
 
-An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference. Its optional
-`spec.pullSecretName` overrides the Lake's pull Secret. For synchronized apps, the controller
-creates a `kubernetes.io/dockerconfigjson` Secret whose `auths` preserve the selected source
-Secret entries and add `spec.host` with username `app` and the generated `pull` token as password.
+An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference.
+
+**The platform pull Secret pulls only the platform's image** ([#801](https://github.com/oramasearch/orama-operator/issues/801),
+LSR-139). The Lake's `spec.pullSecretName` (Orama's registry credential) goes into an app's pull
+Secret only in runtime mode, where the pod runs the platform's `spec.apps.runtimeImage`. An
+image-mode app runs an image its owner chose, so it never gets it: a tenant naming a private
+platform image by digest would otherwise have the kubelet pull it with Orama's authority. A
+synchronized image-mode app's pull Secret holds lake's registry (`spec.host`, user `app`) and
+nothing else; an image elsewhere must be public. A hand-written image-mode LakeApp may name its own
+`spec.pullSecretName`; synchronized rows never set one. For synchronized apps, the controller
+creates a `kubernetes.io/dockerconfigjson` Secret whose `auths` hold the selected source Secret's
+entries (runtime mode: the Lake's; image mode: none) and add `spec.host` with username `app` and
+the generated `pull` token as password.
 The Deployment names this merged Secret in `imagePullSecrets`; deleting the app token Secret
 rotates both the registered pull-token hash and the password in the merged Secret. The source pull
 Secret always remains in the Lake namespace. Standalone CRs retain the original copy behavior into
@@ -350,7 +362,23 @@ default seccomp, has a read-only root filesystem, disables its Kubernetes token 
 gets a size-limited `emptyDir` at `/tmp`, and resolves with `ndots:2` so the full Service names it dials resolve on the first query ([DNS](README.md#dns-ndots-2-on-lake-agent-and-app-pods)). Synchronized-app pull credentials exist only in the
 merged workload-namespace Docker config Secret; the public Lake host password is never copied into
 the CR, pod template, status or logs. Runtime env includes `WORKSPACE_ID`, and `LAKE_URL`, auth and event URLs use Lake's
-`/w/<workspace id>` route. The selected binding values appear as files at:
+`/w/<workspace id>` route.
+
+**Own user namespace where the cluster supports one** ([operator#763](https://github.com/oramasearch/orama-operator/issues/763)).
+The app pod gets `hostUsers: false` when every node of the cluster reports, in its Node status,
+kubelet 1.33 or later (user namespaces on by default; a kubelet is never newer than its API
+server), Linux kernel 6.3 or later (idmapped tmpfs, for the Secret and `emptyDir` volumes) and
+containerd 2.0 or CRI-O 1.25 or later. Its UID 10001 is then a host range of its own, not the
+same host UID as every other tenant's app. One node that does not qualify keeps every app pod on
+the host's user namespace, since the scheduler may use any node. An app that mounts a store volume
+also keeps it, because the operator cannot tell from the API whether a StorageClass's filesystem
+supports idmapped mounts. There is no switch: the decision is read from the cluster each reconcile
+(`internal/controller/user_namespaces.go`), the same way on every cluster. When it changes (a pool
+added or upgraded), the app's pod template changes and its pods roll. On 2026-11-14 the managing
+cluster's nodes (kubelet 1.35.9, kernel 6.8, containerd 2.3) qualify. A dedicated tenant node pool
+and a sandbox runtime are the rest of #763 and need pools provisioned first.
+
+The selected binding values appear as files at:
 
 ```text
 /var/run/orama/bindings/zetta
@@ -368,13 +396,42 @@ as `public`). It is a managed name, so neither the app's `env` nor its `secretEn
 explicit `env` entry wins over `envFrom`. app-runtime reads Lake's identity headers only when it is
 `lake` ([app-runtime#11](https://github.com/oramasearch/app-runtime/issues/11)).
 
+## Apps are a site of their own
+
+A tenant's app is code its owner wrote, served on `<app>.<wildcard>`. Browsers let a page set a
+cookie for any parent domain that is not a public suffix, so an app under the Lake's own site
+could set `lake_session` for Lake (session fixation, login CSRF) or for every other tenant's app,
+whatever `SameSite` says ([#762](https://github.com/oramasearch/orama-operator/issues/762)). The
+operator therefore:
+
+- gives `spec.apps.wildcard` **no default** (it used to default to `spec.host`);
+- refuses a wildcard that is equal to, a parent of or a child of the Lake's `spec.host`, its
+  `LAKE_PUBLIC_HOST`, its `spec.apexHost` or its preview wildcard, or that is under the same
+  registrable domain (public suffix plus one label, from the Public Suffix List compiled into the
+  operator) as any of them;
+- reports it on the Lake as condition `AppsWildcardReady`: `True` (`Accepted`), or `False` with
+  reason `AppsWildcardUnset` or `AppsWildcardSharesLakeSite`. It does not change the Lake's `Ready`;
+- with no accepted wildcard, names no app host, writes no apps wildcard DNS record, Ingress or
+  certificate, passes lake an empty `LAKE_APPS_WILDCARD`, refuses every apps row, and stops every
+  synchronized app and every hand-written app without its own `spec.host`: its Deployment,
+  Service, Ingress, TLS copies and DNS records are removed and its status carries the same reason;
+- still reserves a refused wildcard as a platform name, so no tenant domain can take it.
+
+The wildcard to use is a registrable domain per environment that serves nothing else, ideally
+submitted to the Public Suffix List (as `github.io` is) so that each app is its own site. Choosing
+it is a configuration decision; every LakeSet member sets it in `spec.apps.wildcard`. Such a
+domain is its own Cloudflare zone, so its DNS records and DNS-01 certificates need a token for that
+zone; today the operator uses the Lake's one `dnsSecretRef` for app DNS, so a separate apps
+zone needs either a token covering both zones or a follow-up that gives `spec.apps` its own DNS
+credential.
+
 ## Ingress and authentication
 
-An empty app host derives `<app>.<Lake spec.apps.wildcard>`, and an empty wildcard is the Lake's `spec.host`. That address uses the one shared
+An empty app host derives `<app>.<Lake spec.apps.wildcard>`; with no accepted wildcard there is no such host and the app is not served. Every app's origin certificate is its own (`<host>-tls`, issued in the Lake namespace and copied next to its Ingress), also under the apps wildcard: the wildcard's private key never enters a workspace namespace ([#784](https://github.com/oramasearch/orama-operator/issues/784), [origin TLS](origin-tls.md)). That address uses the one shared
 wildcard record maintained by the apps sync. A standalone custom host gets its own proxied record after nginx
 reports a load-balancer target. The ingress class is `spec.apps.ingressClass`, default `nginx`.
 
-With a wildcard (or a Lake host) and `dnsSecretRef`, the sync maintains one Lake-owned proxied
+With an accepted wildcard and `dnsSecretRef`, the sync maintains one Lake-owned proxied
 `CloudflareDNSRecord` in the Lake namespace. It uses the Lake ingress address when its class
 matches, otherwise an owned app ingress of the configured class, selected deterministically.
 No record is created until a target is reported. Suffix changes retire old owned records, and

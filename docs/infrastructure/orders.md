@@ -13,7 +13,9 @@ order is provisioned exactly once, and what is still open.
 Status: implemented and tested locally (envtest, a real Postgres for the SQL). **Not yet run on a
 cluster**: there is no `LakeOrderSource` in [`config/clusters/`](../../config/clusters/README.md),
 lake#831's migration has not landed, and the port-forward path below has not been exercised against
-a real leaf. The open questions are at the end.
+a real leaf. The entitlement checks (operator#862) are written with their tests, which have not
+been run yet (Steve, 2026-11-14: tests run at review and release time). The open questions are at
+the end.
 
 ## Where the orders are
 
@@ -32,12 +34,55 @@ The contract, as the operator uses it:
 | `host`, `failure_reason`, `claimed_by`, `claimed_at` | writes |
 | everything else (contact, company, Stripe ids, free text, `path`) | never reads or writes |
 | `cloud_order_events` (`order_id`, `at`, `from_state`, `to_state`, `actor`, `detail`) | inserts one row per change it makes, with `actor = 'operator'` |
+| `cloud_order_desired_state` view (lake#972, migration `0097_cloud_order_entitlements`): every column above plus `entitlement_state` and `desired_state` (`present`, `suspended`, `unmanaged`) | reads, for every list and before every write; see [Entitlement](#entitlement-an-order-runs-only-while-it-is-paid-for) |
 
 The exact columns are lake's `docs/control-plane/schema.md` once lake#831's pull request lands; both
 pull requests use the names above. Until then the operator's test fixture
 [`internal/controller/testdata/lake-cloud-orders.sql`](../../internal/controller/testdata/lake-cloud-orders.sql)
 holds the contract. While a member's control plane has no `cloud_orders` table, the source says so
-and claims nothing.
+and claims nothing. While it has the table but not lake's `cloud_order_desired_state` view (a lake
+image before migration 0097), the source is `Pending` with reason `EntitlementsMissing` and claims
+nothing either: it cannot tell a paid-for order from an expired one.
+
+## Entitlement: an order runs only while it is paid for
+
+[operator#862](https://github.com/oramasearch/orama-operator/issues/862), companion of
+[lake#972](https://github.com/oramasearch/lake/issues/972) (LSR-105); lake's contract is
+[`docs/api/orders.md#recurring-entitlement-lsr-105-lake972`](https://github.com/oramasearch/lake/blob/dev/docs/api/orders.md#recurring-entitlement-lsr-105-lake972).
+lake keeps each checkout order's Stripe subscription and the time its access ends, from Stripe's
+signed webhooks (`invoice.{paid,payment_failed,voided,marked_uncollectible,payment_action_required,updated}`
+and `customer.subscription.{created,updated,deleted,paused,resumed}`, registered by
+[`spec.payments`](../lake/payments.md) in `lake_payments.go`). Its view `cloud_order_desired_state`
+turns that into `desired_state` on PostgreSQL's clock at every read: `present` for a checkout order
+in `paid`, `provisioning` or `ready` whose access (or its grace, three days by default) has not
+ended; `suspended` otherwise, which includes every `failed` and `cancelled` order; `unmanaged` for
+an order form. No webhook or worker is needed for an expiry to take effect.
+
+The operator reads every order through the view, on every pass, suspended ones included:
+
+| The order | What the operator does |
+|---|---|
+| `paid`, `suspended` | Not claimed. Nothing is made. Listed in `status.orders[]` with `suspended: true` and counted in `status.suspended`. |
+| `provisioning` or `ready`, `suspended` | Nothing is made and nothing missing is made again. If its `LakeSet` exists, its member is written with `replicas: 0`: the lake Deployment stops, and the `LakeSet`, the Lake, its namespace, control Postgres, store, Zetta, Secrets, host and name are all kept. A dedicated cluster's `KubernetesCluster`, platform and operator are kept as they are. The order's lake state is not changed, and no event is written. |
+| `failed` or `cancelled` | Counted as before; whatever it left is held the same way (a `LakeSet` it left stops). |
+| `present` again (a signed renewal) | The next pass writes the member without the override, so the Lake runs its replica again; a `ready` order's missing resources are made again; a `paid` one is claimed. |
+
+**The entitlement is checked again before anything is written**:
+
+- the claim is one statement that also requires the view to say the order is not suspended, so an
+  order that expires between the list and the claim is not claimed;
+- before a `provisioning` or `ready` order's resources are written, its `desired_state` is read
+  again; an error reading it writes nothing for that order on that pass;
+- the move to `ready` is one statement that requires the same, so an order whose entitlement ended
+  while its Lake came up stays `provisioning`, held, and is not reported ready.
+
+Nothing is ever deleted for an expiry: data and identity are retained until a person decides
+otherwise (open question 1). `spec.member` may not set `replicas`, because the operator sets it
+while an order is suspended.
+
+What suspension does not stop yet: the Lake's own Zetta, its workspace Zettas, apps and agents keep
+their pods while the lake process is stopped (a Lake has no switch that stops all of its compute), and
+a dedicated cluster's node pools keep their nodes. Both are follow-ups.
 
 ## How the management cluster's operator reaches a leaf's orders
 
@@ -109,12 +154,12 @@ spec:
   pollInterval: 30s
 ```
 
-`member` may not set `host`, `args`, `apexHost`, `region`, `regions`, `namespace` or
+`member` may not set `host`, `args`, `apexHost`, `region`, `regions`, `namespace`, `replicas` or
 `LAKE_PUBLIC_HOST`: the operator sets those for each order. A source that does is `Degraded` and
 reads no order. Lake's column limits bound the rest: the source's name is at most 224 characters
 (`claimed_by` is at most 255), `hostDomain` at most 234 (`host` is at most 253), and a
-`failure_reason` or event detail over 2000 characters is cut to 2000. `kubectl get lorders` shows the counts and the message; `status.orders` lists every
-order being provisioned and what it waits for; `status.members` says whether each member's orders
+`failure_reason` or event detail over 2000 characters is cut to 2000. `kubectl get lorders` shows the counts (`Suspended` among them) and the message; `status.orders`
+lists every order being provisioned or suspended and what it waits for; `status.members` says whether each member's orders
 were read.
 
 An ordered Lake's Secrets are its source set's and `memberSecrets`. When the source set is
@@ -153,7 +198,8 @@ and never again:
   choosing again would give a ready customer a new, empty Lake on another cluster and leave the old
   one, with their data, running unmanaged under `Retain`.
 
-A missing resource of a `provisioning` or `ready` order is made again, and an ordered `LakeSet`
+A missing resource of a `provisioning` or `ready` order is made again while the order is paid for
+(never while it is suspended), and an ordered `LakeSet`
 follows the source set's template on every pass: a change to it (a new lake image) reaches ordered
 Lakes too, the way it reaches the set's own members (open question 7).
 
@@ -181,8 +227,9 @@ waits for.
 ## Exactly once
 
 - **The claim is one statement**: `UPDATE cloud_orders SET state = 'provisioning', claimed_by = …,
-  claimed_at = now() WHERE id = … AND state = 'paid'`, with its event row inserted by the same
-  statement. Of any number of pollers, only one finds the row still `paid`.
+  claimed_at = now() WHERE id = … AND state = 'paid'` and the order not `suspended` in
+  `cloud_order_desired_state`, with its event row inserted by the same statement. Of any number of
+  pollers, only one finds the row still `paid`.
 - **The moves on are guarded the same way**: `… WHERE id = … AND state = 'provisioning' AND
   claimed_by = <this source>`. An order another claimant holds is never touched.
 - **`claimed_by` names the source, not the pod or the cluster**:
@@ -221,8 +268,9 @@ act on `cancelled` yet (below).
 ## Open questions for Steve
 
 1. **Cancellation.** What a `cancelled` order (or a lapsed Stripe subscription) does to a running
-   private warehouse or dedicated cluster: delete it at once, after a grace period, after a final
-   backup, or only on a person's approval. Today nothing is removed; the resources stay, labelled.
+   private warehouse or dedicated cluster beyond stopping it: delete it at once, after a retention
+   period, after a final backup, or only on a person's approval. Today its Lake is stopped
+   (operator#862) and nothing is removed; the resources stay, labelled.
 2. **The host.** Ordered Lakes are served at `order-<id prefix>.lake.live`. Should the customer
    choose a name (`acme.lake.live`), and does a dedicated cluster in a region get a regional name?
 3. **Stuck orders.** An order waiting on our side (a cluster that never becomes `Ready`) stays
@@ -254,13 +302,18 @@ act on `cancelled` yet (below).
   (each offer `paid` → `provisioning` → `ready` with its host; each failure; no cloud identity;
   four concurrent pollers and a restart; a missing table; a refused source; a ready dedicated
   cluster that does not follow a changed template; a ready warehouse that stays on its cluster when
-  the set gains one in its region) against the fake client
+  the set gains one in its region; and for the entitlement: an expired paid order never claimed, a
+  ready order stopped on subscription end with its data kept and restarted on renewal, an expiry in
+  flight never marked ready, a suspended order's lost `LakeSet` not made again, a failed reread
+  writing nothing, no view claiming nothing, and a suspended dedicated cluster kept) against the
+  fake client
   and, with `KUBEBUILDER_ASSETS`, against envtest's API server, which checks every object made
   against its CRD. [`lake_orders_pgx_test.go`](../../internal/controller/lake_orders_pgx_test.go)
   runs the SQL on a real Postgres in a database it creates and drops (`LAKE_ORDERS_TEST_POSTGRES=1`):
-  eight connections claiming one order at once, a reconnect, only the holder moving it on, and no
-  column but the operator's written.
+  eight connections claiming one order at once, a reconnect, only the holder moving it on, an
+  expired order listed and never claimed, a lapsed order refused the move to ready, and no column
+  but the operator's written.
   Its schema, `testdata/lake-cloud-orders.sql`, is a verbatim copy of lake's 0089_cloud_orders
-  migration (the lake commit is named in its header);
+  and 0097_cloud_order_entitlements migrations (the lake commits are named in its headers);
   [`lake_orders_contract_test.go`](../../internal/controller/lake_orders_contract_test.go) checks,
   with no database, that every table and column the store's SQL names is in it.

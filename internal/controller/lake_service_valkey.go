@@ -37,8 +37,15 @@ func (valkeyServiceKind) objects(in catalogService) []catalogObject {
 	return []catalogObject{{gvk: valkeyClusterGVK, name: in.name}}
 }
 
-// valkeyUsers: the app user with every command, key and channel, and the built-in default user
-// switched off — unmanaged, it would accept unauthenticated clients. The operator's own probes
+// valkeyDeniedCategories are the command categories the tenant's app user may not run
+// (operator#771): @admin (CONFIG, ACL, MODULE, DEBUG, SHUTDOWN, REPLICAOF, CLUSTER's writing
+// subcommands, ...) and @dangerous (KEYS, FLUSHALL, FLUSHDB, MIGRATE, RESTORE, MONITOR, INFO, ...).
+// With them the credential a tenant receives could reconfigure the server, load a module or write
+// files with CONFIG SET dir. Every other command, every key and every channel stay allowed.
+var valkeyDeniedCategories = []interface{}{"@admin", "@dangerous"}
+
+// valkeyUsers: the app user with every command but the denied categories, every key and channel,
+// and the built-in default user switched off — unmanaged, it would accept unauthenticated clients. The operator's own probes
 // and replication use its system users. Every field the CRD defaults is written, so the array
 // reads back equal and a steady cluster is never rewritten.
 func valkeyUsers(secretName string) []interface{} {
@@ -47,7 +54,7 @@ func valkeyUsers(secretName string) []interface{} {
 		map[string]interface{}{
 			"name": valkeyUser, "enabled": true, "nopass": false, "resetpass": false,
 			"passwordSecret": map[string]interface{}{"name": secretName, "keys": []interface{}{"password"}},
-			"commands":       map[string]interface{}{"allow": []interface{}{"@all"}},
+			"commands":       map[string]interface{}{"allow": []interface{}{"@all"}, "deny": valkeyDeniedCategories},
 			"keys":           map[string]interface{}{"readWrite": []interface{}{"*"}},
 			"channels":       map[string]interface{}{"patterns": []interface{}{"*"}},
 		},

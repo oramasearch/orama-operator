@@ -41,7 +41,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 			port:      8080,
 			env:       append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
 			// controlDBAppSecret is its DATABASE_URL (pgURIEnv): a new control DB has a new password.
-			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), typesenseAuthSecretName(oc), decrypterAuthSecretName(oc), indexBuilderAuthSecretName(oc), deploymentAPISecretName(oc), discoAuthSecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
+			credentialSecrets: append([]string{redisClientSecret(oc, cacheClientIndexBuilder), masterKey, hpesSecretName(oc), harvestSignSecretName(oc), typesenseAuthSecretName(oc), decrypterAuthSecretName(oc), indexBuilderAuthSecretName(oc), deploymentAPISecretName(oc), discoAuthSecretName(oc), controlDBAppSecret(oc)}, keyRefSecrets(refs)...),
 			resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
 		}); err != nil {
 			return err
@@ -122,19 +122,20 @@ func (r *OramaCloudV1Reconciler) reconcileHarvestMaster(ctx context.Context, oc 
 		image:     componentImage(oc, "harvest-master", "harvest-master"),
 		port:      8080,
 		// AMQP_HOST and REDIS_HOST are URLs whose credentials are $(VAR) references to the env
-		// entries before them, expanded by the kubelet from <cr>-broker-harvest and <cr>-cache-auth.
-		env: append(harvestBrokerEnv(oc), redisPasswordEnvVar(oc),
+		// entries before them, expanded by the kubelet from <cr>-broker-harvest and its Redis user's
+		// <cr>-cache-harvest-master (#825).
+		env: append(harvestBrokerEnv(oc), redisClientEnv(oc, cacheClientHarvestMaster),
 			secretKeyEnv("HARVEST_SIGNATURE", harvestSignSecretName(oc), harvestSignKey),
 			secretKeyEnv(harvestNotificationKey, harvestNotificationSecretName(oc), harvestNotificationKey),
 			corev1.EnvVar{Name: "APP_ENV", Value: "production"},
 			corev1.EnvVar{Name: "EXPRESS_PORT", Value: "8080"},
 			corev1.EnvVar{Name: "MONGODB_URL", Value: "mongodb://" + n + "-harvest-mongo:27017/harvest"},
 			corev1.EnvVar{Name: "AMQP_HOST", Value: amqpURL(oc)},
-			corev1.EnvVar{Name: "REDIS_HOST", Value: redisURL(oc)},
+			corev1.EnvVar{Name: "REDIS_HOST", Value: redisClientURL(oc, cacheClientHarvestMaster)},
 			corev1.EnvVar{Name: "MASTER_URI", Value: "http://" + n + "-harvest-master:8080"},
 			corev1.EnvVar{Name: "WORKER_IMAGE", Value: componentImage(oc, "harvest", "harvest")},
 		),
-		credentialSecrets: []string{brokerHarvestSecretName(oc), cacheAuthSecretName(oc), harvestSignSecretName(oc), harvestNotificationSecretName(oc)},
+		credentialSecrets: []string{brokerHarvestSecretName(oc), redisClientSecret(oc, cacheClientHarvestMaster), harvestSignSecretName(oc), harvestNotificationSecretName(oc)},
 		resources:         resourceReqs("128Mi", "50m", "512Mi"),
 	})
 }
@@ -142,14 +143,14 @@ func (r *OramaCloudV1Reconciler) reconcileHarvestMaster(ctx context.Context, oc 
 // indexBuilderEnv provides the non-secret half of index-builder's EnvSchema (in-cluster URLs +
 // constants + the CF KV namespace IDs from the owned KV CRs). Credential-shaped vars come via the
 // component Secret (envFrom), except MASTER_API_KEY (spec.masterAPIKeySecretRef), the Redis
-// password (<cr>-cache-auth), which REDIS_URL references, the HPES bearer (<cr>-hpes, #574) and
+// password (its Redis user's <cr>-cache-index-builder, #825), which REDIS_URL references, the HPES bearer (<cr>-hpes, #574) and
 // HARVEST's control key (<cr>-harvest-sign). Nothing connects eagerly at boot, so
 // present+valid env → healthy; external endpoints (Apify) are placeholders until real provisioning.
 func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 	n := oc.Name
 	return []corev1.EnvVar{
 		masterAPIKeyEnv(oc),
-		redisPasswordEnvVar(oc), // before REDIS_URL, which references it
+		redisClientEnv(oc, cacheClientIndexBuilder), // before REDIS_URL, which references it
 		{Name: "NODE_ENV", Value: "production"},
 		{Name: "TELEMETRY_WORKER_NAME", Value: "telemetry-worker"},
 		{Name: "SENTRY_DSN", Value: ""}, // empty disables Sentry
@@ -161,7 +162,7 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		{Name: "DEPLOYMENT_API_BASE_URL", Value: "http://" + n + "-dashboard:3000"},
 		{Name: "APIFY_ACT_ENDPOINT", Value: "https://api.apify.com/v2/acts/placeholder/runs"},
 		{Name: "APIFY_DATASET_ENDPOINT", Value: "https://api.apify.com/v2/datasets/placeholder/items"},
-		{Name: "REDIS_URL", Value: redisURL(oc)},
+		{Name: "REDIS_URL", Value: redisClientURL(oc, cacheClientIndexBuilder)},
 		pgURIEnv(oc, "DATABASE_URL"), // CNPG-generated URI (real password), not a placeholder (#32)
 		{Name: "DISCO_URL", Value: "http://" + n + "-disco:8080"},
 		{Name: "DISCO_PEERS", Value: ""},

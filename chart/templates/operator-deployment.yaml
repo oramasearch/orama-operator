@@ -31,6 +31,9 @@ spec:
             - --control-plane-bind-address=:{{ .Values.controlPlane.service.port }}
             - --control-plane-cert-file=/var/run/orama/control-plane/tls.crt
             - --control-plane-key-file=/var/run/orama/control-plane/tls.key
+            - --control-plane-ca-file=/var/run/orama/control-plane/ca.crt
+            # Where lake asks for one service connection at a time (operator#773).
+            - --control-plane-service-url=https://{{ include "operator.fullname" . }}-control-plane.{{ .Release.Namespace }}.svc:{{ .Values.controlPlane.service.port }}
             {{- with .Values.lakeServices.sqliteImage }}
             - --lake-sqlite-image={{ . }}
             {{- end }}

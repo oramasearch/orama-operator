@@ -255,7 +255,7 @@ func createLakeAppFixture(t *testing.T, ctx context.Context, kubeClient client.C
 				Image:          "oramasearch/lake:test",
 				PullSecretName: "docker-pull",
 				Apps: oramav1alpha1.LakeAppsSpec{
-					Wildcard:     "apps.example.test",
+					Wildcard:     "apps-example.test",
 					IngressClass: "nginx",
 					RuntimeImage: "oramasearch/app-runtime:0.1.0",
 				},
@@ -405,7 +405,7 @@ func assertLakeAppCreated(t *testing.T, ctx context.Context, kubeClient client.C
 		t.Fatal(err)
 	}
 	wantAuthURL := "http://lake-prod.lake.svc.cluster.local:80/v1/apps/auth"
-	if ingress.Spec.Rules[0].Host != "sales-dashboard.apps.example.test" || ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] != wantAuthURL {
+	if ingress.Spec.Rules[0].Host != "sales-dashboard.apps-example.test" || ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] != wantAuthURL {
 		t.Fatalf("app ingress = host %q annotations %#v", ingress.Spec.Rules[0].Host, ingress.Annotations)
 	}
 }

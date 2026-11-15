@@ -56,7 +56,7 @@ func TestDeploymentChartRestrictsCallersAndProvisionsTLS(t *testing.T) {
 			if err != nil || selector.Empty() || !selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
 				t.Fatal("NetworkPolicy does not select the manager")
 			}
-			if len(policy.Spec.PolicyTypes) != 1 || policy.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress || len(policy.Spec.Ingress) != 2 {
+			if len(policy.Spec.PolicyTypes) != 1 || policy.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress || len(policy.Spec.Ingress) != 3 {
 				t.Fatal("manager ingress is not isolated")
 			}
 			deployRule := policy.Spec.Ingress[0]
@@ -81,7 +81,25 @@ func TestDeploymentChartRestrictsCallersAndProvisionsTLS(t *testing.T) {
 				!namespaces.Matches(allowedNamespaces) || !pods.Matches(allowedPods) {
 				t.Fatal("unlabelled callers are admitted or authorized callers are blocked")
 			}
-			for _, p := range policy.Spec.Ingress[1].Ports {
+			// The Lake pods that ask for one service connection (operator#773): their own labelled
+			// namespace and pods, on the control-plane port only.
+			connectionRule := policy.Spec.Ingress[1]
+			if len(connectionRule.From) != 1 || len(connectionRule.Ports) != 1 || connectionRule.Ports[0].Port.IntValue() != port ||
+				connectionRule.From[0].NamespaceSelector == nil || connectionRule.From[0].PodSelector == nil || connectionRule.From[0].IPBlock != nil {
+				t.Fatal("the service connection callers are not restricted to labelled namespaces and pods")
+			}
+			connectionNamespaces, _ := metav1.LabelSelectorAsSelector(connectionRule.From[0].NamespaceSelector)
+			connectionPods, _ := metav1.LabelSelectorAsSelector(connectionRule.From[0].PodSelector)
+			if connectionNamespaces.Matches(labels.Set{}) || connectionPods.Matches(labels.Set{}) ||
+				!connectionNamespaces.Matches(labels.Set{"orama.cloud/service-connection-clients": "true"}) ||
+				!connectionPods.Matches(labels.Set{"orama.cloud/service-connection-client": "true"}) {
+				t.Fatal("unlabelled callers reach the service connection operation")
+			}
+			if !strings.Contains(strings.Join(deployment.Spec.Template.Spec.Containers[0].Args, " "),
+				fmt.Sprintf("--control-plane-service-url=https://orama-operator-control-plane.operator-system.svc:%d", port)) {
+				t.Fatal("the manager is not told where lake asks for service connections")
+			}
+			for _, p := range policy.Spec.Ingress[2].Ports {
 				if p.Port == nil || (p.Port.IntValue() != 8080 && p.Port.IntValue() != 8081) || p.EndPort != nil {
 					t.Fatal("unrestricted ingress reaches a deployment port")
 				}

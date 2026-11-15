@@ -96,8 +96,12 @@ func TestLakeOriginTLSCoversEveryHostAndWildcard(t *testing.T) {
 		t.Errorf("main ingress issuer = %+v", main.Annotations)
 	}
 
+	// The Lake names no apps wildcard, and none defaults to its own host (#762): there is no apps
+	// wildcard Ingress, only the preview one.
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "lake-shared-apps-wildcard"}, &networkingv1.Ingress{}); !apierrors.IsNotFound(err) {
+		t.Errorf("an apps wildcard Ingress under the Lake's host exists: %v", err)
+	}
 	for name, host := range map[string]string{
-		"lake-shared-apps-wildcard":    "*.eu.lake.live",
 		"lake-shared-preview-wildcard": "*.preview.lake.live",
 	} {
 		ing := getIngress(t, c, "lake", name)
@@ -151,7 +155,7 @@ func TestLakeIngressFollowsTheZone(t *testing.T) {
 	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	reconcileLake(t, c, s, "shared")
 
-	names := []string{"lake-shared", "lake-shared-apps-wildcard", "lake-shared-preview-wildcard"}
+	names := []string{"lake-shared", "lake-shared-preview-wildcard"}
 	check := func(step, redirect string, pulls bool) {
 		t.Helper()
 		for _, name := range names {
@@ -186,12 +190,12 @@ func TestLakeIngressFollowsTheZone(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); err != nil {
 		t.Fatal(err)
 	}
-	policy.Status.Hosts = []oramav1alpha1.EdgeZoneHostStatus{{Name: "*.eu.lake.live", Edge: "TLS handshake failed"}}
+	policy.Status.Hosts = []oramav1alpha1.EdgeZoneHostStatus{{Name: "*.preview.lake.live", Edge: "TLS handshake failed"}}
 	if err := c.Status().Update(context.Background(), &policy); err != nil {
 		t.Fatal(err)
 	}
 	reconcileLake(t, c, s, "shared")
-	if got := getIngress(t, c, "lake", "lake-shared-apps-wildcard").Annotations[annotationNginxSSLRedirect]; got != "false" {
+	if got := getIngress(t, c, "lake", "lake-shared-preview-wildcard").Annotations[annotationNginxSSLRedirect]; got != "false" {
 		t.Errorf("uncovered wildcard redirect = %q, want false", got)
 	}
 	if got := getIngress(t, c, "lake", "lake-shared").Annotations[annotationNginxSSLRedirect]; got != "true" {
@@ -329,16 +333,18 @@ func dnsZoneCovers(zone, name string) bool {
 	return name == zone || strings.HasSuffix(name, "."+zone)
 }
 
-// An app under the apps wildcard uses the wildcard's certificate, copied next to its Ingress; an
-// app with its own host gets a Certificate in the Lake namespace from the Lake's Issuer.
+// An app under the apps wildcard gets a Certificate of its own in the Lake namespace, never the
+// wildcard's: only its own host's key is copied next to its Ingress, so its workspace namespace
+// never holds the key of every other tenant's app (#784). An app with its own host does the same.
 func TestLakeAppIngressGetsOriginTLS(t *testing.T) {
 	s := newLakeScheme(t)
 	ctx := context.Background()
 	lake, secret := originTLSLake()
+	lake.Spec.Apps.Wildcard = "eu.lakeapps.example"
 	wildcardSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "wildcard.eu.lake.live-tls", Namespace: "lake"},
+		ObjectMeta: metav1.ObjectMeta{Name: ingressTLSSecretName("*.eu.lakeapps.example"), Namespace: "lake"},
 		Type:       corev1.SecretTypeTLS,
-		Data:       map[string][]byte{corev1.TLSCertKey: []byte("cert"), corev1.TLSPrivateKeyKey: []byte("key")},
+		Data:       map[string][]byte{corev1.TLSCertKey: []byte("wildcard-cert"), corev1.TLSPrivateKeyKey: []byte("wildcard-key")},
 	}
 	app := &oramav1alpha1.LakeApp{ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "lake", UID: "app-uid"}, Spec: oramav1alpha1.LakeAppSpec{LakeRef: "shared"}}
 	policy := &oramav1alpha1.EdgeZonePolicy{
@@ -350,23 +356,65 @@ func TestLakeAppIngressGetsOriginTLS(t *testing.T) {
 	r := &LakeAppReconciler{Client: c, Scheme: s}
 	ns := "ws-1"
 	workload := lakeAppWorkloadObjectName(app)
+	const host = "shop.eu.lakeapps.example"
+	noWildcardKeyIn := func(step, namespace string) {
+		t.Helper()
+		var secrets corev1.SecretList
+		if err := c.List(ctx, &secrets, client.InNamespace(namespace)); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range secrets.Items {
+			if string(item.Data[corev1.TLSPrivateKeyKey]) == "wildcard-key" {
+				t.Errorf("%s: Secret %s/%s holds the apps wildcard's private key", step, namespace, item.Name)
+			}
+		}
+	}
 
-	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.eu.lake.live"); err != nil {
+	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, host); err != nil {
 		t.Fatalf("reconcile app ingress: %v", err)
 	}
+	certificate := &unstructured.Unstructured{}
+	certificate.SetGroupVersionKind(certManagerCertificateGVK)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: ingressTLSSecretName(host)}, certificate); err != nil {
+		t.Fatalf("an app under the wildcard has no Certificate of its own: %v", err)
+	}
+	dnsNames, _, _ := unstructured.NestedStringSlice(certificate.Object, "spec", "dnsNames")
+	issuer, _, _ := unstructured.NestedString(certificate.Object, "spec", "issuerRef", "name")
+	if len(dnsNames) != 1 || dnsNames[0] != host || issuer != "lake-shared-letsencrypt" ||
+		len(certificate.GetOwnerReferences()) != 1 || certificate.GetOwnerReferences()[0].Name != "shop" {
+		t.Errorf("certificate = %+v", certificate.Object)
+	}
 	ing := getIngress(t, c, ns, workload)
-	copyName := tlsSecretsByHost(ing)["shop.eu.lake.live"]
+	copyName := tlsSecretsByHost(ing)[host]
 	if copyName == "" {
 		t.Fatalf("app ingress TLS = %+v", ing.Spec.TLS)
 	}
+	noWildcardKeyIn("not issued yet", ns)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: copyName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Errorf("a copy exists before the app's own certificate is issued: %v", err)
+	}
+
+	// cert-manager issues the app's own certificate: it, and only it, is copied next to the app.
+	if err := c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: ingressTLSSecretName(host), Namespace: "lake"},
+		Type:       corev1.SecretTypeTLS,
+		Data:       map[string][]byte{corev1.TLSCertKey: []byte("own-cert"), corev1.TLSPrivateKeyKey: []byte("own-key")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, host); err != nil {
+		t.Fatalf("reconcile app ingress: %v", err)
+	}
 	var copied corev1.Secret
 	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: copyName}, &copied); err != nil {
-		t.Fatalf("wildcard certificate not copied next to the app: %v", err)
+		t.Fatalf("the app's own certificate is not copied next to it: %v", err)
 	}
-	if string(copied.Data[corev1.TLSCertKey]) != "cert" || copied.Type != corev1.SecretTypeTLS {
+	if string(copied.Data[corev1.TLSPrivateKeyKey]) != "own-key" || copied.Type != corev1.SecretTypeTLS {
 		t.Errorf("copy = %+v", copied)
 	}
-	if ing.Annotations[annotationNginxSSLRedirect] != "true" || ing.Annotations[annotationNginxAuthTLSSecret] != ns+"/"+workload+"-edge-client-ca" {
+	noWildcardKeyIn("issued", ns)
+	ing = getIngress(t, c, ns, workload)
+	if ing.Annotations[annotationNginxAuthTLSSecret] != ns+"/"+workload+"-edge-client-ca" {
 		t.Errorf("app ingress annotations = %+v", ing.Annotations)
 	}
 	if _, found := ing.Annotations["nginx.ingress.kubernetes.io/auth-url"]; !found {
@@ -384,30 +432,28 @@ func TestLakeAppIngressGetsOriginTLS(t *testing.T) {
 		}
 	}
 
-	// Its own host: a Certificate in the Lake namespace, owned by the app; the wildcard copy goes.
+	// A copy of the wildcard's key left from before #784 is removed once the app's own
+	// certificate replaces it, and also while that certificate is not issued yet.
+	copied.Data = map[string][]byte{corev1.TLSCertKey: []byte("wildcard-cert"), corev1.TLSPrivateKeyKey: []byte("wildcard-key")}
+	if err := c.Update(ctx, &copied); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: ingressTLSSecretName(host), Namespace: "lake"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, host); err != nil {
+		t.Fatalf("reconcile app ingress: %v", err)
+	}
+	noWildcardKeyIn("old wildcard copy", ns)
+
+	// Its own host: a Certificate in the Lake namespace, owned by the app; the old host's goes.
 	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.example.com"); err != nil {
 		t.Fatalf("reconcile app ingress: %v", err)
 	}
-	certificate := &unstructured.Unstructured{}
-	certificate.SetGroupVersionKind(certManagerCertificateGVK)
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "shop.example.com-tls"}, certificate); err != nil {
 		t.Fatalf("certificate: %v", err)
 	}
-	dnsNames, _, _ := unstructured.NestedStringSlice(certificate.Object, "spec", "dnsNames")
-	issuer, _, _ := unstructured.NestedString(certificate.Object, "spec", "issuerRef", "name")
-	if len(dnsNames) != 1 || dnsNames[0] != "shop.example.com" || issuer != "lake-shared-letsencrypt" ||
-		len(certificate.GetOwnerReferences()) != 1 || certificate.GetOwnerReferences()[0].Name != "shop" {
-		t.Errorf("certificate = %+v", certificate.Object)
-	}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: copyName}, &copied); !apierrors.IsNotFound(err) {
-		t.Errorf("the old host's copy remains: %v", err)
-	}
-
-	// Back under the wildcard: its own Certificate is deleted.
-	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.eu.lake.live"); err != nil {
-		t.Fatalf("reconcile app ingress: %v", err)
-	}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "shop.example.com-tls"}, certificate); !apierrors.IsNotFound(err) {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: ingressTLSSecretName(host)}, certificate); !apierrors.IsNotFound(err) {
 		t.Errorf("certificate for a host the app no longer has remains: %v", err)
 	}
 }

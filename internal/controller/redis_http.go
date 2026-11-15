@@ -63,8 +63,8 @@ func redisCacheEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 }
 
 // reconcileRedisHTTP runs the shim as a Deployment and Service <cr>-redis-http on port 80. It
-// connects to the cache with the generated password (SRH_CONNECTION_STRING references the
-// REDIS_PASSWORD entry before it) and requires the token from <cr>-redis-http. A changed token or
+// connects to the cache as its own Redis user, redis-http, limited to the dashboard's GET and SET on
+// project:* (#825; SRH_CONNECTION_STRING references the REDIS_PASSWORD entry before it) and requires the token from <cr>-redis-http. A changed token or
 // Redis password rolls it (credentialSecrets). It has no component Secret of its own.
 func (r *OramaCloudV1Reconciler) reconcileRedisHTTP(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !redisHTTPRuns(oc) {
@@ -75,12 +75,12 @@ func (r *OramaCloudV1Reconciler) reconcileRedisHTTP(ctx context.Context, oc *ora
 		image:     storeImage(oc, redisHTTPComponent, redisHTTPImage),
 		port:      redisHTTPPort,
 		env: []corev1.EnvVar{
-			redisPasswordEnvVar(oc),
+			redisClientEnv(oc, cacheClientRedisHTTP),
 			{Name: "SRH_MODE", Value: "env"},
 			secretKeyEnv("SRH_TOKEN", redisHTTPSecretName(oc), redisHTTPTokenKey),
-			{Name: "SRH_CONNECTION_STRING", Value: redisURL(oc)},
+			{Name: "SRH_CONNECTION_STRING", Value: redisClientURL(oc, cacheClientRedisHTTP)},
 		},
-		credentialSecrets: []string{cacheAuthSecretName(oc), redisHTTPSecretName(oc)},
+		credentialSecrets: []string{redisClientSecret(oc, cacheClientRedisHTTP), redisHTTPSecretName(oc)},
 		resources:         resourceReqs("64Mi", "50m", "256Mi"),
 	})
 }

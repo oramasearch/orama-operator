@@ -28,8 +28,10 @@ import (
 const (
 	// DefaultZettaTunnelImage is the zetta-tunnel image every role runs unless the manager's
 	// --zetta-tunnel-image flag says otherwise. The repository is private: pods use their owner's
-	// pull secret.
-	DefaultZettaTunnelImage = "oramasearch/zetta-tunnel:main-9cd11b4"
+	// pull secret. v0.2.0 is the first relay that requires client_ca_sha256 on every grant (#844),
+	// and the first mesh agent that requires pod_uid and network_namespace_inode (#869): the
+	// operator code that writes both ships with this pin.
+	DefaultZettaTunnelImage = "oramasearch/zetta-tunnel:v0.2.0"
 
 	zettaTunnelNamespace     = "zetta-tunnel"
 	zettaTunnelPKISecret     = "zetta-tunnel-pki"
