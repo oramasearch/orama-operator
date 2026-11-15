@@ -59,9 +59,14 @@ awk '/^const IndexMapping = `/{f=1;next} f&&/^`/{exit} f' \
 # against (TestPixieBootstrapMatchesVendoredSchema).
 rm -rf "${OUT_DIR}/profile-schema" && mkdir -p "${OUT_DIR}/profile-schema"
 cp "${PIXIE_SOURCE}"/src/cloud/profile/schema/*.up.sql "${OUT_DIR}/profile-schema/"
-# The source patches #455 builds with must still apply to this commit (hack/pixie-patches).
-for patch in "${ROOT}"/hack/pixie-patches/*.patch; do
-  git -C "${PIXIE_SOURCE}" apply --check "${patch}" || { echo "error: ${patch} does not apply to ${PIXIE_COMMIT}" >&2; exit 1; }
+# The source patches #455 builds with must still apply to this commit. They are kept in
+# the Pixie source itself, in hack/pixie-patches on its `orama` branch (PIXIE_PATCHES_REF).
+PIXIE_PATCHES_REF="${PIXIE_PATCHES_REF:-origin/orama}"
+patches="$(git -C "${PIXIE_SOURCE}" ls-tree --name-only "${PIXIE_PATCHES_REF}:hack/pixie-patches" | grep '\.patch$')" ||
+  { echo "error: no hack/pixie-patches/*.patch at ${PIXIE_PATCHES_REF} in ${PIXIE_SOURCE}" >&2; exit 1; }
+for patch in ${patches}; do
+  git -C "${PIXIE_SOURCE}" show "${PIXIE_PATCHES_REF}:hack/pixie-patches/${patch}" | git -C "${PIXIE_SOURCE}" apply --check - ||
+    { echo "error: ${patch} does not apply to ${PIXIE_COMMIT}" >&2; exit 1; }
 done
 cp "${PIXIE_SOURCE}/LICENSE" "${OUT_DIR}/LICENSE"
 echo "${PIXIE_COMMIT}" >"${OUT_DIR}/COMMIT"

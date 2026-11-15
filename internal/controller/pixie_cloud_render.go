@@ -278,7 +278,7 @@ func transformPixieCloudObject(object client.Object, input pixieCloudRender) err
 		removeEnv(app, "PL_VIZIER_IMAGE_SECRET_FILE")
 		dropVolume(spec, "vizier-image-secret")
 		dropVolume(spec, "elastic-certs-pub")
-		// The API server reads the bundle itself (hack/pixie-patches/0001): from the bundle server in
+		// The API server reads the bundle itself (the build patch 0001-api-script-bundle-urls): from the bundle server in
 		// this namespace, since nothing in the cluster resolves the hub's domain.
 		setEnv(app, "SCRIPT_BUNDLE_URLS", pixieScriptBundleInCluster())
 	case "indexer-server":

@@ -69,11 +69,11 @@ build:
   - mirror: docker.io/oramasearch/platform-nginx-unprivileged:1.30.6-alpine
     upstream: "nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03"
     licence: BSD-2-Clause
-    used_by: the pixie `script-bundle` image (hack/pixie-script-bundle), as its base by digest
+    used_by: the pixie `script-bundle` image (the Pixie source's hack/pixie-script-bundle), as its base by digest
 
 # Pixie: the ObservabilityProvider's release keys, each a private oramasearch/pixie-* repository,
 # by digest. Built (#455) from oramasearch/pixie 4b445e0b7907c79d034bcb4a227bbaede94d370a with
-# hack/pixie-patches applied, or mirrored from the upstream named.
+# the build patches of its `orama` branch (hack/pixie-patches there), or mirrored from the upstream named.
 pixie:
   - {key: vizier-pem, build: "//src/vizier/services/agent/pem:pem_image", licence: Apache-2.0}
   - {key: vizier-kelvin, build: "//src/vizier/services/agent/kelvin:kelvin_image", licence: Apache-2.0}
@@ -93,7 +93,7 @@ pixie:
   - {key: cloud-scriptmgr, build: "//k8s/cloud:cloud_images_push (scriptmgr_server)", licence: Apache-2.0}
   - {key: cloud-vzconn, build: "//k8s/cloud:cloud_images_push (vzconn_server)", licence: Apache-2.0}
   - {key: cloud-vzmgr, build: "//k8s/cloud:cloud_images_push (vzmgr_server)", licence: Apache-2.0}
-  - {key: script-bundle, build: "new in #455: hack/pixie-script-bundle (nginx-unprivileged base, BSD-2-Clause, mirrored for the build) serving px create-bundle's bundle-oss.json on :8080", licence: Apache-2.0 (scripts) and BSD-2-Clause (nginx)}
+  - {key: script-bundle, build: "new in #455: the Pixie source's hack/pixie-script-bundle (nginx-unprivileged base, BSD-2-Clause, mirrored for the build) serving px create-bundle's bundle-oss.json on :8080", licence: Apache-2.0 (scripts) and BSD-2-Clause (nginx)}
   - {key: nats, upstream: "ghcr.io/pixie-io/nats:2.9.25-scratch-pl1@sha256:ac7228464fbc7154e91c9a00cba85b5da1df9a3ded6c784cdd6009cece85a1e3", licence: Apache-2.0}
   - {key: curl, upstream: "ghcr.io/pixie-io/pixie-oss-pixie-dev-public-curl:8.15.0@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922", licence: MIT (curl)}
   - {key: envoy, upstream: "envoyproxy/envoy:v1.34.2@sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9", licence: Apache-2.0}
