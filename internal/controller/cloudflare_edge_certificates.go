@@ -19,8 +19,8 @@ import (
 // Edge certificates for hosts Universal SSL does not cover (lake#798).
 //
 // Cloudflare's Universal SSL certificate covers the zone apex and one level below it
-// (oramadev.net, *.oramadev.net). A Lake's apps wildcard is its host, so app hosts are two levels
-// below the apex (<app>.lake-testing.oramadev.net, <app>.eu.lake.live) and the edge refuses their
+// (example.net, *.example.net). A Lake's apps wildcard is its host, so app hosts are two levels
+// below the apex (<app>.lake-testing.example.net, <app>.eu.example.com) and the edge refuses their
 // TLS handshake (alert 40). For every proxied host more than one level below the apex whose edge
 // has no valid certificate, the zone policy orders an Advanced Certificate (an Advanced
 // Certificate Manager certificate pack) covering it, unless a pack in the zone already covers it.
@@ -183,7 +183,7 @@ func (r *CloudflareZonePolicyReconciler) orderEdgeCertificates(ctx context.Conte
 		return condition(false, "CertificatesUnreadable", cfErrorMessage("list the zone's edge certificates", err, cfPermissionCertificatesEdit))
 	}
 	// A pack ordered in this pass covers the candidates after it, as a listed pending pack does.
-	// Candidates are sorted, so an apps wildcard ("*.eu.lake.live") comes before the app hosts under
+	// Candidates are sorted, so an apps wildcard ("*.eu.example.com") comes before the app hosts under
 	// it, which have their own proxied records; without this each of them would get a pack of its
 	// own in the same pass.
 	var pending, ordered []string

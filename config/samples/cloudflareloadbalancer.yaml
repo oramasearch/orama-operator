@@ -22,7 +22,7 @@ metadata:
   namespace: orama-system
 spec:
   secretRef: cloudflare-api-token        # Secret with keys: token / zoneID / accountID
-  hostname: zetta.oramadev.net           # the single global hostname the LB answers on
+  hostname: zetta.example.net           # the single global hostname the LB answers on
   steeringPolicy: geo                    # off | geo | dynamic | proximity | random
   proxied: true                          # route through Cloudflare's proxy (orange-cloud)
   fallbackPool: us-east                  # last resort when all default pools are unhealthy
@@ -39,12 +39,12 @@ spec:
     - name: us-east                      # a pool = a failover/steering unit of origins
       minimumOrigins: 1
       origins:
-        - { name: node-use1-a, address: use1-a.nodes.oramadev.net, enabled: true, weight: "1" }
-        - { name: node-use1-b, address: use1-b.nodes.oramadev.net, enabled: true, weight: "1" }
+        - { name: node-use1-a, address: use1-a.nodes.example.net, enabled: true, weight: "1" }
+        - { name: node-use1-b, address: use1-b.nodes.example.net, enabled: true, weight: "1" }
     - name: eu-west
       minimumOrigins: 1
       origins:
-        - { name: node-euw1-a, address: euw1-a.nodes.oramadev.net, enabled: true, weight: "1" }
+        - { name: node-euw1-a, address: euw1-a.nodes.example.net, enabled: true, weight: "1" }
   regionPools:                           # geo steering: region code -> ordered pool names
     ENAM: [us-east]                      # eastern North America -> us-east pool
     WEUR: [eu-west]                      # western Europe        -> eu-west pool

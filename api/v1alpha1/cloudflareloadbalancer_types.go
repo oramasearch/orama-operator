@@ -21,7 +21,7 @@ type CloudflareLoadBalancerSpec struct {
 	// (the `cloudflare-api-token` Secret).
 	SecretRef string `json:"secretRef"`
 
-	// Hostname is the FQDN the load balancer answers on (e.g. zetta.oramadev.net). Cloudflare
+	// Hostname is the FQDN the load balancer answers on (e.g. zetta.example.net). Cloudflare
 	// creates/manages the DNS entry for this name in the zone; do NOT also manage it with a
 	// CloudflareDNSRecord — the LB owns the hostname.
 	Hostname string `json:"hostname"`

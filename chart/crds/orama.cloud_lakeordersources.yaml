@@ -99,7 +99,7 @@ spec:
                 type: string
               lakeSetRef:
                 description: |-
-                  LakeSetRef names the LakeSet whose Lakes take orders (lake.live: `lake-prod`). The orders
+                  LakeSetRef names the LakeSet whose Lakes take orders (for example `lake-prod`). The orders
                   are read from every member's control-plane Postgres, in the `cloud_orders` table, through
                   the member's cluster's kubeconfig. Every ordered Lake starts from this set's template and
                   secrets, and runs on clusters of the same purpose.

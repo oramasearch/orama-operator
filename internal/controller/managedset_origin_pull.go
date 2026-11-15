@@ -17,10 +17,10 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// One origin-pull CA per zone, whatever the number of clusters serving it (operator#633, Steve's
-// option (a), 2026-10-23).
+// One origin-pull CA per zone, whatever the number of clusters serving it (operator#633,
+// option (a)).
 //
-// A zone such as lake.live is served by several clusters, and Cloudflare presents one client
+// A zone such as example.com is served by several clusters, and Cloudflare presents one client
 // certificate per zone. So every cluster serving the zone must trust, and upload, a leaf of the same
 // CA. The managing cluster generates it: a LakeSet reads each member's zone from the zoneID of the
 // member's dnsSecretRef (a Secret the set copies), creates the zone's Secret
@@ -31,7 +31,7 @@ import (
 // it and never mints a CA of its own for the zone.
 //
 // On the managing cluster the copied Secret is the operator's own per-cluster Secret, so a Lake
-// that no set manages there (Lake/prod for oramadev.net) presents and trusts the same CA.
+// that no set manages there presents and trusts the same CA.
 //
 // This is a copy the set makes on its own rather than an entry in `secrets:`: the CA must exist
 // before anything could name it, its name depends on the zone, it must reach exactly the members

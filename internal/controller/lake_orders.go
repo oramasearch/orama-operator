@@ -32,7 +32,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Provisioning paid lake.live orders (operator#634, lake#831).
+// Provisioning paid Lake orders (operator#634, lake#831).
 //
 // lake records each order in its control-plane Postgres (`cloud_orders`). A LakeOrderSource on
 // the management cluster names the LakeSet whose Lakes take orders. On every pass the operator
@@ -384,7 +384,7 @@ func (r *LakeOrderSourceReconciler) placedWarehouse(ctx context.Context, name st
 }
 
 // warehouseCluster is the set's cluster in the ordered region, for an order placed for the first
-// time. A private warehouse runs on the hardware lake.live already runs on there.
+// time. A private warehouse runs on the hardware the hosted Lake already runs on there.
 func (r *LakeOrderSourceReconciler) warehouseCluster(ctx context.Context, set *oramav1alpha1.LakeSet, region string) (string, orderOutcome) {
 	var offered []string
 	for _, member := range set.Spec.Clusters {

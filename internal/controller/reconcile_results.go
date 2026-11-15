@@ -14,7 +14,7 @@ import (
 // error makes the manager warn and ignore the result.
 //
 // It hides nothing. An error is returned, logged and retried. The log is kept readable by fixing
-// what causes errors, never by not reporting them (Steve, 2026-10-12).
+// what causes errors, never by not reporting them.
 func settle(result ctrl.Result, err error) (ctrl.Result, error) {
 	if err != nil {
 		return ctrl.Result{}, err

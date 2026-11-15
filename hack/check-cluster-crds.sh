@@ -15,7 +15,7 @@
 # cluster-management kinds included. --e2e and --management are still accepted, and do nothing.
 #
 #   ./hack/check-cluster-crds.sh                              # current kube-context
-#   ./hack/check-cluster-crds.sh orama-production-cluster-01   # explicit context
+#   ./hack/check-cluster-crds.sh my-cluster   # explicit context
 #   ./hack/check-cluster-crds.sh <context> --apply             # apply what is missing
 #
 # Requires: kubectl with access to the target cluster.

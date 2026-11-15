@@ -375,13 +375,13 @@ func brokerUsersSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Na
 const (
 	brokerWriterUser = "oramacore-writer"
 	brokerReaderUser = "oramacore-reader"
-	// brokerHarvestUser is harvest-master's broker user (#824, LSR-134): HARVEST's per-crawl queues
+	// brokerHarvestUser is harvest-master's broker user (#824): HARVEST's per-crawl queues
 	// only. Its password is <cr>-broker-harvest's password key.
 	brokerHarvestUser = "harvest"
 )
 
 // brokerReaderLocalStream is where the writer that the combined OramaCore image starts in every
-// reader pod produces (#795, LSR-133). Nothing addresses that writer and no reader consumes this
+// reader pod produces (#795). Nothing addresses that writer and no reader consumes this
 // stream: it exists so a reader never needs write permission on the replication stream.
 const brokerReaderLocalStream = "oramacore-reader-local"
 

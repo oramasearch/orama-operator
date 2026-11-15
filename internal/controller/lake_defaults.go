@@ -18,8 +18,8 @@ import (
 // table of the images a Lake runs when its spec leaves one empty, so a LakeSet member states only
 // what differs per environment (host, args, env, secrets). A spec image still overrides its default.
 //
-// The defaults are pinned to what the managing cluster's Lake/prod ran on 2026-10-17, apart from
-// Zetta, which is the v0.3.0 release pinned by digest (operator#588). Moving a version is a change
+// The defaults are the versions this operator release is tested with; Zetta is the v0.3.0 release
+// pinned by digest (operator#588). Moving a version is a change
 // to this table, rolled through the pipeline dev, testing, staging, prod.
 const (
 	// lakeDefaultZettaImage is the Zetta of the Lake's own data plane, of every workspace and of

@@ -220,7 +220,7 @@ rules:
   - apiGroups: ["clickhouse.altinity.com"]
     resources: ["clickhouseinstallations"]
     verbs: ["*"]
-  # Lake managed services, the catalog (liquid-bridge decision 47, docs/lake/services.md): the
+  # Lake managed services, the catalog (docs/lake/services.md): the
   # resources each kind's upstream operator runs. The operator reads them uncached (never
   # watches), so a group whose CRD is absent only fails that kind's services.
   - apiGroups: ["clickhouse-keeper.altinity.com"]

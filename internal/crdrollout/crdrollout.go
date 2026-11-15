@@ -8,7 +8,7 @@ Licensed under the Apache License, Version 2.0.
 // The API server prunes every field a CRD's schema does not declare, both on write and when it
 // reads a stored object. A CRD that drops a field therefore changes what the running operator sees
 // the moment it is applied, before the operator that no longer reads the field has started
-// (operator#543: Lake/prod's pod restarted twice when the Lake feature switches were removed).
+// (operator#543: a Lake's pod restarted twice when the Lake feature switches were removed).
 //
 // Both install paths (build-operator.sh on the managing cluster, the OramaOperator controller on a
 // leaf) roll the operator in two CRD steps, which this package computes:

@@ -72,9 +72,9 @@ spec:
   #   args: ["-listen=:5678", "-text=hello from lake hello"]
   # External exposure, same contract as OramaZettaCluster: ingressEnabled + host gives an nginx
   # Ingress; dnsSecretRef adds a proxied Cloudflare record. The Secret (keys: token, zoneID) must
-  # live in spec.namespace and hold the zone of host: a lake.live host needs a lake.live-zone Secret.
+  # live in spec.namespace and hold the zone of host: a example.com host needs a example.com-zone Secret.
   # ingressEnabled: true
-  # host: hello.lake.live
+  # host: hello.example.com
   # TLS terminates at nginx and enables HTTPS redirect. The kubernetes.io/tls Secret must exist in
   # spec.namespace before this is enabled.
   # tls:
@@ -82,7 +82,7 @@ spec:
   # dnsSecretRef:
   #   name: cloudflare-api-token
   # Per-change previews use one wildcard record instead of one Cloudflare record per change.
-  # previewWildcard: preview.lake.live
+  # previewWildcard: preview.example.com
   # deploySync:
   #   interval: 15s
   # Every Lake runs every feature (apps, builds, methodologies, agents, services and stores,
@@ -90,7 +90,7 @@ spec:
   # (internal/controller/lake_defaults.go, operator#539). Set an image only to override its default:
   # apps:
   #   runtimeImage: oramasearch/app-runtime:<tag>
-  #   wildcard: apps.lake.live   # empty: <app>.<spec.host>
+  #   wildcard: apps.example.com   # empty: <app>.<spec.host>
   # builds:
   #   builderImage: oramasearch/lake-builder:<tag>
   # agents:

@@ -18,7 +18,7 @@ import (
 )
 
 // Production credentials never reach a non-production cluster (orama-operator#787, #789; findings
-// LSR-038 and LSR-040 of the Lake pre-launch security review; orama-operator#832). A set copies
+// the Lake pre-launch security review; orama-operator#832). A set copies
 // Secrets from the managing cluster into its members' namespaces, and an OramaOperator copies its
 // pull Secret to the cluster it installs onto, so the copy is where the boundary is kept. What is
 // production is read from the resources, never from a flag: the `purpose` tag of each
@@ -139,7 +139,7 @@ func operatorSecretScope(ctx context.Context, r client.Reader, clusterName strin
 // members' clusters is tagged production; a set whose clusters cannot be read is taken at its last
 // reported purpose. An OramaOperator is production when its cluster is tagged production. A
 // LakeOrderSource's memberSecrets are copied into every Lake ordered from its set, so they are
-// production when that set is, before the first order is made (orama-operator#790, LSR-041).
+// production when that set is, before the first order is made (orama-operator#790).
 func productionSecretSources(ctx context.Context, r client.Reader) (map[string]string, error) {
 	sources := map[string]string{}
 	purposes := map[string]string{}

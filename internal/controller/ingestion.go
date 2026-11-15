@@ -56,7 +56,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 	// the master spawns — running the worker as a Deployment CrashLoops (operator#12), so we run
 	// the master. Its worker-spawning (Podman → WORKER_IMAGE) still needs a k8s-Jobs port to crawl,
 	// so it gets no PODMAN_API_HOST (reconcileHarvestMaster).
-	// It signs in to the broker as harvest (#824, LSR-134), so it is written only once the topology
+	// It signs in to the broker as harvest (#824), so it is written only once the topology
 	// reports that user on the broker; until then a running harvest-master keeps its template.
 	n := oc.Name
 	ready, err := r.brokerUsersReady(ctx, oc)

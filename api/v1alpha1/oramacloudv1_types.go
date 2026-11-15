@@ -263,8 +263,8 @@ type ComponentsSpec struct {
 	// +optional
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
-	Dashboard DashboardSpec  `json:"dashboard,omitempty"` // app.orama.com (Next.js)
-	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
+	Dashboard DashboardSpec  `json:"dashboard,omitempty"` // app.example.com (Next.js)
+	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.example.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
 	// ControlDB is the Postgres control plane, always in-cluster.
@@ -277,7 +277,7 @@ type ComponentsSpec struct {
 	Disco     Toggle        `json:"disco,omitempty"`   // DISCO semantic cache
 	Workers   WorkersSpec   `json:"workers,omitempty"` // the ported CF workers (one bundled image)
 
-	// Additional v1 components (gap fill — techops-docs issues #5–#7):
+	// Additional v1 components (gap fill, operator issues #5–#7):
 	AnalyticsProcessor AnalyticsProcessorSpec `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
 	// Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
 	// the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
@@ -371,7 +371,7 @@ type WriterSpec struct {
 	// Unset renders no writer_side.jwt block.
 	// +optional
 	JWT *WriterJWTSpec `json:"jwt,omitempty"`
-	// Host publishes the writer on this public DNS name (for example writer.orama.ing), without a
+	// Host publishes the writer on this public DNS name (for example writer.example.org), without a
 	// scheme, path or port: an owned Ingress with origin TLS to the writer Service on 8080 and, with
 	// Cloudflare DNS managed, a proxied DNS record. Only a primary region publishes its writer.
 	// Empty keeps the writer internal.
@@ -381,7 +381,7 @@ type WriterSpec struct {
 	Host string `json:"host,omitempty"`
 	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
 	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
-	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
 	// host; no name may repeat across the hosts and extra hosts of every component.
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
@@ -418,7 +418,7 @@ type ReaderSpec struct {
 	Storage *VolumeSpec `json:"storage,omitempty"`
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-	// Host publishes the readers on this public DNS name (for example reader.orama.ing), without a
+	// Host publishes the readers on this public DNS name (for example reader.example.org), without a
 	// scheme, path or port: an owned Ingress with origin TLS to the reader Service on 80 (through
 	// Envoy when it is enabled) and, with Cloudflare DNS managed, a proxied DNS record. Empty keeps
 	// the readers internal.
@@ -428,7 +428,7 @@ type ReaderSpec struct {
 	Host string `json:"host,omitempty"`
 	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
 	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
-	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
 	// host; no name may repeat across the hosts and extra hosts of every component.
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
@@ -630,7 +630,7 @@ type ToggleWithHost struct {
 	Host string `json:"host,omitempty"`
 	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
 	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
-	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
 	// host; no name may repeat across the hosts and extra hosts of every component.
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1

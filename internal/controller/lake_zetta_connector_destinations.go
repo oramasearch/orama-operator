@@ -20,7 +20,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// A workspace Zetta's approved connector destinations (operator#882, for zetta#1469 / LSR-241).
+// A workspace Zetta's approved connector destinations (operator#882, for zetta#1469).
 //
 // The engine dials a private or loopback connector source only when
 // ZETTA_CONNECTOR_ALLOW_DESTINATIONS names it as an exact host:port; metadata and link-local

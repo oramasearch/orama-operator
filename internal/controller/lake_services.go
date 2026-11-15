@@ -28,7 +28,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Managed services (liquid-bridge decision 46; the contract is lake's
+// Managed services (the contract is lake's
 // docs/control-plane/services.md). lake writes the services table in its control Postgres and never
 // talks to Kubernetes; the operator reads that table, creates one Lake-controlled
 // OramaZettaCluster or CloudNativePG Cluster named <lake>-<slug> per present service, deletes absent
@@ -37,7 +37,7 @@ import (
 // workspaces.zetta_service_id and its status, so this poll never writes that Zetta; it only copies
 // its connection into the services Secret, of which it is the one writer. The other kinds of the catalog (decision
 // 47: Kafka, ClickHouse, TiDB, Cassandra, Valkey) are written for their upstream operators by
-// lake_service_catalog.go, and SQLite, DuckDB and Polars (decision 47, amended; lake#195), which the
+// lake_service_catalog.go, and SQLite, DuckDB and Polars (lake#195), which the
 // operator runs itself behind lake-sqlite, lake-duckdb and lake-polars, go through the same code
 // (lake_service_wrapper.go).
 const (

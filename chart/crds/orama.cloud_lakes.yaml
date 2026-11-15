@@ -140,8 +140,8 @@ spec:
                 type: object
               apexHost:
                 description: |-
-                  ApexHost is a second host this Lake answers, where it serves the region picker (lake.live in
-                  front of eu.lake.live and us.lake.live). The Ingress gets a rule for it and, with
+                  ApexHost is a second host this Lake answers, where it serves the region picker (example.com in
+                  front of eu.example.com and us.example.com). The Ingress gets a rule for it and, with
                   DNSSecretRef, an owned proxied DNS record; removing the field removes both. The Lake receives
                   it as LAKE_APEX_HOST. It has no effect without IngressEnabled and Host. At most one member of
                   a LakeSet sets it.
@@ -164,7 +164,7 @@ spec:
                   wildcard:
                     description: |-
                       Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>. Empty
-                      uses the Lake's spec.host, so an app is <app>.<lake host> (myapp.lake-dev.oramadev.net).
+                      uses the Lake's spec.host, so an app is <app>.<lake host> (myapp.lake-dev.example.net).
                       lake receives it as LAKE_APPS_WILDCARD, and with DNSSecretRef the operator keeps the
                       *.<wildcard> DNS record.
                     type: string
@@ -354,8 +354,8 @@ spec:
                   DNSSecretRef, if set together with Host, creates a proxied Cloudflare DNS record (Host -> the
                   ingress LoadBalancer) using the Cloudflare credentials (keys `token`, `zoneID`) in the named
                   Secret. The Secret must live in spec.namespace (the CloudflareDNSRecord is created there) and
-                  hold the zone ID of Host's zone: a lake.live host needs a lake.live-zone Secret, not the
-                  oramadev.net one the Zetta clusters use.
+                  hold the zone ID of Host's zone: a example.com host needs a example.com-zone Secret, not the
+                  example.net one the Zetta clusters use.
                 properties:
                   name:
                     default: ""
@@ -490,7 +490,7 @@ spec:
                 type: array
               host:
                 description: |-
-                  Host is the domain name the lake is exposed at (e.g. hello.lake.live) when IngressEnabled is
+                  Host is the domain name the lake is exposed at (e.g. hello.example.com) when IngressEnabled is
                   true. Requires an ingress controller (class nginx).
                 type: string
               image:
@@ -577,8 +577,8 @@ spec:
                 type: string
               payments:
                 description: |-
-                  Payments takes payments through a payment provider ([orama-bridge#199](https://github.com/oramasearch/orama-bridge/issues/199),
-                  docs/lake/payments.md). From the Secret the operator keeps a PaymentProvider, a
+                  Payments takes payments through a payment provider
+                  (docs/lake/payments.md). From the Secret the operator keeps a PaymentProvider, a
                   PaymentWebhookEndpoint at https://<host>/billing/stripe/webhook and Lake's PaymentCatalog, and
                   gives the Lake LAKE_STRIPE_SECRET_KEY and LAKE_STRIPE_WEBHOOK_SECRET. Without it nothing about
                   payments is managed, and spec.env keeps whatever it says.
@@ -723,8 +723,8 @@ spec:
                 type: string
               region:
                 description: |-
-                  Region is where this Lake runs, for people choosing between a deployment's regions
-                  (decision 64). A LakeSet fills Name from the member's KubernetesCluster; Label is stated.
+                  Region is where this Lake runs, for people choosing between a deployment's regions.
+                  A LakeSet fills Name from the member's KubernetesCluster; Label is stated.
                   The Lake receives them as LAKE_REGION and LAKE_REGION_LABEL.
                 properties:
                   label:
@@ -746,7 +746,7 @@ spec:
                     picker offers it.
                   properties:
                     host:
-                      description: Host is the region's Lake host (eu.lake.live).
+                      description: Host is the region's Lake host (eu.example.com).
                       minLength: 1
                       type: string
                     label:

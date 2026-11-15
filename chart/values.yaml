@@ -1,13 +1,13 @@
-# The private operator manager image. For a fresh install, obtain a published immutable tag
-# and registry access, then set operator.imagePullSecrets to a Secret in the release namespace.
-# See docs/install.md for prerequisites and docs/development.md for remote BuildKit publication.
+# The operator manager image. Install a published immutable tag. If your registry needs
+# credentials, set operator.imagePullSecrets to a Secret in the release namespace.
+# See docs/install.md for prerequisites and docs/development.md for building your own image.
 operator:
   image:
     repository: oramasearch/orama-operator
     tag: v1-sandbox
     pullPolicy: IfNotPresent
-  # Pull secret(s) for the PRIVATE manager image, e.g. [{ name: oramasearch-dockerhub }].
-  # Empty emits no imagePullSecrets; fresh nodes need registry access for the private default.
+  # Pull secret(s) for the manager image, e.g. [{ name: my-registry }].
+  # Empty emits no imagePullSecrets.
   imagePullSecrets: []
   replicas: 1
   resources:
@@ -22,15 +22,15 @@ serviceAccount:
 # a Lake's spec.services.sqliteImage overrides it. duckdbImage is lake-duckdb
 # (docs/lake/lake-duckdb.md) behind the duckdb kind and polarsImage lake-polars
 # (docs/lake/lake-polars.md) behind the polars kind, overridden by spec.services.duckdbImage and
-# spec.services.polarsImage. The images are private: a Lake's spec.pullSecretName is the pull
-# secret its services use.
+# spec.services.polarsImage. When a registry needs credentials, a Lake's spec.pullSecretName is
+# the pull secret its services use.
 lakeServices:
   sqliteImage: oramasearch/lake-sqlite:0.1.1
   duckdbImage: oramasearch/lake-duckdb:0.1.0
   polarsImage: oramasearch/lake-polars:0.1.0
 
-# Images the operator runs for secure networking (docs/infrastructure/tunnels.md). zetta-tunnel is
-# private: its pods use their Lake's spec.pullSecretName. cloudflared runs only for a
+# Images the operator runs for secure networking (docs/infrastructure/tunnels.md). zetta-tunnel's
+# pods use their Lake's spec.pullSecretName when one is set. cloudflared runs only for a
 # CloudflareTunnel, in a customer's own Cloudflare account.
 networking:
   zettaTunnelImage: oramasearch/zetta-tunnel:main-9cd11b4

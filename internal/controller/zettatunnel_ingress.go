@@ -168,7 +168,7 @@ func validIngressHost(host string) bool {
 // otherwise forward the denied path too (a Prefix / reaches /metrics). An Ingress being deleted
 // still counts, so a companion on its way out never opens its host here before its main Ingress goes.
 // This is an interim guard until #575 keeps the gateway from serving Cloud v1 at all; for the engine
-// hosts, which the sandbox already admits from ingress-nginx only (bridge decision 19), it is a
+// hosts, which the sandbox already admits from ingress-nginx only, it is a
 // second safeguard.
 func sourceDeniedHosts(ingresses []networkingv1.Ingress) map[string]bool {
 	denied := map[string]bool{}
@@ -197,7 +197,7 @@ func requiresOriginClientCertificate(ingress *networkingv1.Ingress) bool {
 }
 
 // originClientCertHosts is every host (lower case) of any Ingress that requires a client
-// certificate (operator#798, LSR-136). The gateway verifies no client certificate (zetta-tunnel's
+// certificate (operator#798). The gateway verifies no client certificate (zetta-tunnel's
 // ingress listener), so serving such a host would let a caller who finds the gateway's address skip
 // the edge, its WAF and rate limits, and set the edge's attribution headers itself. ingress-nginx
 // applies auth-tls to the whole host, so the host is refused on every Ingress that names it, of any

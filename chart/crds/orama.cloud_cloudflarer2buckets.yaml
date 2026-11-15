@@ -122,7 +122,7 @@ spec:
                   domain the operator attached.
                 properties:
                   domain:
-                    description: Domain is the host, for example status.lake.live.
+                    description: Domain is the host, for example status.example.com.
                       Cloudflare creates its DNS record.
                     pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$
                     type: string

@@ -1,7 +1,6 @@
 # The e2e canary and its collection prune: one run of CronJob <cr>-e2e-canary (operator#17), run by
-# /bin/sh in the canary image, which provides monitor-test, curl and jq. Ported from Prod 1's
-# prod-oramacore-crons-us-east-2: orama-deploy oramacore-test-e2e/production (the canary timer) and
-# oramacore-aws terraform/scripts/oramacore-custom-metrics/collection_prune-crons.sh (the prune).
+# /bin/sh in the canary image, which provides monitor-test, curl and jq. Ported from Cloud v1's
+# original canary timer and collection prune crons.
 #
 # 1. monitor-test signs in through the dashboard's /api/user/jwt with the canary project's private
 #    API key, inserts a probe document, checks it on every reader and deletes the oldest tracked one.

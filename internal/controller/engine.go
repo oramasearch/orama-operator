@@ -42,7 +42,7 @@ const (
 )
 
 // envoyConfig is the static Envoy bootstrap that matches prod: listen :80, proxy to
-// the local OramaCore on 127.0.0.1:8080 (see techops-docs Envoy topology). Envoy answers
+// the local OramaCore on 127.0.0.1:8080 . Envoy answers
 // /metrics with 404 itself, so OramaCore's Prometheus endpoint is never served through the
 // reader Service or the public reader host (#314); inside the cluster it stays on the pod's
 // :8080. Envoy takes the first route that matches, so that route comes before the catch-all.
@@ -210,7 +210,7 @@ const (
 )
 
 // localWriterKeyEnv names the master key of the writer the combined image starts in a reader pod
-// (#795, LSR-133). render-config generates it at pod start (renderConfigScript): it is in no Secret,
+// (#795). render-config generates it at pod start (renderConfigScript): it is in no Secret,
 // no other pod knows it, and the writer's own master key never reaches a reader.
 const localWriterKeyEnv = "LOCAL_WRITER_KEY"
 
@@ -321,8 +321,8 @@ func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return engineCommonYAML() + writerSideYAML(oc) + readerSideYAML(oc, brokerWriterUser) + aiServerYAML(oc)
 }
 
-// oramacoreCombinedReaderConfigYAML is the config of a reader pod that runs the combined image (#795,
-// LSR-133). That binary refuses to start without a writer_side, and starts a writer in every pod, so
+// oramacoreCombinedReaderConfigYAML is the config of a reader pod that runs the combined image (#795).
+// That binary refuses to start without a writer_side, and starts a writer in every pod, so
 // the config has one, but it is not the writer's: its master key is generated at pod start
 // (localWriterKeyEnv), it has no JWT provider, and it produces to its own stream,
 // oramacore-reader-local, as oramacore-reader. The reader section consumes the replication stream as
@@ -337,7 +337,7 @@ func oramacoreCombinedReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 // batch, and the capacity of the queue in front of it, so inserts wait for the writer instead of piling up.
 // Prod 1's GPU writer (64 GB RAM, a 48 GB GPU) ran 50000; on a CPU writer one batch of thousands of texts needs
 // more memory than the node has (attention grows with batch size and text length), and v1-eu's writer was
-// OOM-killed three times copying cohort teams at 4, 12 and 16Gi (orama-bridge#257), losing the writes it had not
+// OOM-killed three times copying cohort teams at 4, 12 and 16Gi, losing the writes it had not
 // committed. 64 bounds a batch to a few hundred MB.
 const writerEmbeddingBatch = 64
 
@@ -888,7 +888,7 @@ func (r *OramaCloudV1Reconciler) removeReaderDeployment(ctx context.Context, oc 
 // ---- shared builders ----
 
 const (
-	// Prod 1's startup allowances, per Steve's review of #406: writer 20 min, readers 40 min.
+	// Prod 1's startup allowances (#406): writer 20 min, readers 40 min.
 	writerStartupTimeout             = 20 * time.Minute
 	readerStartupTimeout             = 40 * time.Minute
 	engineStartupPeriodSeconds int32 = 10
@@ -1005,9 +1005,9 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 }
 
 // readerDataSize is each reader's data claim (the reader's index and read.info under /app/.data)
-// when reader.storage.size is unset: 10Gi, the same small default as every other volume (Steve,
-// 2026-10-17: "default MUCH lower for all envs and we can boost it for prod"). Production sets its
-// size in config/clusters/sets/v1-prod.yaml from Prod 1's measured use. A StatefulSet's claim
+// when reader.storage.size is unset: 10Gi, the same small default as every other volume, kept low for every
+// environment and raised where needed. A production stack sets its size in its own cluster
+// resources, from its measured use. A StatefulSet's claim
 // template keeps the size it was created with; a larger reader.storage.size grows each reader's
 // existing claim (reconcileStorage).
 const readerDataSize = "10Gi"

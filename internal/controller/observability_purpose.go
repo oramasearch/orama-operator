@@ -27,15 +27,13 @@ import (
 //	production      the managing cluster (a hub with no clusterRef)
 //	nonprod         the managing cluster, or a nonprod cluster
 //
-// Nonprod may report to the managing cluster's hub so one hub shows every cluster (Steve,
-// 2026-10-31: "I told you to include nonprod ... change the earlier decision", replacing #456's
-// one hub per purpose). Production still never reports to a nonprod hub. A nonprod agent there
+// Nonprod may report to the managing cluster's hub so one hub shows every cluster
+// (replacing #456's one hub per purpose). Production still never reports to a nonprod hub. A nonprod agent there
 // pages through its own receivers (agentAlerting): production's are never copied to it.
 //
 // A hub runs only on the managing cluster or on a nonprod cluster, never on a production cluster
-// beside customer workloads. There is no separate support cluster (Steve, 2026-10-29: "let's put
-// the observability databases and functionality on the management cluster instead of provisioning
-// a prod support cluster").
+// beside customer workloads. There is no separate support cluster: the
+// observability databases and functionality run on the management cluster.
 
 const nonprodPurpose = "nonprod"
 
