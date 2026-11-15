@@ -200,8 +200,10 @@ exact `host:port` of each postgres, tidb, sqlite, duckdb and polars service in i
 namespace, empty when there are none, and never taken from the spec
 ([#882](https://github.com/oramasearch/orama-operator/issues/882),
 [connector destinations](../infrastructure/egress-rules.md#a-workspace-zettas-approved-connector-destinations)). The agent model defaults to `gpt-6.1-sol` (`spec.agents.model`). An app without its own host
-is `<app>.<spec.apps.wildcard>`, and an empty wildcard uses the Lake's `spec.host`
-(`myapp.lake-dev.oramadev.net`); HTTPS on those two-level names needs a certificate per zone
+is `<app>.<spec.apps.wildcard>`. The wildcard has no default and must be a registrable domain of
+its own, never under the Lake's host; unset or refused, no app is served
+([#762](https://github.com/oramasearch/orama-operator/issues/762),
+[apps](apps.md#apps-are-a-site-of-their-own)). HTTPS on two-level names needs a certificate per zone
 ([#515](https://github.com/oramasearch/orama-operator/issues/515)).
 
 ## What a Lake reconciles into

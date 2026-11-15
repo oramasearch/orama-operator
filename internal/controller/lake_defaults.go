@@ -6,10 +6,13 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"fmt"
 	"strings"
 
+	"golang.org/x/net/publicsuffix"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -122,10 +125,82 @@ func lakeAppsRuntimeImage(lake *oramav1alpha1.Lake) string {
 }
 
 // lakeAppsWildcard is the DNS suffix an app without its own host is named under, without a
-// leading "*.": spec.apps.wildcard, else the Lake's own host, so an app is <app>.<lake host>.
-// Empty only when the Lake has neither.
+// leading "*.": spec.apps.wildcard when lakeAppsWildcardProblem accepts it, else empty, and then no
+// app is named, routed, certified or given DNS under it. There is no default: the old default, the
+// Lake's own host, made every tenant app the same site as Lake, so an app could set cookies for
+// Lake and for every other tenant's app (#762).
 func lakeAppsWildcard(lake *oramav1alpha1.Lake) string {
-	return strings.TrimPrefix(orDefault(lake.Spec.Apps.Wildcard, lake.Spec.Host), "*.")
+	if reason, _ := lakeAppsWildcardProblem(lake); reason != "" {
+		return ""
+	}
+	return lakeAppsWildcardConfigured(lake)
+}
+
+// lakeAppsWildcardConfigured is spec.apps.wildcard as written, lowercased, without "*." or a
+// trailing dot, whether or not it is accepted. The domain guard reserves it either way.
+func lakeAppsWildcardConfigured(lake *oramav1alpha1.Lake) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimPrefix(lake.Spec.Apps.Wildcard, "*.")), ".")
+}
+
+const (
+	// lakeAppsWildcardConditionType is the Lake condition saying whether apps are served.
+	lakeAppsWildcardConditionType = "AppsWildcardReady"
+	// lakeAppsWildcardUnset: spec.apps.wildcard is empty, so no app is served.
+	lakeAppsWildcardUnset = "AppsWildcardUnset"
+	// lakeAppsWildcardSharesLakeSite: the wildcard is the same site as a Lake host.
+	lakeAppsWildcardSharesLakeSite = "AppsWildcardSharesLakeSite"
+)
+
+// lakeAppsWildcardProblem refuses an apps wildcard a tenant's app could use to reach Lake's own
+// cookies (#762): empty; not a DNS name; equal to, a parent of or a child of the Lake's host, public
+// host, apex host or preview wildcard; or under the same registrable domain (the public suffix
+// plus one label, the browser's "site") as any of them. Browsers let a page set a cookie for any
+// parent domain that is not a public suffix, so the wildcard must be a separate registrable domain
+// (ideally one listed in the Public Suffix List, as github.io is), never a name under Lake's own.
+func lakeAppsWildcardProblem(lake *oramav1alpha1.Lake) (string, string) {
+	wildcard := lakeAppsWildcardConfigured(lake)
+	if wildcard == "" {
+		return lakeAppsWildcardUnset, "spec.apps.wildcard is not set, so no app is served; set it to a registrable domain " +
+			"of its own, not under the Lake's host (#762)"
+	}
+	if len(validation.IsDNS1123Subdomain(wildcard)) != 0 || !strings.Contains(wildcard, ".") {
+		return lakeAppsWildcardSharesLakeSite, fmt.Sprintf("spec.apps.wildcard %q is not a DNS name with a dot", wildcard)
+	}
+	appsSite, err := publicsuffix.EffectiveTLDPlusOne(wildcard)
+	if err != nil {
+		// The wildcard is itself a public suffix (for example one registered for apps in the
+		// Public Suffix List): every app is then its own site, which is what is wanted.
+		appsSite = ""
+	}
+	for _, name := range []string{lake.Spec.Host, lakePublicHost(lake), lake.Spec.ApexHost, strings.TrimPrefix(lake.Spec.PreviewWildcard, "*.")} {
+		name = strings.TrimSuffix(strings.ToLower(name), ".")
+		if name == "" {
+			continue
+		}
+		if name == wildcard || strings.HasSuffix(name, "."+wildcard) || strings.HasSuffix(wildcard, "."+name) {
+			return lakeAppsWildcardSharesLakeSite, fmt.Sprintf("spec.apps.wildcard %q is, or is a parent or child of, the Lake's %q; "+
+				"an app could set cookies for Lake (#762)", wildcard, name)
+		}
+		if site, err := publicsuffix.EffectiveTLDPlusOne(name); err == nil && appsSite != "" && site == appsSite {
+			return lakeAppsWildcardSharesLakeSite, fmt.Sprintf("spec.apps.wildcard %q is under %q, the same registrable domain as the Lake's %q; "+
+				"an app could set cookies for Lake (#762)", wildcard, site, name)
+		}
+	}
+	return "", ""
+}
+
+// lakeAppsWildcardCondition is the AppsWildcardReady condition: True when apps are served under
+// the wildcard, False with lakeAppsWildcardProblem's reason otherwise. It does not change Ready:
+// Lake itself runs, its apps do not.
+func lakeAppsWildcardCondition(lake *oramav1alpha1.Lake) metav1.Condition {
+	condition := metav1.Condition{
+		Type: lakeAppsWildcardConditionType, Status: metav1.ConditionTrue, Reason: "Accepted",
+		Message: "apps are served under " + lakeAppsWildcardConfigured(lake), ObservedGeneration: lake.Generation,
+	}
+	if reason, message := lakeAppsWildcardProblem(lake); reason != "" {
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, reason, message
+	}
+	return condition
 }
 
 // lakeBuilderImage is the image every build Job runs.

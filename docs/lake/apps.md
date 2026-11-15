@@ -12,7 +12,7 @@ Every Lake runs it; there is no switch. Every field is optional:
 ```yaml
 spec:
   apps:
-    wildcard: apps.oramadev.net    # empty: the Lake's spec.host
+    wildcard: lake-dev-apps.example  # required to serve apps; a registrable domain of its own (#762)
     ingressClass: nginx
     runtimeImage: oramasearch/app-runtime:<immutable-tag>   # empty: the operator's default
   dnsSecretRef:
@@ -263,10 +263,11 @@ The Lake-level settings are:
 - the operator passes that image to lake as `LAKE_APPS_RUNTIME_IMAGE`, so
   lake's generated build Dockerfile uses the configured private base image rather than an implicit
   Docker Hub library image;
-- `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`; empty uses the
-  Lake's own `spec.host`, so an app is `<app>.<lake host>` (`myapp.lake-dev.oramadev.net`). The
-  operator injects it into lake as `LAKE_APPS_WILDCARD` so lake can validate and create app hosts.
-  HTTPS on these two-level names needs a certificate per zone ([#515](https://github.com/oramasearch/orama-operator/issues/515));
+- `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`. **It has no
+  default and must be a site of its own** (see [Apps are a site of their own](#apps-are-a-site-of-their-own)).
+  The operator injects it into lake as `LAKE_APPS_WILDCARD` (empty when unset or refused) so lake
+  can validate and create app hosts. HTTPS on two-level names needs a certificate per zone
+  ([#515](https://github.com/oramasearch/orama-operator/issues/515));
 - `spec.apps.ingressClass`: the app Ingress class, defaulting to `nginx`.
 
 An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference.
@@ -393,13 +394,42 @@ as `public`). It is a managed name, so neither the app's `env` nor its `secretEn
 explicit `env` entry wins over `envFrom`. app-runtime reads Lake's identity headers only when it is
 `lake` ([app-runtime#11](https://github.com/oramasearch/app-runtime/issues/11)).
 
+## Apps are a site of their own
+
+A tenant's app is code its owner wrote, served on `<app>.<wildcard>`. Browsers let a page set a
+cookie for any parent domain that is not a public suffix, so an app under the Lake's own site
+could set `lake_session` for Lake (session fixation, login CSRF) or for every other tenant's app,
+whatever `SameSite` says ([#762](https://github.com/oramasearch/orama-operator/issues/762)). The
+operator therefore:
+
+- gives `spec.apps.wildcard` **no default** (it used to default to `spec.host`);
+- refuses a wildcard that is equal to, a parent of or a child of the Lake's `spec.host`, its
+  `LAKE_PUBLIC_HOST`, its `spec.apexHost` or its preview wildcard, or that is under the same
+  registrable domain (public suffix plus one label, from the Public Suffix List compiled into the
+  operator) as any of them;
+- reports it on the Lake as condition `AppsWildcardReady`: `True` (`Accepted`), or `False` with
+  reason `AppsWildcardUnset` or `AppsWildcardSharesLakeSite`. It does not change the Lake's `Ready`;
+- with no accepted wildcard, names no app host, writes no apps wildcard DNS record, Ingress or
+  certificate, passes lake an empty `LAKE_APPS_WILDCARD`, refuses every apps row, and stops every
+  synchronized app and every hand-written app without its own `spec.host`: its Deployment,
+  Service, Ingress, TLS copies and DNS records are removed and its status carries the same reason;
+- still reserves a refused wildcard as a platform name, so no tenant domain can take it.
+
+The wildcard to use is a registrable domain per environment that serves nothing else, ideally
+submitted to the Public Suffix List (as `github.io` is) so that each app is its own site. Choosing
+it is a configuration decision; every LakeSet member sets it in `spec.apps.wildcard`. Such a
+domain is its own Cloudflare zone, so its DNS records and DNS-01 certificates need a token for that
+zone; today the operator uses the Lake's one `dnsSecretRef` for app DNS, so a separate apps
+zone needs either a token covering both zones or a follow-up that gives `spec.apps` its own DNS
+credential.
+
 ## Ingress and authentication
 
-An empty app host derives `<app>.<Lake spec.apps.wildcard>`, and an empty wildcard is the Lake's `spec.host`. That address uses the one shared
+An empty app host derives `<app>.<Lake spec.apps.wildcard>`; with no accepted wildcard there is no such host and the app is not served. That address uses the one shared
 wildcard record maintained by the apps sync. A standalone custom host gets its own proxied record after nginx
 reports a load-balancer target. The ingress class is `spec.apps.ingressClass`, default `nginx`.
 
-With a wildcard (or a Lake host) and `dnsSecretRef`, the sync maintains one Lake-owned proxied
+With an accepted wildcard and `dnsSecretRef`, the sync maintains one Lake-owned proxied
 `CloudflareDNSRecord` in the Lake namespace. It uses the Lake ingress address when its class
 matches, otherwise an owned app ingress of the configured class, selected deterministically.
 No record is created until a target is reported. Suffix changes retire old owned records, and

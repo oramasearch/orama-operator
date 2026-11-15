@@ -94,7 +94,7 @@ func TestLakeAppsPgxStoreAgainstPostgres(t *testing.T) {
 	if updated, err := store.UpdateAppTokenHashes(ctx, row, hashes); err != nil || !updated {
 		t.Fatalf("register hashes: %v", err)
 	}
-	status := LakeAppRowStatus{Phase: "Running", URL: "https://sales.apps.example.test", Ready: true, Message: "ready", ObservedGeneration: 1}
+	status := LakeAppRowStatus{Phase: "Running", URL: "https://sales.apps-example.test", Ready: true, Message: "ready", ObservedGeneration: 1}
 	if updated, err := store.UpdateAppStatus(ctx, row, status); err != nil || !updated {
 		t.Fatalf("write status: %v", err)
 	}

@@ -41,10 +41,10 @@ func TestLakeAppRowRefusesPlatformHosts(t *testing.T) {
 		{"example.test", "lake.example.test"},
 		{"example.test", "app.example.test"},
 		{"example.test", "preview.example.test"},
-		{"apps.example.test", "login.apps.example.test"},
-		{"apps.example.test", "grafana.apps.example.test"},
-		{"apps.example.test", "lake-eu.apps.example.test"},
-		{"apps.example.test", "orama-status.apps.example.test"},
+		{"apps-example.test", "login.apps-example.test"},
+		{"apps-example.test", "grafana.apps-example.test"},
+		{"apps-example.test", "lake-eu.apps-example.test"},
+		{"apps-example.test", "orama-status.apps-example.test"},
 	} {
 		lake := rowTrustLake(tc.wildcard)
 		row := testLakeAppRow()
@@ -53,22 +53,22 @@ func TestLakeAppRowRefusesPlatformHosts(t *testing.T) {
 			t.Errorf("host %s under wildcard %s was accepted", tc.host, tc.wildcard)
 		}
 	}
-	lake := rowTrustLake("apps.example.test")
+	lake := rowTrustLake("apps-example.test")
 	row := testLakeAppRow()
-	row.Host = "sales-dashboard.apps.example.test"
+	row.Host = "sales-dashboard.apps-example.test"
 	if _, err := lakeAppRowSpec(lake, &row, rowTrustServices(&row)); err != nil {
 		t.Fatalf("an ordinary app host was refused: %v", err)
 	}
 	// The Lake's public host from spec.env counts too.
-	lake.Spec.Env = []corev1.EnvVar{{Name: methodologyLakePublicHost, Value: "eu.apps.example.test"}}
-	row.Host = "eu.apps.example.test"
+	lake.Spec.Env = []corev1.EnvVar{{Name: methodologyLakePublicHost, Value: "eu.apps-example.test"}}
+	row.Host = "eu.apps-example.test"
 	if _, err := lakeAppRowSpec(lake, &row, rowTrustServices(&row)); err == nil {
 		t.Fatal("the Lake's public host was accepted as an app host")
 	}
 }
 
 func TestLakeAppRowRefusesReplicasAboveLakesCeiling(t *testing.T) {
-	lake := rowTrustLake("apps.example.test")
+	lake := rowTrustLake("apps-example.test")
 	row := testLakeAppRow()
 	row.Replicas = 100
 	if _, err := lakeAppRowSpec(lake, &row, rowTrustServices(&row)); err != nil {
@@ -81,7 +81,7 @@ func TestLakeAppRowRefusesReplicasAboveLakesCeiling(t *testing.T) {
 }
 
 func TestLakeAppRowZettaBindingIsReadOnly(t *testing.T) {
-	lake := rowTrustLake("apps.example.test")
+	lake := rowTrustLake("apps-example.test")
 	for _, bindings := range []string{
 		`{"zetta":{"scopes":["read","write"]}}`,
 		`{"zetta":{"scopes":["admin"]}}`,

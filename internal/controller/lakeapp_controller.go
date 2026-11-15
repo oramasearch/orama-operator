@@ -135,6 +135,18 @@ func (r *LakeAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if message := tenantWorkloadsRefused(ctx, r.reader(), &lake); message != "" {
 		return r.finishLakeAppStatus(ctx, &app, nil, lakeAppHost(&lake, &app), oramav1alpha1.LakeAppPhaseDegraded, false, reasonTenantNetworkPolicyNotEnforced, message)
 	}
+	// An app named under the apps wildcard is served only when the wildcard is a site of its own
+	// (#762). A synchronized app is always named under it; a hand-written one only without its own
+	// host. A refused wildcard stops the app (its Ingress, Service, Deployment, certificate and DNS
+	// go), so it is never left serving under the Lake's site.
+	if app.Spec.Sync != nil || app.Spec.Host == "" {
+		if reason, message := lakeAppsWildcardProblem(&lake); reason != "" {
+			if err := r.teardownLakeAppWorkload(ctx, &app, lakeAppNamespace(&app)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return r.finishLakeAppStatus(ctx, &app, nil, "", oramav1alpha1.LakeAppPhaseDegraded, false, reason, message)
+		}
+	}
 
 	workloadNamespace := lakeAppNamespace(&app)
 	if err := r.reconcileLakeAppNamespace(ctx, &app, workloadNamespace); err != nil {

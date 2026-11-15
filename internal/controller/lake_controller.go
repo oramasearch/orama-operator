@@ -467,6 +467,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if apimeta.SetStatusCondition(&desiredConditions, networkPolicy.Condition) {
 		conditionsChanged = true
 	}
+	if apimeta.SetStatusCondition(&desiredConditions, lakeAppsWildcardCondition(&lake)) {
+		conditionsChanged = true
+	}
 	// ClerkReady exists only on a Lake with spec.clerk.
 	if clerk.Condition != nil {
 		if apimeta.SetStatusCondition(&desiredConditions, *clerk.Condition) {

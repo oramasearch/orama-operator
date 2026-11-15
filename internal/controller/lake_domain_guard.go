@@ -42,7 +42,7 @@ type lakeDomainTaken struct {
 func lakePlatformNames(lake *oramav1alpha1.Lake) []string {
 	hosts := []string{lake.Spec.Host, lakePublicHost(lake), lake.Spec.ApexHost}
 	names := append([]string(nil), hosts...)
-	names = append(names, lakeAppsWildcard(lake), strings.TrimPrefix(lake.Spec.PreviewWildcard, "*."))
+	names = append(names, lakeAppsWildcardConfigured(lake), strings.TrimPrefix(lake.Spec.PreviewWildcard, "*."))
 	// The customer's own host (#947) is the Lake's too; its zone is the customer's, not ours, so
 	// only the host and the names beneath it are taken.
 	if lake.Spec.CustomDomain != nil {

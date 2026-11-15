@@ -96,8 +96,12 @@ func TestLakeOriginTLSCoversEveryHostAndWildcard(t *testing.T) {
 		t.Errorf("main ingress issuer = %+v", main.Annotations)
 	}
 
+	// The Lake names no apps wildcard, and none defaults to its own host (#762): there is no apps
+	// wildcard Ingress, only the preview one.
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "lake-shared-apps-wildcard"}, &networkingv1.Ingress{}); !apierrors.IsNotFound(err) {
+		t.Errorf("an apps wildcard Ingress under the Lake's host exists: %v", err)
+	}
 	for name, host := range map[string]string{
-		"lake-shared-apps-wildcard":    "*.eu.lake.live",
 		"lake-shared-preview-wildcard": "*.preview.lake.live",
 	} {
 		ing := getIngress(t, c, "lake", name)
@@ -151,7 +155,7 @@ func TestLakeIngressFollowsTheZone(t *testing.T) {
 	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	reconcileLake(t, c, s, "shared")
 
-	names := []string{"lake-shared", "lake-shared-apps-wildcard", "lake-shared-preview-wildcard"}
+	names := []string{"lake-shared", "lake-shared-preview-wildcard"}
 	check := func(step, redirect string, pulls bool) {
 		t.Helper()
 		for _, name := range names {
@@ -186,12 +190,12 @@ func TestLakeIngressFollowsTheZone(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); err != nil {
 		t.Fatal(err)
 	}
-	policy.Status.Hosts = []oramav1alpha1.EdgeZoneHostStatus{{Name: "*.eu.lake.live", Edge: "TLS handshake failed"}}
+	policy.Status.Hosts = []oramav1alpha1.EdgeZoneHostStatus{{Name: "*.preview.lake.live", Edge: "TLS handshake failed"}}
 	if err := c.Status().Update(context.Background(), &policy); err != nil {
 		t.Fatal(err)
 	}
 	reconcileLake(t, c, s, "shared")
-	if got := getIngress(t, c, "lake", "lake-shared-apps-wildcard").Annotations[annotationNginxSSLRedirect]; got != "false" {
+	if got := getIngress(t, c, "lake", "lake-shared-preview-wildcard").Annotations[annotationNginxSSLRedirect]; got != "false" {
 		t.Errorf("uncovered wildcard redirect = %q, want false", got)
 	}
 	if got := getIngress(t, c, "lake", "lake-shared").Annotations[annotationNginxSSLRedirect]; got != "true" {

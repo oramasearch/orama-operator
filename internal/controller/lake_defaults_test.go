@@ -85,7 +85,7 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 		"LAKE_APPS_RUNTIME_IMAGE":        "oramasearch/app-runtime:976e6a8",
 		"LAKE_METHODOLOGY_RUNTIME_IMAGE": "oramasearch/methodology-runtime:ac58062",
 		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892",
-		"LAKE_APPS_WILDCARD":             "lake-dev.oramadev.net",
+		"LAKE_APPS_WILDCARD":             "",
 		"LAKE_AGENT_MODEL":               "gpt-6.1-sol",
 		"LAKE_SERVICE_DIR":               lakeServicesMountPath,
 		"LAKE_AGENT_BUS_DIR":             lakeAgentBusMountPath,
@@ -137,7 +137,7 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 
 func TestASpecImageOverridesItsDefault(t *testing.T) {
 	lake := bareLake()
-	lake.Spec.Apps = oramav1alpha1.LakeAppsSpec{RuntimeImage: "oramasearch/app-runtime:mine", Wildcard: "*.apps.example.test"}
+	lake.Spec.Apps = oramav1alpha1.LakeAppsSpec{RuntimeImage: "oramasearch/app-runtime:mine", Wildcard: "*.apps-example.test"}
 	lake.Spec.Builds.BuilderImage = "oramasearch/lake-builder:mine"
 	lake.Spec.Methodologies.RuntimeImage = "oramasearch/methodology-runtime:mine"
 	lake.Spec.Agents.RuntimeImage = "oramasearch/agent-runtime:mine"
@@ -152,7 +152,7 @@ func TestASpecImageOverridesItsDefault(t *testing.T) {
 		"LAKE_APPS_RUNTIME_IMAGE":        "oramasearch/app-runtime:mine",
 		"LAKE_METHODOLOGY_RUNTIME_IMAGE": "oramasearch/methodology-runtime:mine",
 		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:mine",
-		"LAKE_APPS_WILDCARD":             "apps.example.test",
+		"LAKE_APPS_WILDCARD":             "apps-example.test",
 	} {
 		if got := env[name].Value; got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)
@@ -281,18 +281,23 @@ func TestALakeWithoutPostgresSaysWhichFeaturesCannotRun(t *testing.T) {
 	}
 }
 
-func TestTheAppsWildcardDefaultsToTheLakeHost(t *testing.T) {
+// #762: the apps wildcard has no default. Without one, no app is named, routed or given DNS, and
+// the Lake says why; it never falls back to the Lake's own host.
+func TestTheAppsWildcardHasNoDefaultAndAnUnsetOneServesNoApp(t *testing.T) {
 	ctx := context.Background()
 	scheme := newLakeAppScheme(t)
 	lake := bareLake()
 	lake.UID = "lake-uid"
 	lake.Spec.DNSSecretRef = &corev1.LocalObjectReference{Name: "cloudflare"}
-	if got := lakeAppsWildcard(lake); got != "lake-dev.oramadev.net" {
-		t.Fatalf("wildcard = %q", got)
+	if got := lakeAppsWildcard(lake); got != "" {
+		t.Fatalf("wildcard = %q, want none", got)
 	}
 	app := &oramav1alpha1.LakeApp{ObjectMeta: metav1.ObjectMeta{Name: "myapp"}}
-	if got := lakeAppHost(lake, app); got != "myapp.lake-dev.oramadev.net" {
-		t.Fatalf("app host = %q", got)
+	if got := lakeAppHost(lake, app); got != "" {
+		t.Fatalf("app host = %q, want none", got)
+	}
+	if condition := lakeAppsWildcardCondition(lake); condition.Status != metav1.ConditionFalse || condition.Reason != lakeAppsWildcardUnset {
+		t.Fatalf("AppsWildcardReady = %+v", condition)
 	}
 	class := "nginx"
 	ingress := &networkingv1.Ingress{
@@ -313,8 +318,64 @@ func TestTheAppsWildcardDefaultsToTheLakeHost(t *testing.T) {
 	if err := c.List(ctx, &records, client.InNamespace("lake")); err != nil {
 		t.Fatal(err)
 	}
-	if len(records.Items) != 1 || records.Items[0].Spec.Name != "*.lake-dev.oramadev.net" {
+	if len(records.Items) != 0 {
+		t.Fatalf("apps DNS records without a wildcard: %+v", records.Items)
+	}
+
+	lake.Spec.Apps.Wildcard = "*.lake-dev-apps.net"
+	if got := lakeAppHost(lake, app); got != "myapp.lake-dev-apps.net" {
+		t.Fatalf("app host = %q", got)
+	}
+	if err := (&LakeAppsReconciler{Client: c, Scheme: scheme}).reconcileLakeAppsDNS(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.List(ctx, &records, client.InNamespace("lake")); err != nil {
+		t.Fatal(err)
+	}
+	if len(records.Items) != 1 || records.Items[0].Spec.Name != "*.lake-dev-apps.net" {
 		t.Fatalf("apps DNS records: %+v", records.Items)
+	}
+}
+
+func TestAnAppsWildcardThatSharesTheLakesSiteIsRefused(t *testing.T) {
+	base := func(wildcard string) *oramav1alpha1.Lake {
+		return &oramav1alpha1.Lake{Spec: oramav1alpha1.LakeSpec{
+			Host: "eu.lake.live", ApexHost: "lake.live", PreviewWildcard: "*.preview.lake.live",
+			Apps: oramav1alpha1.LakeAppsSpec{Wildcard: wildcard},
+		}}
+	}
+	for _, wildcard := range []string{
+		"eu.lake.live",        // the Lake host
+		"*.eu.lake.live",      // the same, written as a wildcard
+		"apps.eu.lake.live",   // a child of the Lake host
+		"lake.live",           // the apex, a parent of the Lake host
+		"apps.lake.live",      // the same registrable domain
+		"preview.lake.live",   // the preview wildcard
+		"x.preview.lake.live", // beneath the preview wildcard
+		"live",                // a public suffix, a parent of everything
+		"not_a_dns_name.apps", // not a DNS name
+	} {
+		lake := base(wildcard)
+		if reason, _ := lakeAppsWildcardProblem(lake); reason != lakeAppsWildcardSharesLakeSite {
+			t.Errorf("wildcard %q: reason %q, want %s", wildcard, reason, lakeAppsWildcardSharesLakeSite)
+		}
+		if got := lakeAppsWildcard(lake); got != "" {
+			t.Errorf("wildcard %q is served as %q", wildcard, got)
+		}
+	}
+	lake := base("lake.example.test")
+	lake.Spec.Env = []corev1.EnvVar{{Name: "LAKE_PUBLIC_HOST", Value: "public.example.test"}}
+	if reason, _ := lakeAppsWildcardProblem(lake); reason != lakeAppsWildcardSharesLakeSite {
+		t.Errorf("a wildcard on the public host's site is refused, got %q", reason)
+	}
+	for _, wildcard := range []string{"lake-apps.live", "*.eu.lakeapps.net"} {
+		lake := base(wildcard)
+		if reason, message := lakeAppsWildcardProblem(lake); reason != "" {
+			t.Errorf("wildcard %q on a site of its own is refused: %s", wildcard, message)
+		}
+		if condition := lakeAppsWildcardCondition(lake); condition.Status != metav1.ConditionTrue {
+			t.Errorf("AppsWildcardReady = %+v", condition)
+		}
 	}
 }
 
@@ -345,7 +406,7 @@ func TestALakeSetMemberGetsEveryFeatureAndEveryDefault(t *testing.T) {
 	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "shared"}, Spec: spec}
 	assertLakeRunsEveryFeature(t, lake)
 	env := lakeEnvMap(lake)
-	if env["LAKE_APPS_WILDCARD"].Value != "lake-eu.oramadev.net" ||
+	if env["LAKE_APPS_WILDCARD"].Value != "" ||
 		env["LAKE_APPS_RUNTIME_IMAGE"].Value != lakeDefaultAppsRuntimeImage ||
 		env["LAKE_MCP_RUNNER_IMAGE"].Value != lakeDefaultMCPRunnerImage ||
 		len(lakeAgentLibrary(lake)) != len(wantLakeDefaultLibrary) {
