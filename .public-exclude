@@ -1,6 +1,7 @@
-# What stays out of the public export of this repository (gitignore syntax). The export tool also
-# always leaves out CLAUDE.md, AGENTS.md, .claude/, .codex/, .cursor/ and this file. Everything
-# else must be free of internal material at the commit that is exported.
+# What stays out of the public export of this repository (gitignore syntax). The agent files
+# (CLAUDE.md, AGENTS.md, .claude/, .codex/, .cursor/) are never listed here: they ship, and are
+# written to be public. Everything not listed must be free of internal material at the commit that
+# is exported.
 
 # The design and decision log: internal history and decisions.
 /DESIGN.md
