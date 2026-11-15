@@ -378,6 +378,13 @@ func TestCustomDomainLifecycleEnvtest(t *testing.T) {
 		len(ingress.Spec.TLS) != 1 || ingress.Spec.TLS[0].SecretName != "data.example.com-tls" {
 		t.Errorf("custom host ingress = %+v", ingress.Spec)
 	}
+	// The proxy listener, as the Lake Ingress (lake#1132): on the main port lake believes no
+	// forwarded address, so every customer-domain visitor would share one per-client bucket.
+	if len(ingress.Spec.Rules) == 1 {
+		if b := ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service; b == nil || b.Name != svc || b.Port.Number != lakeProxyServicePort {
+			t.Errorf("custom host ingress backend = %+v, want %s:%d (the proxy port)", b, svc, lakeProxyServicePort)
+		}
+	}
 	for key := range ingress.Annotations {
 		if strings.Contains(key, "auth-tls") {
 			t.Errorf("the customer's host requires Cloudflare's client certificate: %s", key)

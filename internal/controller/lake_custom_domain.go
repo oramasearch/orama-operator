@@ -498,8 +498,9 @@ func (r *LakeReconciler) lakeCustomDomainCertificateStatus(ctx context.Context, 
 	return false, notAfter, "", nil
 }
 
-// reconcileLakeCustomDomainIngress keeps the host's own Ingress: the whole host to the lake Service,
-// HTTPS with the host's certificate and a redirect from HTTP. It has none of the Lake Ingress's
+// reconcileLakeCustomDomainIngress keeps the host's own Ingress: the whole host to the lake Service's
+// proxy port (lake_proxy_listener.go, lake#1132), as the Lake Ingress, so lake counts each visitor's
+// own address for its per-client limits; HTTPS with the host's certificate and a redirect from HTTP. It has none of the Lake Ingress's
 // Cloudflare edge settings: the customer's users do not come through Orama's zone, so requiring
 // Cloudflare's client certificate would refuse every one of them.
 func (r *LakeReconciler) reconcileLakeCustomDomainIngress(ctx context.Context, lake *oramav1alpha1.Lake, ns, svcName string, labels map[string]string, host string) error {
@@ -516,7 +517,7 @@ func (r *LakeReconciler) reconcileLakeCustomDomainIngress(ctx context.Context, l
 				Paths: []networkingv1.HTTPIngressPath{{
 					Path: "/", PathType: &prefix,
 					Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-						Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+						Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeProxyServicePort}}},
 				}},
 			}},
 		}}

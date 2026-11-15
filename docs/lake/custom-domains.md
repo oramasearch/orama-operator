@@ -81,6 +81,8 @@ its cluster) and hand them over:
   the name through their own CDN, the challenge path must reach the origin over plain HTTP until the
   first certificate is issued (see *HTTP-01: what must reach the origin* in `origin-tls.md`).
 - The host has **its own Ingress**, `lake-<name>-custom-domain`, with HTTPS, the redirect from HTTP,
+  the lake Service's `proxy` port as its backend like the Lake Ingress (lake's proxy listener, where
+  it believes ingress-nginx's `X-Real-IP`, [lake#1132](https://github.com/oramasearch/lake/issues/1132)),
   and none of the Lake Ingress's Cloudflare edge settings. The Lake's own Ingress requires
   Cloudflare's client certificate (authenticated origin pulls); the customer's users do not come
   through Orama's zone, so that requirement would refuse every one of them.

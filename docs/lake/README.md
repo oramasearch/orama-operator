@@ -251,7 +251,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `LAKE_PROXY_PORT` ([lake#1132](https://github.com/oramasearch/lake/issues/1132),
    `internal/controller/lake_proxy_listener.go`). Lake believes the client address in `X-Real-IP`
    only on the proxy port, and with `LAKE_TRUSTED_PROXY_CIDRS=none` from no peer on the main one.
-   The Lake Ingress (item 12) and LakeApp auth subrequests use `proxy`, and zetta-tunnel's ingress
+   The Lake Ingress (item 12), the custom-domain Ingress ([`custom-domains.md`](custom-domains.md))
+   and LakeApp auth subrequests use `proxy`, and zetta-tunnel's ingress
    gateway follows the Ingress; only ingress-nginx and the gateway may reach it
    (`allow-ingress-nginx`, [network sandbox](../infrastructure/network-sandbox.md)). Every in-cluster
    caller (`LAKE_INTERNAL_URL`, agents, workspaces, builds, methodologies, e2e) uses `http`. **The lake
