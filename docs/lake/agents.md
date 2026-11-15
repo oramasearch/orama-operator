@@ -19,6 +19,7 @@ and reports back, as it does for services and stores.
 | `openaiSecretName` | a Secret in `spec.namespace` holding `OPENAI_API_KEY`, the general Orama key. **People provide it**. Only the library agents in `spec.namespace` get it; it is **never** copied into a workspace namespace or given to a launch or schedule pod ([below](#oramas-provider-key-never-reaches-a-workspace)), and never written to a row or status |
 | `model` | the frontier model agents default to (default `gpt-6.1-sol`) |
 | `jobDeadlineSeconds` | the bound on one job launch (default 3600) |
+| `isolation` | `Shared` (default) or `PerWorkspace`: where the library agents' processes run. `PerWorkspace` runs one process per library agent for each running workspace, each with only its workspace's bus credential ([below](#one-agent-process-per-workspace)) |
 
 Every Lake runs its agents; there is no switch ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)). The default images are listed in [the Lake README](README.md#default-images).
 
@@ -54,6 +55,58 @@ across reconciles, removed with the agent). Lake mounts the whole Secret; each a
 its own key. The service token is never a bus credential, because user-created service launches
 on `runtimeImage` hold it too. The operator runs no task loop: tasks, claims and results travel on
 the bus.
+
+## One agent process per workspace
+
+[operator#1169](https://github.com/oramasearch/orama-operator/issues/1169), the operator half of
+[lake#871](https://github.com/oramasearch/lake/issues/871) (lake's half is
+[lake#1304](https://github.com/oramasearch/lake/pull/1304)). Decided under Steve's 2026-11-14
+delegation: enterprise and isolated installs get one library-agent process per workspace.
+
+A shared library agent is one process that serves every workspace of the Lake, with one bus
+credential that reaches every workspace's tasks. Lake accepts a `LAKE_AGENT_BUS_DIR` file named
+`<agent>.<workspace id>` as a bus credential **bound to that workspace**: it receives, claims,
+reports and acts only for that workspace's tasks, always by reference, so the process never holds
+another tenant's task credential.
+
+**Which Lakes.** The Lake's own resource says so: `spec.agents.isolation: PerWorkspace`. No flag or
+chart value differs between clusters. **Which workspaces**: the resources that exist, one per
+workspace Zetta (`OramaZettaCluster` `<lake>-ws-<12 hex>`) the Lake controls and is not deleting.
+The workspaces reconciler creates it for a running workspace and deletes it when the workspace
+stops or is deleted, so the agents follow.
+
+For such a Lake, once its image supports it:
+
+- Secret `lake-<lake>-agent-bus` holds one credential per (agent, workspace), keyed
+  `<agent>.<workspace id>` (32 random bytes, hex, kept across reconciles), and **no unbound
+  `<agent>` key**: a process holding one would reach every workspace.
+- Each (agent, workspace) is its own Deployment `<lake>-<agent>-<12 hex of the workspace id>` in
+  `spec.namespace`, labelled `orama.cloud/library-agent` and `orama.cloud/workspace`, with the
+  library agent's pod, env and network allowances, and `AGENT_BUS_TOKEN` from its own key only. It
+  has **no Service**: lake dispatches library-agent tasks over the bus, and `LAKE_AGENT_ENDPOINTS`
+  only lists which agents the Lake runs. No shared Deployment or Service runs.
+- A workspace whose Zetta goes loses its credentials and its processes. Moving back to `Shared`
+  restores the shared agents and removes the workspace ones.
+- lake reads `LAKE_AGENT_BUS_DIR` when it starts, so its pod template carries
+  `orama.cloud/agent-bus-keys`, a hash of the credential names: **a workspace started, stopped or
+  deleted restarts lake once.** A Lake on a `ReadWriteOnce` store recreates its pod
+  ([Rollouts](README.md#rollouts)). Lake re-reading the directory would remove the restart.
+- The processes run in the Lake's namespace, as the shared ones do, so Orama's provider key stays
+  out of workspace namespaces ([below](#oramas-provider-key-never-reaches-a-workspace)).
+- Cost: nine Deployments per running workspace. The bus Secret holds about 1 KiB per workspace,
+  so a Lake stays under the 1 MiB Secret limit to about 900 running workspaces.
+
+**The switch is what the image says.** A lake image whose `lake manifest` lists the feature
+`agent_bus_workspace_credentials` (`status.imageManifest.workspaceBoundAgentBus`) gets this. Until
+then a `PerWorkspace` Lake keeps its shared agents, and condition `AgentIsolation` is `False` with
+reason `ImageNotSupported`; once in effect it is `True` with reason `PerWorkspace` and the
+workspace count. While a new image's manifest is being read, what is in place is kept. Lakes
+without `PerWorkspace` carry no `AgentIsolation` condition and their pods do not change.
+
+**Roll order.** This operator first. Then the agent images that claim `by_reference` (lake#871's
+agent pull requests), because lake makes every claim by a bound credential by reference. Then a
+lake image with lake#1304 whose manifest lists the feature. Then `spec.agents.isolation:
+PerWorkspace` on the Lakes that want it.
 
 ## Launches
 

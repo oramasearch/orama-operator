@@ -216,17 +216,16 @@ func (r *LakeReconciler) reconcileLakeAgentServiceToken(ctx context.Context, lak
 
 // reconcileLakeAgentBusTokens keeps one random bus credential per library agent: an agent added to
 // the library gets one, an agent dropped from it loses its own, and an existing one never changes.
-func (r *LakeReconciler) reconcileLakeAgentBusTokens(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) error {
+// For a per-workspace placement (lake_agents_per_workspace.go, operator#1169) the credentials are
+// one per (agent, workspace), named <agent>.<workspace id>, and the unbound ones are removed.
+func (r *LakeReconciler) reconcileLakeAgentBusTokens(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, placement lakeAgentPlacement) error {
 	if len(lakeAgentLibrary(lake)) == 0 {
 		return nil
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAgentBusSecret(lake.Name), Namespace: namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		secret.Labels = labels
-		wanted := map[string]bool{}
-		for _, agent := range lakeAgentLibrary(lake) {
-			wanted[agent.Key] = true
-		}
+		wanted := lakeAgentBusWantedKeys(lake, placement)
 		data := map[string][]byte{}
 		for key, value := range secret.Data {
 			if wanted[key] && len(value) > 0 {
@@ -362,6 +361,25 @@ func withLabels(labels map[string]string, extra map[string]string) map[string]st
 // reconcileAgentService makes a Deployment and a Service named `name` run `pod`, and reports the
 // Deployment's available replicas.
 func (r *LakeReconciler) reconcileAgentService(ctx context.Context, lake *oramav1alpha1.Lake, namespace, name string, labels, selector map[string]string, pod corev1.PodSpec) (int32, error) {
+	available, err := r.reconcileAgentDeployment(ctx, lake, namespace, name, labels, selector, pod)
+	if err != nil {
+		return 0, err
+	}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		svc.Labels = labels
+		svc.Spec.Selector = selector
+		svc.Spec.Ports = []corev1.ServicePort{{Name: agentPortName, Port: agentPort, TargetPort: intstr.FromString(agentPortName)}}
+		return controllerutil.SetControllerReference(lake, svc, r.Scheme)
+	}); err != nil {
+		return 0, fmt.Errorf("reconcile agent service %s: %w", name, err)
+	}
+	return available, nil
+}
+
+// reconcileAgentDeployment makes a one-replica Deployment named `name` run `pod`, and reports its
+// available replicas.
+func (r *LakeReconciler) reconcileAgentDeployment(ctx context.Context, lake *oramav1alpha1.Lake, namespace, name string, labels, selector map[string]string, pod corev1.PodSpec) (int32, error) {
 	replicas := int32(1)
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
@@ -374,22 +392,25 @@ func (r *LakeReconciler) reconcileAgentService(ctx context.Context, lake *oramav
 	}); err != nil {
 		return 0, fmt.Errorf("reconcile agent deployment %s: %w", name, err)
 	}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
-		svc.Labels = labels
-		svc.Spec.Selector = selector
-		svc.Spec.Ports = []corev1.ServicePort{{Name: agentPortName, Port: agentPort, TargetPort: intstr.FromString(agentPortName)}}
-		return controllerutil.SetControllerReference(lake, svc, r.Scheme)
-	}); err != nil {
-		return 0, fmt.Errorf("reconcile agent service %s: %w", name, err)
-	}
 	return deployment.Status.AvailableReplicas, nil
 }
 
 // reconcileLakeLibraryAgents runs every library agent (lakeAgentLibrary: the defaults, with
 // spec.agents.library's images) and removes library agents whose key the operator no longer runs.
+// Where the bus Secret holds credentials bound to workspaces (lake_agents_per_workspace.go,
+// operator#1169), each agent runs one process per bound credential instead of a shared one.
 func (r *LakeReconciler) reconcileLakeLibraryAgents(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) error {
+	keys, bound, err := r.lakeAgentBusKeys(ctx, lake, namespace)
+	if err != nil {
+		return err
+	}
 	wanted := map[string]bool{}
+	if bound {
+		if err := r.reconcileWorkspaceLibraryAgents(ctx, lake, namespace, labels, keys, wanted); err != nil {
+			return err
+		}
+		return r.removeUnwantedLibraryAgents(ctx, lake, namespace, wanted)
+	}
 	for _, agent := range lakeAgentLibrary(lake) {
 		name := libraryAgentName(lake.Name, agent.Key)
 		wanted[name] = true
@@ -408,6 +429,55 @@ func (r *LakeReconciler) reconcileLakeLibraryAgents(ctx context.Context, lake *o
 			return err
 		}
 	}
+	return r.removeUnwantedLibraryAgents(ctx, lake, namespace, wanted)
+}
+
+// reconcileWorkspaceLibraryAgents runs one Deployment per bus credential bound to a workspace, for
+// the library agents the Lake runs. It mounts only that credential and has no Service: lake
+// dispatches over the bus. Each name it runs is added to wanted.
+func (r *LakeReconciler) reconcileWorkspaceLibraryAgents(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	namespace string,
+	labels map[string]string,
+	keys []string,
+	wanted map[string]bool,
+) error {
+	images := map[string]string{}
+	for _, agent := range lakeAgentLibrary(lake) {
+		images[agent.Key] = agent.Image
+	}
+	for _, key := range keys {
+		agent, workspace := splitAgentBusKey(key)
+		image, known := images[agent]
+		if workspace == "" || !known || !agentWorkspaceIDPattern.MatchString(workspace) {
+			continue
+		}
+		name := workspaceAgentName(lake.Name, agent, workspace)
+		wanted[name] = true
+		selector := map[string]string{"app.kubernetes.io/name": agent, "app.kubernetes.io/instance": name}
+		env := append(libraryAgentEnv(lake, namespace),
+			secretEnv("AGENT_SERVICE_TOKEN", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey),
+			// Its own credential, bound by lake to this workspace alone, and the name it takes tasks under.
+			secretEnv("AGENT_BUS_TOKEN", lakeAgentBusSecret(lake.Name), key),
+			corev1.EnvVar{Name: "AGENT_BUS_AGENT", Value: agent})
+		pod := agentPodSpec(lake, image, env, true)
+		podLabels := agentLabels(labels, agent, name, map[string]string{
+			libraryAgentLabel: agent,
+			lakeInstanceLabel: lake.Name,
+			workspaceLabel:    workspace,
+		})
+		if _, err := r.reconcileAgentDeployment(ctx, lake, namespace, name, podLabels, selector, pod); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeUnwantedLibraryAgents deletes the library-agent Deployments of this Lake not in wanted,
+// and a Service of the same name: an agent dropped from the library, a shared agent once the Lake
+// runs per workspace, a workspace's agent once its workspace is gone, and the reverse.
+func (r *LakeReconciler) removeUnwantedLibraryAgents(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, wanted map[string]bool) error {
 	var deployments appsv1.DeploymentList
 	if err := r.List(ctx, &deployments, client.InNamespace(namespace), client.HasLabels{libraryAgentLabel}); err != nil {
 		return err

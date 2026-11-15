@@ -107,10 +107,13 @@ type lakeManifestDocument struct {
 		} `json:"products"`
 	} `json:"stripe"`
 	// Environment lists the variables the image reads; the operator looks only for the ones that
-	// change how it delivers something (lakeServiceConnectionURLEnv).
+	// change how it delivers something (lakeServiceConnectionURLEnv, lakeIdentityPassphraseFileEnv).
 	Environment []struct {
 		Name string `json:"name"`
 	} `json:"environment"`
+	// Features names behaviours that no variable announces; the operator looks only for the ones
+	// that change what it runs (lakeFeatureWorkspaceBoundAgentBus).
+	Features []string `json:"features"`
 }
 
 // lakeManifestPod is what the manifest Job's pod reported.
@@ -441,14 +444,19 @@ func lakeManifestFromDocument(document lakeManifestDocument) (*oramav1alpha1.Lak
 	}
 	events := slices.Clone(document.Stripe.WebhookEvents)
 	sort.Strings(events)
-	onDemand := false
+	onDemand, passphraseFile := false, false
 	for _, variable := range document.Environment {
-		if variable.Name == lakeServiceConnectionURLEnv {
+		switch variable.Name {
+		case lakeServiceConnectionURLEnv:
 			onDemand = true
+		case lakeIdentityPassphraseFileEnv:
+			passphraseFile = true
 		}
 	}
 	return &oramav1alpha1.LakeImageManifest{
 		ServiceConnectionsOnDemand: onDemand,
+		IdentityPassphraseFile:     passphraseFile,
+		WorkspaceBoundAgentBus:     slices.Contains(document.Features, lakeFeatureWorkspaceBoundAgentBus),
 		Supported:                  true,
 		Version:                    document.Version,
 		Revision:                   document.Revision,
