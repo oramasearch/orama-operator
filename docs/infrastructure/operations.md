@@ -256,7 +256,7 @@ kubectl --context example-management get lorders lake-live \
 
 **Never edit or delete an ordered resource by hand.** The operator brings it back to the described
 spec on its next pass, and removing one is a change of the order's state, which is not built yet
-([`orders.md`](orders.md#open-questions-for-steve)). A dedicated cluster copies the template cluster's
+([`orders.md`](orders.md#open-questions)). A dedicated cluster copies the template cluster's
 platform and operator, so it is upgraded by upgrading the template cluster's files, like every leaf.
 
 **What a source reports**: `Pending` while the set or lake's table is missing, `Degraded` when a

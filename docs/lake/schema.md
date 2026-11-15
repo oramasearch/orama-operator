@@ -310,7 +310,7 @@ role with permission to create databases:
 ```sh
 export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
 export LAKE_SCHEMA_TEST_POSTGRES=1
-export PGUSER=stevesperandeo
+export PGUSER=postgres
 export GOFLAGS=-p=6
 export GOMAXPROCS=6
 go build ./... && go vet ./... && go test ./...
