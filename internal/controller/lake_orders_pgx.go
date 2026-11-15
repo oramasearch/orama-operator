@@ -29,29 +29,58 @@ import (
 // `paid` rows and its own claims, and writes only `state`, `host`, `failure_reason`,
 // `claimed_by` and `claimed_at`, plus one `cloud_order_events` row per change, with actor
 // `operator`. Every state change is one statement, so the row and its event land together.
+//
+// Every read goes through lake's `cloud_order_desired_state` view (lake#972, migration
+// 0097_cloud_order_entitlements, operator#862), never the table alone. The view evaluates each
+// checkout order's subscription entitlement on PostgreSQL's clock at the time of the statement, so
+// an expiry needs no webhook and no worker: `desired_state` is `present` while the order is paid
+// for (or in its grace), `suspended` once it is not, and `unmanaged` for an order form. The claim
+// and the move to ready check the view in the same statement, so a stale list cannot provision or
+// finish an order whose entitlement ended in between.
 
 // errCloudOrdersTableMissing is returned while lake's schema has no cloud_orders table yet.
 var errCloudOrdersTableMissing = errors.New("lake's control plane has no cloud_orders table yet (lake#831's migration)")
 
+// errCloudOrderEntitlementsMissing is returned while lake's schema has cloud_orders but not the
+// entitlement view (0097). Nothing is claimed or provisioned then: the operator cannot tell a
+// paid-for order from an expired one.
+var errCloudOrderEntitlementsMissing = errors.New("lake's control plane has no cloud_order_desired_state view yet (lake#972's migration 0097_cloud_order_entitlements)")
+
+// The desired states lake's view gives an order.
+const (
+	cloudOrderPresent   = "present"
+	cloudOrderSuspended = "suspended"
+	cloudOrderUnmanaged = "unmanaged"
+)
+
 const (
 	cloudOrdersTableExistsSQL = `SELECT to_regclass('cloud_orders') IS NOT NULL AND to_regclass('cloud_order_events') IS NOT NULL`
 
+	cloudOrderEntitlementsExistSQL = `SELECT to_regclass('cloud_order_desired_state') IS NOT NULL`
+
 	// listCloudOrdersSQL is every paid order, and every order this claimant holds that is still
 	// its concern: provisioning (resumed after a restart), ready (its resources are kept as
-	// described) and failed (counted).
+	// described), and failed and cancelled (counted, and any resources they left are kept
+	// suspended). Suspended rows are listed too: they are reconciled, not skipped.
 	listCloudOrdersSQL = `SELECT id::text, offer, COALESCE(cloud_provider, ''), COALESCE(region, ''), state,
-       COALESCE(host, ''), COALESCE(claimed_by, '')
-  FROM cloud_orders
+       COALESCE(host, ''), COALESCE(claimed_by, ''), desired_state
+  FROM cloud_order_desired_state
  WHERE state = 'paid'
-    OR (claimed_by = $1 AND state IN ('provisioning', 'ready', 'failed'))
+    OR (claimed_by = $1 AND state IN ('provisioning', 'ready', 'failed', 'cancelled'))
  ORDER BY id`
+
+	// cloudOrderDesiredStateSQL rereads one order's desired state, just before its resources are
+	// written.
+	cloudOrderDesiredStateSQL = `SELECT desired_state FROM cloud_order_desired_state WHERE id = $1::uuid`
 
 	// claimCloudOrderSQL moves one paid order to provisioning for one claimant. The WHERE on
 	// state makes it exactly once: of two pollers, or a poller and its own restart, only one
-	// statement finds the row still paid.
+	// statement finds the row still paid. The order must not be suspended as of this statement.
 	claimCloudOrderSQL = `WITH claimed AS (
   UPDATE cloud_orders SET state = 'provisioning', claimed_by = $2, claimed_at = now()
    WHERE id = $1::uuid AND state = 'paid'
+     AND EXISTS (SELECT 1 FROM cloud_order_desired_state WHERE cloud_order_desired_state.id = $1::uuid
+                    AND cloud_order_desired_state.desired_state <> 'suspended')
   RETURNING id)
 INSERT INTO cloud_order_events (order_id, at, from_state, to_state, actor, detail)
 SELECT id, now(), 'paid', 'provisioning', 'operator', $3 FROM claimed
@@ -66,6 +95,19 @@ RETURNING order_id`
 INSERT INTO cloud_order_events (order_id, at, from_state, to_state, actor, detail)
 SELECT id, now(), 'provisioning', $3, 'operator', $6 FROM moved
 RETURNING order_id`
+
+	// readyCloudOrderSQL is finishCloudOrderSQL's move to ready, which is made only while the
+	// order is still paid for, as of this statement: an order whose entitlement ended while its
+	// Lake came up stays provisioning, suspended, until it is renewed.
+	readyCloudOrderSQL = `WITH moved AS (
+  UPDATE cloud_orders SET state = 'ready', host = $3
+   WHERE id = $1::uuid AND state = 'provisioning' AND claimed_by = $2
+     AND EXISTS (SELECT 1 FROM cloud_order_desired_state WHERE cloud_order_desired_state.id = $1::uuid
+                    AND cloud_order_desired_state.desired_state <> 'suspended')
+  RETURNING id)
+INSERT INTO cloud_order_events (order_id, at, from_state, to_state, actor, detail)
+SELECT id, now(), 'provisioning', 'ready', 'operator', $4 FROM moved
+RETURNING order_id`
 )
 
 // CloudOrder is one row of lake's cloud_orders, as far as the operator reads it.
@@ -77,19 +119,24 @@ type CloudOrder struct {
 	State         string
 	Host          string
 	ClaimedBy     string
+	// DesiredState is lake's view of the order's entitlement: present, suspended or unmanaged.
+	DesiredState string
 }
 
 // CloudOrderStore reads and writes one control plane's orders. The pgx implementation talks to
 // lake's control Postgres; tests substitute an in-memory fake.
 type CloudOrderStore interface {
-	// ListOrders returns every paid order and the orders claimant holds. It returns
-	// errCloudOrdersTableMissing while lake's schema has no cloud_orders table.
+	// ListOrders returns every paid order and the orders claimant holds, each with its desired
+	// state. It returns errCloudOrdersTableMissing while lake's schema has no cloud_orders table,
+	// and errCloudOrderEntitlementsMissing while it has no entitlement view.
 	ListOrders(ctx context.Context, claimant string) ([]CloudOrder, error)
-	// Claim moves a paid order to provisioning for claimant. False means another claimant, or
-	// an earlier pass, has it.
+	// DesiredState rereads one order's desired state.
+	DesiredState(ctx context.Context, id string) (string, error)
+	// Claim moves a paid, not suspended order to provisioning for claimant. False means another
+	// claimant, or an earlier pass, has it, or its entitlement has ended.
 	Claim(ctx context.Context, id, claimant string) (bool, error)
 	// MarkReady and MarkFailed move an order claimant holds from provisioning. False means it
-	// is no longer provisioning, or not claimant's.
+	// is no longer provisioning, or not claimant's; for MarkReady also that it is suspended.
 	MarkReady(ctx context.Context, id, claimant, host string) (bool, error)
 	MarkFailed(ctx context.Context, id, claimant, reason string) (bool, error)
 	Close(ctx context.Context) error
@@ -119,6 +166,12 @@ func (s *pgxCloudOrderStore) ListOrders(ctx context.Context, claimant string) ([
 	if !exists {
 		return nil, errCloudOrdersTableMissing
 	}
+	if err := s.conn.QueryRow(ctx, cloudOrderEntitlementsExistSQL).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, errCloudOrderEntitlementsMissing
+	}
 	rows, err := s.conn.Query(ctx, listCloudOrdersSQL, claimant)
 	if err != nil {
 		return nil, err
@@ -127,7 +180,7 @@ func (s *pgxCloudOrderStore) ListOrders(ctx context.Context, claimant string) ([
 	var orders []CloudOrder
 	for rows.Next() {
 		var o CloudOrder
-		if err := rows.Scan(&o.ID, &o.Offer, &o.CloudProvider, &o.Region, &o.State, &o.Host, &o.ClaimedBy); err != nil {
+		if err := rows.Scan(&o.ID, &o.Offer, &o.CloudProvider, &o.Region, &o.State, &o.Host, &o.ClaimedBy, &o.DesiredState); err != nil {
 			return nil, err
 		}
 		orders = append(orders, o)
@@ -135,12 +188,24 @@ func (s *pgxCloudOrderStore) ListOrders(ctx context.Context, claimant string) ([
 	return orders, rows.Err()
 }
 
+func (s *pgxCloudOrderStore) DesiredState(ctx context.Context, id string) (string, error) {
+	var state string
+	if err := s.conn.QueryRow(ctx, cloudOrderDesiredStateSQL, id).Scan(&state); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A row that is gone is not paid for.
+			return cloudOrderSuspended, nil
+		}
+		return "", err
+	}
+	return state, nil
+}
+
 func (s *pgxCloudOrderStore) Claim(ctx context.Context, id, claimant string) (bool, error) {
 	return oneRow(s.conn.Query(ctx, claimCloudOrderSQL, id, claimant, cloudOrderText("claimed by "+claimant)))
 }
 
 func (s *pgxCloudOrderStore) MarkReady(ctx context.Context, id, claimant, host string) (bool, error) {
-	return oneRow(s.conn.Query(ctx, finishCloudOrderSQL, id, claimant, cloudOrderReady, host, nil, cloudOrderText("ready at "+host)))
+	return oneRow(s.conn.Query(ctx, readyCloudOrderSQL, id, claimant, host, cloudOrderText("ready at "+host)))
 }
 
 func (s *pgxCloudOrderStore) MarkFailed(ctx context.Context, id, claimant, reason string) (bool, error) {

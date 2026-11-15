@@ -42,8 +42,9 @@ type LakeOrderSourceSpec struct {
 	HostDomain string `json:"hostDomain"`
 
 	// Member is every ordered Lake's own settings over the set's template, as a set member's
-	// `spec` (Clerk, environment). The operator sets `host` and `args` itself; a Member that sets
-	// either, or LAKE_PUBLIC_HOST in `env`, is refused.
+	// `spec` (Clerk, environment). The operator sets `host`, `args` and, while an order is
+	// suspended, `replicas` itself; a Member that sets any of them, or LAKE_PUBLIC_HOST in `env`,
+	// is refused.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	Member *apiextensionsv1.JSON `json:"member,omitempty"`
@@ -86,6 +87,11 @@ type LakeOrderStatus struct {
 	LakeSet string `json:"lakeSet,omitempty"`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// Suspended is true when lake's entitlement view says the order is not paid for
+	// (operator#862): nothing is provisioned for it, and its Lake, if it has one, is stopped with
+	// its data kept.
+	// +optional
+	Suspended bool `json:"suspended,omitempty"`
 	// Message says what the order is waiting for.
 	// +optional
 	Message string `json:"message,omitempty"`
@@ -106,10 +112,14 @@ type LakeOrderSourceStatus struct {
 	ReadyOrders int32 `json:"readyOrders,omitempty"`
 	// +optional
 	Failed int32 `json:"failed,omitempty"`
+	// Suspended counts the paid, provisioning and ready orders held back because their
+	// entitlement ended (lake's cloud_order_desired_state says `suspended`).
+	// +optional
+	Suspended int32 `json:"suspended,omitempty"`
 	// Members reports each member read.
 	// +optional
 	Members []LakeOrderSourceMemberStatus `json:"members,omitempty"`
-	// Orders lists the orders being provisioned.
+	// Orders lists the orders being provisioned, and the suspended ones.
 	// +optional
 	Orders []LakeOrderStatus `json:"orders,omitempty"`
 	// +optional
@@ -128,6 +138,7 @@ type LakeOrderSourceStatus struct {
 //+kubebuilder:printcolumn:name="Provisioning",type=integer,JSONPath=`.status.provisioning`
 //+kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyOrders`
 //+kubebuilder:printcolumn:name="Failed",type=integer,JSONPath=`.status.failed`
+//+kubebuilder:printcolumn:name="Suspended",type=integer,JSONPath=`.status.suspended`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 //+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 

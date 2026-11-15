@@ -2137,14 +2137,14 @@ Short name `lorders`. Provisions the paid orders a `LakeSet`'s Lakes record in l
 | `metadata.name` | At most 224 characters: `claimed_by` is `orama-operator/LakeOrderSource/<name>` and lake allows 255. A longer name is `Degraded` and claims nothing. |
 | `spec.lakeSetRef` | The `LakeSet` whose members' control Postgres hold the orders. Every ordered Lake copies its template and secrets. |
 | `spec.hostDomain` | The DNS zone ordered Lakes are served in: `<lake name>.<hostDomain>`. Must be in the template's `dnsSecretRef` zone. At most 234 characters, so the host fits lake's 253. |
-| `spec.member` | Every ordered Lake's own settings, as a set member's `spec`. Must not set `host`, `args`, `apexHost`, `region`, `regions`, `namespace` or `LAKE_PUBLIC_HOST`, which the operator sets per order. |
+| `spec.member` | Every ordered Lake's own settings, as a set member's `spec`. Must not set `host`, `args`, `apexHost`, `region`, `regions`, `namespace`, `replicas` or `LAKE_PUBLIC_HOST`, which the operator sets per order (`replicas: 0` while an order is suspended). |
 | `spec.memberSecrets[]` | Copied into every ordered Lake's namespace, as a set member's `secrets`. |
 | `spec.dedicatedCluster` | `providerRef` (the `KubernetesClusterProvider`: the cloud identity) and `templateClusterRef` (the `KubernetesCluster` whose version, node pools, `ClusterHelmRelease`s and `OramaOperator` a dedicated cluster copies). Without it every `dedicated_cluster` order fails. |
 | `spec.pollInterval` | How often the orders are read. Default `30s`. |
-| `status.phase` | `Ready`, `Progressing` (orders provisioning), `Pending` (the set or lake's table is missing) or `Degraded` (a member cannot be read, or the spec is refused). |
-| `status.provisioning`, `.readyOrders`, `.failed` | This source's orders in each state. Columns of `kubectl get lorders`. |
+| `status.phase` | `Ready`, `Progressing` (orders provisioning), `Pending` (the set, lake's table or lake's entitlement view `cloud_order_desired_state` is missing; reason `TableMissing` or `EntitlementsMissing`) or `Degraded` (a member cannot be read, or the spec is refused). |
+| `status.provisioning`, `.readyOrders`, `.failed`, `.suspended` | This source's orders in each state; `suspended` counts the paid, provisioning and ready orders whose entitlement has ended ([operator#862](https://github.com/oramasearch/orama-operator/issues/862)). Columns of `kubectl get lorders`. |
 | `status.members[]` | Per member: `cluster`, `name`, `reachable`, and the `message` when its orders were not read. |
-| `status.orders[]` | Each order being provisioned: `id`, `member`, `offer`, `region`, `lakeSet`, and the `message` saying what it waits for. |
+| `status.orders[]` | Each order being provisioned or suspended: `id`, `member`, `offer`, `region`, `lakeSet`, `suspended` (true when lake's entitlement says it is not paid for: nothing is made, and its Lake runs `replicas: 0` with its data kept), and the `message` saying what it waits for. |
 
 Every resource it makes is named `order-<first 12 hex digits of the id>`, labelled
 `orama.cloud/order-id` and `orama.cloud/order-source`, and annotated `orama.cloud/order-owner`.
