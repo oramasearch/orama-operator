@@ -78,6 +78,9 @@ var zettaManagedEnvNames = map[string]struct{}{
 	// spec.env may not set them (operator#279).
 	"ZETTA_SEED_PEER": {},
 	"ZETTA_DATA_DIR":  {},
+	// The enrollment CA (operator#1174, zetta_identity.go): its key and seed are the operator's.
+	zettaClusterCAEnv:         {},
+	zettaClusterCASeedFileEnv: {},
 }
 
 // zettaCustomEnv returns accepted spec.env entries in authored order and a stable list of names the
@@ -135,6 +138,8 @@ type OramaZettaClusterReconciler struct {
 	// ZETTA_EGRESS_ALLOW in its environment.
 	Clientset kubernetes.Interface
 	PodLogs   func(ctx context.Context, namespace, pod string) (string, error)
+	// ZettaNodeURL replaces node 0's in-cluster API address in tests (zetta_identity.go).
+	ZettaNodeURL func(z *oramav1alpha1.OramaZettaCluster) string
 }
 
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
@@ -520,15 +525,27 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// The egress allowlist file (operator#724, zetta#1332): spec.egressAllowConfigMap is mounted, and
 	// the image's own `zetta --help` decides whether it reads it or keeps ZETTA_EGRESS_ALLOW. While the
 	// named ConfigMap does not exist yet the StatefulSet is left as it is (egress.hold).
-	egress, err := r.reconcileZettaEgressFile(ctx, &z)
+	//
+	// The image's answer is read for every cluster: the identity root rotation and the enrollment CA
+	// (operator#1174, zetta_identity.go) follow it too. A new cluster waits for it (identity.hold), so
+	// it is created with a CA seed when its image reads one.
+	features, featuresRequeue, err := r.reconcileZettaImageFeatures(ctx, &z)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if len(specInvalid) == 0 && !egress.hold {
+	egress, err := r.reconcileZettaEgressFileWith(ctx, &z, features, featuresRequeue)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	identity, err := r.reconcileZettaIdentity(ctx, &z, features, stsName, headlessName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(specInvalid) == 0 && !egress.hold && !identity.hold {
 		advertiseMap := strings.Join(r.zettaWANAddresses(ctx, &z, peerLBName, stsName), ",")
 		sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
-			return r.mutateZettaStatefulSetWithEgress(&z, sts, headlessName, stsName, lbls, advertiseMap, derivedPeers, egress.render)
+			return r.mutateZettaStatefulSetWith(&z, sts, headlessName, stsName, lbls, advertiseMap, derivedPeers, egress.render, identity.render)
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -556,7 +573,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// 6. Status — readiness roll-up + the capacity/install conditions/count and the slice's reachability
 	//    type + (for a wan-accessible slice) the routable rendezvous address (write only on change; anti-flap).
 	wanAddress := r.zettaWANAddress(ctx, &z, peerLBName, stsName)
-	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, peerCond, provisionedNodes, reachability, wanAddress, egress.features); err != nil {
+	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, peerCond, provisionedNodes, reachability, wanAddress, egress.features, identity); err != nil {
 		return ctrl.Result{}, err
 	}
 	// When acting as the datastore, poll at the shortest Lake deploySync interval in this namespace.
@@ -565,8 +582,10 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if syncEnabled {
 		requeue = r.deploymentSyncInterval(ctx, z.Namespace)
 	}
-	if egress.requeue > 0 && (requeue == 0 || egress.requeue < requeue) {
-		requeue = egress.requeue
+	for _, next := range []time.Duration{egress.requeue, identity.requeue} {
+		if next > 0 && (requeue == 0 || next < requeue) {
+			requeue = next
+		}
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
 }
@@ -808,6 +827,12 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 // mutateZettaStatefulSetWithEgress renders the StatefulSet, with the egress allowlist file of
 // spec.egressAllowConfigMap as reconcileZettaEgressFile decided it.
 func (r *OramaZettaClusterReconciler) mutateZettaStatefulSetWithEgress(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string, advertise string, derivedPeers []string, egress zettaEgressRender) error {
+	return r.mutateZettaStatefulSetWith(z, sts, headlessName, stsName, lbls, advertise, derivedPeers, egress, zettaIdentityRender{})
+}
+
+// mutateZettaStatefulSetWith renders the StatefulSet with the egress allowlist file and the identity
+// render (the admin token generation, ZETTA_CLUSTER_CA and the CA seed, zetta_identity.go).
+func (r *OramaZettaClusterReconciler) mutateZettaStatefulSetWith(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string, advertise string, derivedPeers []string, egress zettaEgressRender, identity zettaIdentityRender) error {
 	replicas := z.Spec.Replicas
 	if replicas < 1 {
 		replicas = 1
@@ -1017,6 +1042,8 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSetWithEgress(z *oramav
 
 	// The egress allowlist file and its variables (operator#724, zetta_egress_file.go).
 	applyZettaEgressRender(&sts.Spec.Template.Spec, egress, z.Spec.Env)
+	// The admin token generation, the enrollment CA and its seed (operator#1174, zetta_identity.go).
+	applyZettaIdentityRender(z, &sts.Spec.Template, identity)
 
 	// hostNetwork makes :7777/:4800 reachable at the k8s node's own address — the simplest way for a
 	// node to be dialable by siblings in other clusters (esp. a single-node cluster).
@@ -1066,7 +1093,7 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSetWithEgress(z *oramav
 // effective node-reachability type and (for a wan-accessible slice) the routable rendezvous address.
 // Writes only on a real change (anti-flap — operator principle #7); reachability + wanAddress are computed
 // by the caller (zettaReachability / zettaWANAddress) so the reconcile and status agree.
-func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond, peerCond *metav1.Condition, provisionedNodes int32, reachability, wanAddress string, features *oramav1alpha1.ZettaImageFeatures) error {
+func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond, peerCond *metav1.Condition, provisionedNodes int32, reachability, wanAddress string, features *oramav1alpha1.ZettaImageFeatures, identity zettaIdentityState) error {
 	desired := z.Spec.Replicas
 	if desired < 1 {
 		desired = 1
@@ -1097,7 +1124,8 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 		z.Status.Reachability != reachability || z.Status.Ephemeral != z.Spec.Ephemeral ||
 		z.Status.WanAddress != wanAddress ||
 		!slices.Equal(z.Status.IgnoredEnvVars, ignoredEnvVars) ||
-		!zettaImageFeaturesEqual(z.Status.ImageFeatures, features)
+		!zettaImageFeaturesEqual(z.Status.ImageFeatures, features) ||
+		z.Status.Identity != identity.status
 
 	if capCond != nil {
 		capCond.ObservedGeneration = z.Generation
@@ -1120,6 +1148,14 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	if setPeerAddressesCondition(z, peerCond) {
 		changed = true
 	}
+	// IdentityRootRotated exists only on a cluster with spec.identity.adminTokenGeneration (operator#1174).
+	if identity.condition != nil {
+		if meta.SetStatusCondition(&z.Status.Conditions, *identity.condition) {
+			changed = true
+		}
+	} else if meta.RemoveStatusCondition(&z.Status.Conditions, zettaIdentityConditionType) {
+		changed = true
+	}
 
 	if storageCond != nil {
 		storageCond.ObservedGeneration = z.Generation
@@ -1138,6 +1174,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	z.Status.Reachability, z.Status.Ephemeral, z.Status.WanAddress = reachability, z.Spec.Ephemeral, wanAddress
 	z.Status.IgnoredEnvVars = ignoredEnvVars
 	z.Status.ImageFeatures = features
+	z.Status.Identity = identity.status
 	return r.Status().Update(ctx, z)
 }
 

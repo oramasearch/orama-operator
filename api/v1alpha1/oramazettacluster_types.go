@@ -72,6 +72,13 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	EgressAllowConfigMap string `json:"egressAllowConfigMap,omitempty"`
 
+	// Identity rotates the cluster's identity root (operator#1174, zetta#1342). Raising
+	// adminTokenGeneration makes the operator mint a new admin token, call rotate_identity_root with it
+	// on node 0 while every node still runs the current token, and only then roll the new token to
+	// the pods. See docs/zetta-cluster-mtls.md#rotating-the-admin-token.
+	// +optional
+	Identity ZettaIdentitySpec `json:"identity,omitempty"`
+
 	// NOTE: inter-node peer traffic is ALWAYS mutual-TLS. The operator mints one shared cluster join
 	// token per cluster (Secret `<name>-zetta-cluster`) and injects it into every node as
 	// ZETTA_CLUSTER_TOKEN; the engine derives the cluster CA from it, so all nodes form ONE cluster
@@ -436,10 +443,14 @@ type OramaZettaClusterStatus struct {
 	// +optional
 	IgnoredEnvVars []string `json:"ignoredEnvVars,omitempty"`
 	// ImageFeatures is what an image said about itself in `zetta --help`, read once per spec.image
-	// by Job <name>-zetta-features while spec.egressAllowConfigMap is set (operator#724). The operator
-	// acts on it only while its image is spec.image.
+	// by Job <name>-zetta-features (operator#724, operator#1174). The operator acts on it only while
+	// its image is spec.image.
 	// +optional
 	ImageFeatures *ZettaImageFeatures `json:"imageFeatures,omitempty"`
+	// Identity is the cluster's identity root generation and enrollment CA as the operator has put
+	// them in place (operator#1174).
+	// +optional
+	Identity ZettaIdentityStatus `json:"identity,omitempty"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -453,6 +464,47 @@ type ZettaImageFeatures struct {
 	// EgressAllowFile is true when the image's usage lists ZETTA_EGRESS_ALLOW_FILE: it re-reads its
 	// egress allowlist from that file while it runs (zetta#1332).
 	EgressAllowFile bool `json:"egressAllowFile"`
+	// IdentityRootRotation is true when the image's usage lists ZETTA_IDENTITY_MIN_EPOCH, which
+	// came in the same zetta release as rotate_identity_root (zetta#1342, zetta#1360).
+	// +optional
+	IdentityRootRotation bool `json:"identityRootRotation,omitempty"`
+	// ClusterCA is true when the image's usage lists ZETTA_CLUSTER_CA: a node that is not enrolled
+	// enrolls only through a member the enrollment CA signed (zetta#1513).
+	// +optional
+	ClusterCA bool `json:"clusterCA,omitempty"`
+	// ClusterCASeedFile is true when the image's usage lists ZETTA_CLUSTER_CA_SEED_FILE: a node
+	// given the enrollment CA's seed holds the CA and signs enrollments (zetta#1513).
+	// +optional
+	ClusterCASeedFile bool `json:"clusterCASeedFile,omitempty"`
+}
+
+// ZettaIdentitySpec asks for an identity root rotation.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.adminTokenGeneration) || (has(self.adminTokenGeneration) && self.adminTokenGeneration >= oldSelf.adminTokenGeneration)",message="spec.identity.adminTokenGeneration cannot be lowered"
+type ZettaIdentitySpec struct {
+	// AdminTokenGeneration is the admin token's generation. 1 is the token the operator minted with
+	// the cluster. Raising it rotates the identity root to a new admin token (operator#1174); it cannot
+	// be lowered. The rotation waits for an image whose usage lists ZETTA_IDENTITY_MIN_EPOCH and for
+	// every node to be ready on the current token; condition IdentityRootRotated reports it.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	AdminTokenGeneration int64 `json:"adminTokenGeneration,omitempty"`
+}
+
+// ZettaIdentityStatus is what the operator has put in place for the cluster's identity.
+type ZettaIdentityStatus struct {
+	// AdminTokenGeneration is the generation of the admin token in Secret <name>-zetta-admin: the
+	// identity root the nodes run on once they have rolled.
+	// +optional
+	AdminTokenGeneration int64 `json:"adminTokenGeneration,omitempty"`
+	// ClusterCA is the enrollment CA's public key (64 hex) the nodes are given as ZETTA_CLUSTER_CA.
+	// Public, like the identity root.
+	// +optional
+	ClusterCA string `json:"clusterCA,omitempty"`
+	// ClusterCASource says where it came from: Operator (a seed the operator minted, held by this
+	// slice's nodes), Members (the CA the nodes generated under zetta#1512, read from a node's join
+	// command) or Sibling (another slice of the same cluster in this namespace).
+	// +optional
+	ClusterCASource string `json:"clusterCASource,omitempty"`
 }
 
 //+kubebuilder:object:root=true

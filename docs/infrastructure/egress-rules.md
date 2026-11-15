@@ -161,7 +161,8 @@ written to ConfigMap **`<cluster>-zetta-egress`** (key `allow`), controlled by i
 `/etc/zetta/egress/allow`, and `ZETTA_EGRESS_ALLOW_FILE` points there. What the node does with it is
 what its image says, never a flag: Job **`<cluster>-zetta-features`** runs `zetta --help` from
 `spec.image` once per image (no environment, no volume, no token), and the answer is kept in
-`status.imageFeatures`.
+`status.imageFeatures`. The same Job runs for every cluster, because the identity settings follow it
+too ([zetta-cluster-mtls.md](../zetta-cluster-mtls.md#identity-root-and-enrollment-ca-operator1174)).
 
 | The image | `ZETTA_EGRESS_ALLOW` | A rule or Connection change |
 |---|---|---|
