@@ -156,6 +156,11 @@ The control DB is always in-cluster: `controlDB.mode` supports only `in-cluster`
 `enabled: false`; the reconcile also refuses resources stored before this rule.
 `controlDB.endpoint` and `controlDB.credentialsSecretRef` do not select a different
 control database. Other data stores, including the broker, still support external mode.
+`controlDB.referenceRows` is this stack's catalog: the dashboard reference rows the operator seeds
+(`subscription_plans`, `stripe_addon_prices`, `llms`), one `INSERT INTO reference_<table> SELECT *
+FROM json_populate_record(...)` statement per line, as `hack/export-dashboard-reference-rows.sh`
+prints them. Any other statement fails the reconcile. Empty seeds the built-in example catalog,
+whose rows are made up.
 `controlDB.stripePrices` holds this stack's Stripe price IDs for the dashboard reference rows the
 operator seeds ([`components.md`](components.md#the-control-dbs-schema)): `plans[]` is
 `{ id, monthly, yearly }` (sets `subscription_plans.stripe_price_id_monthly`/`_yearly`; a plan not
@@ -180,7 +185,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `ablyKeySecretRef`, `resources`, `hpesResources` | index-builder (Deployment) + HARVEST + HPES, the embeddings server index-builder calls (`hpesResources`: default 7Gi and 2 CPUs requested, 10Gi limit; [components](components.md#hpes-index-builders-embeddings-hpesgo-574)) |
-| `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
+| `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `referenceRows`, `stripePrices` | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis; its REST API through the `redis-http` shim the cache brings ([components](components.md#the-upstash-rest-shim-redis_httpgo-562)) |
 | `broker` | data-store (`placement: central`) | RabbitMQ |

@@ -278,7 +278,7 @@ func TestControlDBMigrationGrants(t *testing.T) {
 		"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO migration;",
 		"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO migration;",
 		"controldb-schema " + schemaVersion(dashboardSchemaSQL),
-		"controldb-schema-0008 " + schemaVersion(mustSQL(controlDBSchema0008SQL())),
+		"controldb-schema-0008 " + schemaVersion(mustSQL(controlDBSchema0008SQL(dashboardReferenceRowsSQL))),
 	} {
 		if !strings.Contains(last.sql, want) {
 			t.Errorf("grants lack %q:\n%s", want, last.sql)

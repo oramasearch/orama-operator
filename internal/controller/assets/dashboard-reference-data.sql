@@ -1,6 +1,6 @@
 -- Operator SQL (operator#378, not a dashboard migration): seeds the dashboard's global reference
--- rows (subscription_plans, stripe_addon_prices, llms) with Prod 1's IDs and values, so a team can
--- be created and every copied team's plan reference resolves.
+-- rows (subscription_plans, stripe_addon_prices, llms) with the stack's catalog, IDs and values, so a
+-- team can be created and every copied team's plan reference resolves.
 --
 -- The operator renders this file twice. Inside <cr>-controldb-schema-0008, between 0008's tables and
 -- its constraints, so the default plan exists before teams_subscription_plan_id_subscription_plans_id_fk
@@ -11,10 +11,11 @@
 -- Before this file the operator creates and fills two temporary tables from the stack's spec:
 --   stack_stripe_plan_prices (id uuid, monthly varchar(255), yearly varchar(255))
 --   stack_stripe_addon_prices (id uuid, stripe_price_id varchar(255))
--- The rows come from dashboard-reference-rows.sql, spliced in at the marker line below.
+-- The rows come from the stack's spec.components.controlDB.referenceRows, or the built-in example
+-- catalog (dashboard-reference-rows.sql) when that is empty, spliced in at the marker line below.
 --
 -- Each row is upserted by ID to the committed values (ON CONFLICT (id) DO UPDATE): the operator is
--- the only writer of these rows on Prod 2. Nothing is deleted. An ID in the stack's prices that is
+-- the only writer of these rows on a stack. Nothing is deleted. An ID in the stack's prices that is
 -- not a reference row, or a Stripe price ID already used by another add-on row, fails the whole
 -- transaction, visibly, in the migration Job.
 
