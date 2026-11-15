@@ -45,10 +45,11 @@ func (valkeyServiceKind) objects(in catalogService) []catalogObject {
 var valkeyDeniedCategories = []interface{}{"@admin", "@dangerous"}
 
 // valkeyUsers: the app user with every command but the denied categories, every key and channel,
-// and the built-in default user switched off — unmanaged, it would accept unauthenticated clients. The operator's own probes
-// and replication use its system users. Every field the CRD defaults is written, so the array
-// reads back equal and a steady cluster is never rewritten.
-func valkeyUsers(secretName string) []interface{} {
+// the built-in default user switched off — unmanaged, it would accept unauthenticated clients —
+// and the Orama operator's own user, which may only run ACL USERS (operator#1172). The
+// valkey-operator's probes and replication use its system users. Every field the CRD defaults is
+// written, so the array reads back equal and a steady cluster is never rewritten.
+func valkeyUsers(secretName, operatorSecretName string) []interface{} {
 	return []interface{}{
 		map[string]interface{}{"name": "default", "enabled": false, "nopass": false, "resetpass": false},
 		map[string]interface{}{
@@ -58,11 +59,17 @@ func valkeyUsers(secretName string) []interface{} {
 			"keys":           map[string]interface{}{"readWrite": []interface{}{"*"}},
 			"channels":       map[string]interface{}{"patterns": []interface{}{"*"}},
 		},
+		map[string]interface{}{
+			"name": valkeyOperatorUser, "enabled": true, "nopass": false, "resetpass": false,
+			"passwordSecret": map[string]interface{}{"name": operatorSecretName, "keys": []interface{}{serviceOperatorSecretKey}},
+			"commands":       map[string]interface{}{"allow": []interface{}{"acl|users"}},
+		},
 	}
 }
 
 func (k valkeyServiceKind) build(in catalogService, _ string) []catalogResource {
 	secretName, _ := k.passwordSecret(in.name)
+	operatorSecretName, _ := k.operatorSecret(in.name)
 	return []catalogResource{{catalogObject: k.objects(in)[0], fields: []serviceField{
 		// The `restricted` Pod Security Standard of a workspace namespace (operator#435), on the
 		// pod and on both of its containers, with their sizes stated.
@@ -79,7 +86,7 @@ func (k valkeyServiceKind) build(in catalogService, _ string) []catalogResource 
 		{path: []string{"spec", "exporter", "resources"}, value: serviceResources("10m", "32Mi", "50m", "64Mi")},
 		{path: []string{"spec", "shards"}, value: int64(valkeyShards)},
 		{path: []string{"spec", "replicas"}, value: int64(in.spec.Instances - 1)},
-		{path: []string{"spec", "users"}, value: valkeyUsers(secretName)},
+		{path: []string{"spec", "users"}, value: valkeyUsers(secretName, operatorSecretName)},
 		// reclaimPolicy stays the default Retain; deletion removes the claims itself.
 		{path: []string{"spec", "persistence"}, createOnly: true, value: map[string]interface{}{"size": serviceStorage(in.spec)}},
 	}}}
@@ -87,6 +94,19 @@ func (k valkeyServiceKind) build(in catalogService, _ string) []catalogResource 
 
 func (valkeyServiceKind) passwordSecret(name string) (string, string) {
 	return name + "-credentials", "password"
+}
+
+func (valkeyServiceKind) operatorSecret(name string) (string, string) {
+	return name + serviceOperatorSecretSuffix, serviceOperatorSecretKey
+}
+
+// unmanagedUsers: ACL USERS on every node, as the operator's own user, without the users the
+// operators make.
+func (valkeyServiceKind) unmanagedUsers(ctx context.Context, _ *LakeReconciler, in catalogService, _ map[string]*unstructured.Unstructured) ([]string, error) {
+	if in.operatorPassword == "" {
+		return nil, fmt.Errorf("no operator password")
+	}
+	return serviceUserListers.valkeyACLUsers(ctx, in, valkeyOperatorUser, in.operatorPassword)
 }
 
 // valkeyHost is the cluster's client Service, valkey-<name> (headless: a cluster client reaches

@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -75,6 +76,9 @@ type LakeReconciler struct {
 	ServiceEvents <-chan event.GenericEvent
 	// APIReader lists lake pods without a cache (no cluster-wide pod informer). Nil uses Client.
 	APIReader client.Reader
+	// Recorder records events on the Lake, such as users a service holds that the operator did not
+	// make (operator#1172). Nil records none.
+	Recorder record.EventRecorder
 	// NetworkPolicyCheck reads whether the cluster enforces network policy (operator#699,
 	// lake_network_policy_enforcement.go). Nil is the Cilium check every cluster runs; it is not a
 	// switch, only the point where a test supplies a fake result.

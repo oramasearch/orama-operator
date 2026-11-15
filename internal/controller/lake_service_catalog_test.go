@@ -51,7 +51,11 @@ type catalogCase struct {
 	upstreamSecret func(h *serviceHarness, c catalogCase)
 	// passwordSecret is the generated password Secret and key, "" when upstream makes it.
 	passwordSecret, passwordKey string
-	endpoint                    string
+	// operatorSecret is the generated password Secret (key "password") of the operator's own
+	// least-privilege identity, with which it lists the service's users (operator#1172); "" for
+	// kinds without one.
+	operatorSecret string
+	endpoint       string
 	// credential is the expected <slug>.json for password.
 	credential func(password string) string
 	// claimLabels are the labels the upstream operator puts on the service's PVCs.
@@ -73,7 +77,9 @@ func catalogCases() []catalogCase {
 	return []catalogCase{
 		{
 			kind: serviceKindKafka, id: "66666666-6666-4666-8666-666666666666", slug: "svc-666666666666", group: "kafka.strimzi.io",
-			objects: []string{"Kafka/prod-svc-666666666666", "KafkaNodePool/prod-svc-666666666666-pool", "KafkaUser/prod-svc-666666666666-app"},
+			objects: []string{"Kafka/prod-svc-666666666666", "KafkaNodePool/prod-svc-666666666666-pool", "KafkaUser/prod-svc-666666666666-app",
+				"KafkaUser/prod-svc-666666666666-operator"},
+			operatorSecret: "prod-svc-666666666666-operator-credentials",
 			checkBuild: func(h *serviceHarness, c catalogCase) {
 				kafka := h.upstream(strimziKafkaGVK, c.name())
 				listeners, _, _ := unstructured.NestedSlice(kafka.Object, "spec", "kafka", "listeners")
@@ -293,7 +299,8 @@ func catalogCases() []catalogCase {
 					"conditions": []interface{}{map[string]interface{}{"type": "Ready", "status": "True"}}})
 			},
 			passwordSecret: "prod-svc-aaaaaaaaaaaa-credentials", passwordKey: "password",
-			endpoint: "valkey-prod-svc-aaaaaaaaaaaa.lake.svc.cluster.local:6379",
+			operatorSecret: "prod-svc-aaaaaaaaaaaa-operator-credentials",
+			endpoint:       "valkey-prod-svc-aaaaaaaaaaaa.lake.svc.cluster.local:6379",
 			credential: func(password string) string {
 				return `{"kind":"valkey","endpoint":"valkey-prod-svc-aaaaaaaaaaaa.lake.svc.cluster.local:6379",` +
 					`"host":"valkey-prod-svc-aaaaaaaaaaaa.lake.svc.cluster.local","port":6379,"user":"app","password":"` + password + `","cluster":true}`
@@ -436,10 +443,13 @@ func TestServicesCatalogBuild(t *testing.T) {
 				}
 			}
 			c.checkBuild(h, c)
-			if c.passwordSecret != "" {
-				secret := h.secret(c.passwordSecret)
+			for _, name := range []string{c.passwordSecret, c.operatorSecret} {
+				if name == "" {
+					continue
+				}
+				secret := h.secret(name)
 				if !metav1.IsControlledBy(secret, h.lake) || secret.Labels[serviceIDLabel] != c.id {
-					t.Fatalf("password Secret not the Lake's: %v %v", secret.OwnerReferences, secret.Labels)
+					t.Fatalf("password Secret %s not the Lake's: %v %v", name, secret.OwnerReferences, secret.Labels)
 				}
 			}
 			expectStatus(t, store.status(t, c.id), ServicePhaseProvisioning, c.waiting, c.endpoint)
@@ -532,11 +542,17 @@ func TestServicesCatalogDeletionOrder(t *testing.T) {
 			if c.passwordSecret != "" {
 				h.secret(c.passwordSecret)
 			}
+			if c.operatorSecret != "" {
+				h.secret(c.operatorSecret)
+			}
 			expectStatus(t, store.status(t, c.id), ServicePhaseDeleting, fmt.Sprintf("deleting the %s data volumes", catalogKinds[c.kind].title()), c.endpoint)
 
 			h.poll()
 			if c.passwordSecret != "" {
 				want = append(want, "Secret/"+c.passwordSecret)
+			}
+			if c.operatorSecret != "" {
+				want = append(want, "Secret/"+c.operatorSecret)
 			}
 			if fmt.Sprint(*h.deletedKinds) != fmt.Sprint(want) {
 				t.Fatalf("deletion order = %v, want %v", *h.deletedKinds, want)
@@ -562,9 +578,12 @@ func TestServicesCatalogRefusesForeignObjects(t *testing.T) {
 			h.poll()
 			want := fmt.Sprintf("%s lake/%s exists and is not this Lake's service", kind, name)
 			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, want, "")
-			if c.passwordSecret != "" {
-				if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
-					t.Fatalf("a refused service generated a password Secret: %v", err)
+			for _, name := range []string{c.passwordSecret, c.operatorSecret} {
+				if name == "" {
+					continue
+				}
+				if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: name}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+					t.Fatalf("a refused service generated password Secret %s: %v", name, err)
 				}
 			}
 

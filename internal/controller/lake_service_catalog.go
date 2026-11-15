@@ -95,6 +95,9 @@ type catalogService struct {
 	// image is the image of a kind the Orama operator runs itself (sqlite, duckdb, polars); empty
 	// otherwise.
 	image string
+	// operatorPassword is the generated password of the operator's own least-privilege identity in
+	// a catalogUserAudit kind (operator#1172); empty for other kinds.
+	operatorPassword string
 }
 
 // catalogObject names one upstream object a kind may write.
@@ -308,15 +311,28 @@ func (r *LakeReconciler) reconcileCatalogService(ctx context.Context, lake *oram
 		}
 	}
 
+	if audit, ok := kind.(catalogUserAudit); ok {
+		secretName, key := audit.operatorSecret(in.name)
+		var failure string
+		in.operatorPassword, failure, err = r.ensureServicePassword(ctx, in, secretName, key, servicePasswordLength(kind))
+		if err != nil {
+			return serviceResult{}, err
+		}
+		if failure != "" {
+			return serviceResult{phase: ServicePhaseFailed, message: failure}, nil
+		}
+	}
+
 	for _, resource := range kind.build(in, password) {
-		obj, err := r.applyCatalogResource(ctx, in, resource, found[resource.gvk.Kind] == nil)
+		key := catalogFoundKey(kind.objects(in), resource.catalogObject)
+		obj, err := r.applyCatalogResource(ctx, in, resource, found[key] == nil)
 		if isKindNotInstalled(err) {
 			return serviceResult{phase: ServicePhaseFailed, message: serviceNotInstalledMessage(svc.Kind)}, nil
 		}
 		if err != nil {
 			return serviceResult{}, err
 		}
-		found[resource.gvk.Kind] = obj
+		found[key] = obj
 	}
 	if creating {
 		*live++
@@ -356,6 +372,11 @@ func (r *LakeReconciler) reconcileCatalogService(ctx context.Context, lake *oram
 		return serviceResult{phase: ServicePhaseFailed, endpoint: endpoint, message: distrust}, nil
 	}
 	result.credential = credential
+	// Once the tenant's connection is delivered, the users the operator did not make are listed,
+	// once, and reported (operator#1172).
+	if audit, ok := kind.(catalogUserAudit); ok && credential != nil {
+		result.note = r.reportUnmanagedUsers(ctx, in, found, audit)
+	}
 	return result, nil
 }
 
@@ -388,9 +409,25 @@ func (r *LakeReconciler) findCatalogObjects(ctx context.Context, in catalogServi
 			return nil, &serviceResult{phase: ServicePhaseProvisioning, endpoint: kind.endpoint(in),
 				message: fmt.Sprintf("waiting for the previous %s %s to be deleted", ref.gvk.Kind, ref.name)}, nil
 		}
-		found[ref.gvk.Kind] = obj
+		found[catalogFoundKey(kind.objects(in), ref)] = obj
 	}
 	return found, nil, nil
+}
+
+// catalogFoundKey is where an object is kept in the found map: its Kind for the first object of
+// that Kind a kind writes, Kind/name for a later one (Kafka's second KafkaUser, the operator's own,
+// operator#1172), so a builder reads its primary object of each Kind by Kind alone.
+func catalogFoundKey(objects []catalogObject, ref catalogObject) string {
+	for _, object := range objects {
+		if object.gvk.Kind != ref.gvk.Kind {
+			continue
+		}
+		if object.name == ref.name {
+			return ref.gvk.Kind
+		}
+		return ref.gvk.Kind + "/" + ref.name
+	}
+	return ref.gvk.Kind
 }
 
 // catalogClaims lists the PVCs the upstream operator created for the service, sorted by name.
@@ -539,6 +576,12 @@ func (r *LakeReconciler) deleteCatalogService(ctx context.Context, lake *oramav1
 	}
 
 	if secretName, _ := kind.passwordSecret(in.name); secretName != "" {
+		if err := r.deleteServicePassword(ctx, in, secretName); err != nil {
+			return serviceResult{}, false, err
+		}
+	}
+	if audit, ok := kind.(catalogUserAudit); ok {
+		secretName, _ := audit.operatorSecret(in.name)
 		if err := r.deleteServicePassword(ctx, in, secretName); err != nil {
 			return serviceResult{}, false, err
 		}

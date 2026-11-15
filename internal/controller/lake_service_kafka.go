@@ -38,8 +38,11 @@ const (
 	kafkaNodePoolSuffix = "-pool"
 	// kafkaUserSuffix names the KafkaUser, which is also its SCRAM username. A bare "app" would
 	// collide between two Kafka services of one namespace.
-	kafkaUserSuffix    = "-app"
-	kafkaSASLMechanism = "SCRAM-SHA-512"
+	kafkaUserSuffix = "-app"
+	// kafkaOperatorUserSuffix names the Orama operator's own KafkaUser, which may only describe
+	// the cluster (operator#1172).
+	kafkaOperatorUserSuffix = "-operator"
+	kafkaSASLMechanism      = "SCRAM-SHA-512"
 	// The client listener is TLS with SCRAM-SHA-512 (operator#770), so clients speak SASL_SSL and
 	// trust the Kafka's cluster CA, which the credential carries.
 	kafkaSecurityProtocol = "SASL_SSL"
@@ -59,6 +62,7 @@ func (kafkaServiceKind) objects(in catalogService) []catalogObject {
 		{gvk: strimziKafkaGVK, name: in.name},
 		{gvk: strimziNodePoolGVK, name: in.name + kafkaNodePoolSuffix},
 		{gvk: strimziKafkaUserGVK, name: in.name + kafkaUserSuffix},
+		{gvk: strimziKafkaUserGVK, name: in.name + kafkaOperatorUserSuffix},
 	}
 }
 
@@ -135,7 +139,68 @@ func (k kafkaServiceKind) build(in catalogService, _ string) []catalogResource {
 			{path: []string{"spec", "authentication"}, value: map[string]interface{}{"type": "scram-sha-512"}},
 			{path: []string{"spec", "authorization"}, value: map[string]interface{}{"type": "simple", "acls": kafkaUserACLs()}},
 		}},
+		// The Orama operator's own identity (operator#1172): SCRAM-SHA-512 with the password it
+		// generates into <name>-operator-credentials, and Describe on the cluster alone, which
+		// DescribeUserScramCredentials needs. It is not a super user and cannot read or write a
+		// topic, so it lists users and nothing more.
+		{catalogObject: objects[3], labels: cluster, fields: []serviceField{
+			{path: []string{"spec", "authentication"}, value: map[string]interface{}{
+				"type": "scram-sha-512",
+				"password": map[string]interface{}{"valueFrom": map[string]interface{}{"secretKeyRef": map[string]interface{}{
+					"name": in.name + serviceOperatorSecretSuffix, "key": serviceOperatorSecretKey,
+				}}},
+			}},
+			{path: []string{"spec", "authorization"}, value: map[string]interface{}{"type": "simple", "acls": kafkaOperatorACLs()}},
+		}},
 	}
+}
+
+// kafkaOperatorACLs: Describe on the cluster resource, nothing else.
+func kafkaOperatorACLs() []interface{} {
+	return []interface{}{map[string]interface{}{
+		"type": "allow", "resource": map[string]interface{}{"type": "cluster"}, "operations": []interface{}{"Describe"},
+	}}
+}
+
+func (kafkaServiceKind) operatorSecret(name string) (string, string) {
+	return name + serviceOperatorSecretSuffix, serviceOperatorSecretKey
+}
+
+// unmanagedUsers: every SCRAM user the Kafka holds that is not a KafkaUser the Lake owns for it,
+// listed as the operator's own KafkaUser over the client listener.
+func (kafkaServiceKind) unmanagedUsers(ctx context.Context, r *LakeReconciler, in catalogService, found map[string]*unstructured.Unstructured) ([]string, error) {
+	if in.operatorPassword == "" {
+		return nil, fmt.Errorf("no operator password")
+	}
+	ca, refusal, err := kafkaClusterCA(ctx, r.Client, in, found[strimziKafkaGVK.Kind])
+	if err != nil {
+		return nil, err
+	}
+	if refusal != "" || ca == "" {
+		return nil, fmt.Errorf("the Kafka cluster CA is not available")
+	}
+	users := &unstructured.UnstructuredList{}
+	users.SetGroupVersionKind(strimziKafkaUserGVK.GroupVersion().WithKind("KafkaUserList"))
+	if err := r.List(ctx, users, client.InNamespace(in.namespace), client.MatchingLabels{strimziClusterLabel: in.name}); err != nil {
+		return nil, fmt.Errorf("list the Kafka's KafkaUsers: %w", err)
+	}
+	managed := map[string]bool{}
+	for i := range users.Items {
+		user := &users.Items[i]
+		if serviceOwnershipOf(in.lake, user, in.svc) != serviceOwned {
+			continue
+		}
+		name, _, _ := unstructured.NestedString(user.Object, "status", "username")
+		if name == "" {
+			name = user.GetName()
+		}
+		managed[name] = true
+	}
+	scramUsers, err := serviceUserListers.kafkaSCRAMUsers(ctx, in, in.name+kafkaOperatorUserSuffix, in.operatorPassword, ca)
+	if err != nil {
+		return nil, err
+	}
+	return kafkaUnmanagedUsers(scramUsers, managed), nil
 }
 
 // kafkaListenerPeers is the one peer the listener names: the owning Lake's pods in its namespace.

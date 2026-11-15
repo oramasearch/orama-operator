@@ -105,6 +105,10 @@ func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T)
 	}
 	// operator#469: the operator signs in to workspace Postgres to keep credential roles.
 	expected = append(expected, workspaceOperatorPostgresPolicy("orama-system", testWorkspaceName, labels))
+	// operator#1172: the operator lists Valkey and Kafka users with its own identity.
+	for _, allowance := range workspaceOperatorAuditIngresses {
+		expected = append(expected, workspaceOperatorAuditIngressPolicy(allowance, "orama-system", testWorkspaceName, labels))
+	}
 	for _, apiClient := range workspaceAPIServerClients {
 		expected = append(expected, workspaceAPIServerEgressPolicy(apiClient, target, testWorkspaceName, labels))
 	}

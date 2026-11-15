@@ -230,6 +230,12 @@ func TestNoWorkspaceAPIServerOrOperatorAllowanceSelectsATenantApp(t *testing.T) 
 		if selectorMatches(t, operatorPostgres.Spec.PodSelector, labels) {
 			t.Fatalf("%s: the operator's Postgres allowance selects the app", name)
 		}
+		for _, allowance := range workspaceOperatorAuditIngresses {
+			policy := workspaceOperatorAuditIngressPolicy(allowance, "orama-system", isolationTestWorkspace, nil)
+			if selectorMatches(t, policy.Spec.PodSelector, labels) {
+				t.Fatalf("%s: the operator's allowance %s selects the app", name, policy.Name)
+			}
+		}
 	}
 }
 

@@ -391,6 +391,8 @@ type serviceHarness struct {
 	updates *int
 	// changing is what the last poll reported: a service still starting or being deleted.
 	changing bool
+	// userListers stands in for the operator's Valkey and Kafka sessions (operator#1172).
+	userListers *fakeUserListers
 }
 
 func newServiceHarness(t *testing.T, lake *oramav1alpha1.Lake, store *fakeServiceStore, objects ...client.Object) *serviceHarness {
@@ -454,8 +456,12 @@ func newServiceHarnessWithout(t *testing.T, lake *oramav1alpha1.Lake, store *fak
 				return c.Delete(ctx, obj, opts...)
 			},
 		}).Build()
+	listers := &fakeUserListers{}
+	previous := serviceUserListers
+	serviceUserListers = listers
+	t.Cleanup(func() { serviceUserListers = previous })
 	return &serviceHarness{t: t, client: c, scheme: s, store: store, lake: lake, deletes: deletes, deletedKinds: deletedKinds, updates: updates,
-		reconciler: &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}}
+		userListers: listers, reconciler: &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}}
 }
 
 func (h *serviceHarness) poll() {

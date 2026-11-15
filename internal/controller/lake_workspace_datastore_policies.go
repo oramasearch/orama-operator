@@ -174,6 +174,39 @@ var workspaceOperatorIngresses = []workspaceOperatorIngress{
 	},
 }
 
+// workspaceOperatorAuditIngresses let the Orama operator itself reach Valkey and Kafka services
+// with its own least-privilege identity, to list their users once (operator#1172). One
+// NetworkPolicy each, from the operator's pods in its namespace (filled in by
+// workspaceOperatorAuditIngressPolicy).
+var workspaceOperatorAuditIngresses = []workspaceOperatorIngress{
+	{
+		name:    "allow-orama-operator-valkey",
+		comment: "The Orama operator lists a Valkey service's ACL users with its own user, which may only run ACL USERS (operator#1172).",
+		pods: metav1.LabelSelector{
+			MatchLabels:      map[string]string{workspaceManagedByLabel: valkeyManagedBy},
+			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(valkeyClusterLabel)},
+		},
+		ports: []int32{valkeyPort},
+	},
+	{
+		name:    "allow-orama-operator-kafka",
+		comment: "The Orama operator lists a Kafka service's SCRAM users with its own KafkaUser, which may only describe the cluster (operator#1172).",
+		pods: metav1.LabelSelector{
+			MatchLabels:      map[string]string{strimziKindLabel: "Kafka"},
+			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(strimziClusterLabel)},
+		},
+		ports: []int32{kafkaListenerPort},
+	},
+}
+
+func workspaceOperatorAuditIngressPolicy(allowance workspaceOperatorIngress, operatorNamespace, namespace string, labels map[string]string) *networkingv1.NetworkPolicy {
+	allowance.from = workspaceOperatorPeer{
+		namespace: operatorNamespace,
+		pods:      metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "orama-operator"}},
+	}
+	return workspaceOperatorIngressPolicy(allowance, namespace, labels)
+}
+
 // workspaceAPIServerClient is a kind of operand pod that reads the Kubernetes API with its own
 // ServiceAccount.
 type workspaceAPIServerClient struct {
