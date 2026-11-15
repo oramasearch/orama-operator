@@ -137,6 +137,12 @@ func (r *LakeWorkspacesReconciler) Reconcile(ctx context.Context, request ctrl.R
 	if !lakeWorkspacesEnabled(&lake) {
 		return ctrl.Result{}, nil
 	}
+	// A suspended Lake's workspace rows are not acted on: nothing is made or made again, and its
+	// workspace Zettas are stopped and given back by the Lake reconciler (lake_suspension.go,
+	// operator#862).
+	if lake.Spec.Suspended {
+		return ctrl.Result{RequeueAfter: lakeWorkspacesPoll}, nil
+	}
 	parent := &LakeReconciler{Client: r.Client, Scheme: r.Scheme}
 	_, _, schema := parent.lakeSchemaStatus(ctx, &lake, lakeNamespace(&lake), lakeDesiredSchemaVersion(&lake, lake.Status.ImageManifest))
 	if schema.phase != "Ready" {

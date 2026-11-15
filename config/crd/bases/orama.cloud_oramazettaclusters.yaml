@@ -578,6 +578,13 @@ spec:
                       cluster default StorageClass).
                     type: string
                 type: object
+              suspended:
+                description: |-
+                  Suspended runs no node: the StatefulSet is scaled to zero and its volumes, claims, Secrets,
+                  Services and node identities are kept, so setting it back to false starts the same nodes on
+                  the same data (operator#862). An owning Lake sets it once the Lake has been suspended for
+                  its Zetta grace.
+                type: boolean
               wanAddress:
                 description: |-
                   WanAddress is the routable address (`host` or `host:port`) that siblings use to reach this
@@ -668,7 +675,7 @@ spec:
               message:
                 type: string
               phase:
-                description: 'Phase: Progressing | Ready | Degraded.'
+                description: 'Phase: Progressing | Ready | Degraded | Suspended (spec.suspended).'
                 type: string
               provisionedNodes:
                 description: |-

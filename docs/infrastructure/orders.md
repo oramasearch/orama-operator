@@ -63,9 +63,9 @@ The operator reads every order through the view, on every pass, suspended ones i
 | The order | What the operator does |
 |---|---|
 | `paid`, `suspended` | Not claimed. Nothing is made. Listed in `status.orders[]` with `suspended: true` and counted in `status.suspended`. |
-| `provisioning` or `ready`, `suspended` | Nothing is made and nothing missing is made again. If its `LakeSet` exists, its member is written with `replicas: 0`: the lake Deployment stops, and the `LakeSet`, the Lake, its namespace, control Postgres, store, Zetta, Secrets, host and name are all kept. A dedicated cluster's `KubernetesCluster`, platform and operator are kept as they are. The order's lake state is not changed, and no event is written. |
+| `provisioning` or `ready`, `suspended` | Nothing is made and nothing missing is made again. If its `LakeSet` exists, its member is written with `suspended: true` and `replicas: 0`: the Lake stops its lake process, agents, apps, environments, builds and runs at once and its Zettas after a 72-hour grace ([suspension](../lake/suspension.md)), and the `LakeSet`, the Lake, its namespace, control Postgres, store, volumes, Secrets, host and name are all kept. `replicas: 0` stays beside `suspended` so a leaf whose operator predates `spec.suspended` still stops the lake process. A dedicated cluster's `KubernetesCluster`, platform and operator are kept as they are. The order's lake state is not changed, and no event is written. |
 | `failed` or `cancelled` | Counted as before; whatever it left is held the same way (a `LakeSet` it left stops). |
-| `present` again (a signed renewal) | The next pass writes the member without the override, so the Lake runs its replica again; a `ready` order's missing resources are made again; a `paid` one is claimed. |
+| `present` again (a signed renewal) | The next pass writes the member without the overrides, so the Lake gives back everything its suspension stopped and runs its replica again; a `ready` order's missing resources are made again; a `paid` one is claimed. |
 
 **The entitlement is checked again before anything is written**:
 
@@ -77,12 +77,13 @@ The operator reads every order through the view, on every pass, suspended ones i
   while its Lake came up stays `provisioning`, held, and is not reported ready.
 
 Nothing is ever deleted for an expiry: data and identity are retained until a person decides
-otherwise (open question 1). `spec.member` may not set `replicas`, because the operator sets it
-while an order is suspended.
+otherwise (open question 1). `spec.member` may not set `replicas` or `suspended`, because the operator
+sets them while an order is suspended.
 
-What suspension does not stop yet: the Lake's own Zetta, its workspace Zettas, apps and agents keep
-their pods while the lake process is stopped (a Lake has no switch that stops all of its compute), and
-a dedicated cluster's node pools keep their nodes. Both are follow-ups.
+What suspension does not stop yet: managed services keep their pods (each upstream operator stops
+differently), and a dedicated cluster's fixed-count node pools keep their nodes (the AKS provider
+reports pool drift and does not apply it). Autoscaled pools shrink by themselves once the compute has
+stopped. See [suspension](../lake/suspension.md#not-stopped).
 
 ## How the management cluster's operator reaches a leaf's orders
 

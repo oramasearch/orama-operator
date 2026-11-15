@@ -825,6 +825,10 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	sts.Labels = lbls
 	sts.Spec.ServiceName = headlessName
 	sts.Spec.Replicas = &replicas
+	if z.Spec.Suspended {
+		// No node runs; the claims, Services and node identities stay (operator#862).
+		sts.Spec.Replicas = int32Ptr(0)
+	}
 	sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 	// Bounded, ordered scale-up so node-0 is Ready before peers try to join it.
 	pmp := appsv1.ParallelPodManagement
@@ -960,6 +964,9 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	return controllerutil.SetControllerReference(z, sts, r.Scheme)
 }
 
+// zettaPhaseSuspended is the phase of an OramaZettaCluster with spec.suspended (operator#862).
+const zettaPhaseSuspended = "Suspended"
+
 // reconcileZettaStatus rolls the StatefulSet's readiness up into the CR status, folds in the
 // elastic-capacity + Karpenter-install conditions and the provisioned-node count, and records the slice's
 // effective node-reachability type and (for a wan-accessible slice) the routable rendezvous address.
@@ -987,6 +994,11 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	}
 	if peerCond != nil && peerCond.Reason == "InvalidSpecPeerAddress" {
 		phase, msg = "Degraded", "invalid peer address in spec; the StatefulSet is left unchanged (see condition "+peerAddressesConditionType+")"
+	} else if z.Spec.Suspended {
+		phase, msg = zettaPhaseSuspended, fmt.Sprintf("suspended: %d of %d nodes still running; volumes and node identities are kept", ready, desired)
+		if ready == 0 {
+			msg = "suspended: no node runs; volumes and node identities are kept"
+		}
 	}
 	_, ignoredEnvVars := zettaCustomEnv(z.Spec.Env)
 

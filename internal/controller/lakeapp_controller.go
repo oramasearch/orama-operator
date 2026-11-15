@@ -189,6 +189,13 @@ func (r *LakeAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		return r.finishLakeAppStatus(ctx, &app, nil, host, oramav1alpha1.LakeAppPhaseProgressing, false, "DeploymentPending", "waiting for the app Deployment")
 	}
+	if lake.Spec.Suspended {
+		message := "the Lake is suspended: the app runs no pod until it is not"
+		if deployment.Status.Replicas > 0 {
+			message = "the Lake is suspended: waiting for the app's replicas to stop"
+		}
+		return r.finishLakeAppStatus(ctx, &app, &deployment, host, oramav1alpha1.LakeAppPhaseProgressing, false, "LakeSuspended", message)
+	}
 	phase, ready, reason, message, err := r.lakeAppDeploymentState(ctx, &app, &deployment, workloadNamespace)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -1498,6 +1505,10 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 	replicas := int32(1)
 	if app.Spec.Replicas != nil {
 		replicas = *app.Spec.Replicas
+	}
+	if lake.Spec.Suspended {
+		// A suspended Lake's apps run no pod; everything else is kept (operator#862).
+		replicas = 0
 	}
 	revisionHistoryLimit := int32(10)
 	workloadName := lakeAppWorkloadObjectName(app)

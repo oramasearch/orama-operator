@@ -1109,6 +1109,18 @@ spec:
                       It is used only when the claim is first created.
                     type: string
                 type: object
+              suspended:
+                description: |-
+                  Suspended stops the Lake's compute and keeps all of its data (operator#862). A
+                  LakeOrderSource sets it while the Lake's order is not paid for. While it is true the lake
+                  Deployment, its library agents, every Deployment, Job and CronJob the Lake controls (agents,
+                  served models, builds, methodology runs) and every LakeApp and LakeEnvironment of the Lake
+                  run no pod, and no control row is acted on, so nothing new starts and nothing is made again.
+                  After lakeSuspensionZettaGrace (72 hours from status.suspendedSince) its own and its
+                  workspaces' OramaZettaClusters are suspended too. Volumes, claims, Secrets, Services, the
+                  control Postgres, managed services, hosts and names are all kept; nothing is deleted. Back to
+                  false, everything runs as it did.
+                type: boolean
               tls:
                 description: |-
                   TLS names a hand-supplied certificate for Host and ApexHost. Every Lake Ingress serves HTTPS
@@ -2082,6 +2094,12 @@ spec:
                       Pending, Bound, or Lost.
                     type: string
                 type: object
+              suspendedSince:
+                description: |-
+                  SuspendedSince is when the operator first saw spec.suspended true; cleared when it is false.
+                  The Zetta grace (72 hours) counts from it.
+                format: date-time
+                type: string
               zettaReady:
                 description: ZettaReady is true once every desired node in the owned
                   data-plane cluster is ready.
