@@ -63,7 +63,7 @@ func testBackup(kind oramav1alpha1.BackupDatastoreKind) *oramav1alpha1.Backup {
 	return &oramav1alpha1.Backup{
 		ObjectMeta: metav1.ObjectMeta{Name: "events-20261021t030000z", Namespace: "ws-1"},
 		Spec: oramav1alpha1.BackupSpec{
-			Datastore: oramav1alpha1.BackupDatastoreRef{Kind: kind, Name: "events", ConnectionSecretRef: oramav1alpha1.LocalSecretReference{Name: "events-connection"}},
+			Datastore: oramav1alpha1.BackupDatastoreRef{Kind: kind, Name: "events", ConnectionSecretRef: &oramav1alpha1.LocalSecretReference{Name: "events-connection"}},
 			Bucket:    oramav1alpha1.BackupBucketRef{Kind: "CloudflareR2Bucket", Name: "lake-backups", Namespace: "backups"},
 		},
 	}

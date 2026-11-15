@@ -88,7 +88,9 @@ spec:
                     description: |-
                       ConnectionSecretRef names a Secret in the namespace with the datastore's connection: keys
                       `host` and `username` and `password`, and optionally `port` and `database`. The backup Job
-                      reads it as environment variables; the operator never copies it.
+                      reads it as environment variables; the operator never copies it. Required for the kinds whose
+                      backup Job talks to the server (ClickHouse, Zetta, Valkey); the kinds whose own operator
+                      takes the backup need none.
                     properties:
                       name:
                         minLength: 1
@@ -117,11 +119,24 @@ spec:
                       of the default bucket path and labels each Backup.
                     minLength: 1
                     type: string
+                  podSelector:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      PodSelector selects the datastore's pods. While a backup or restore runs, the operator lets
+                      those pods accept the run's pod, and, for a kind whose server writes to the bucket itself
+                      (ClickHouse, TiDB, Cassandra), reach public HTTPS on 443 (operator#740). Empty means the
+                      kind's default: the labels its operator puts on the pods of a datastore of this name.
+                    type: object
                 required:
-                - connectionSecretRef
                 - kind
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: connectionSecretRef is required for a ClickHouse, Zetta
+                    or Valkey datastore
+                  rule: '!(self.kind in [''ClickHouse'', ''Zetta'', ''Valkey'']) ||
+                    has(self.connectionSecretRef)'
               keep:
                 default: 7
                 description: |-

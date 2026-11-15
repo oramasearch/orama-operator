@@ -175,6 +175,48 @@ spec:
                 items:
                   type: string
                 type: array
+              backups:
+                description: |-
+                  Backups gives the Lake's data to the backup system (operator#740, docs/lake/backups.md): the
+                  Lake owns a CloudflareR2Bucket lake-<name>-backups (deletionPolicy Retain) made with the
+                  Cloudflare account token named here, and one BackupSchedule per managed service, in the
+                  service's workspace namespace. A late or failed backup shows in the service's service_status
+                  message and in the Lake's BackupsOnSchedule condition. Without it nothing is backed up, and
+                  BackupsOnSchedule says so.
+                properties:
+                  cloudflareSecretRef:
+                    description: |-
+                      CloudflareSecretRef names a Secret in spec.namespace with a Cloudflare account token (keys
+                      `token` and `accountID`) allowed to create R2 buckets and account API tokens: it makes the
+                      backup bucket and the token scoped to it (docs/backups.md, "The bucket").
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  keep:
+                    default: 7
+                    description: Keep is how many succeeded backups each schedule
+                      keeps. Default 7.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  schedule:
+                    default: 0 3 * * *
+                    description: |-
+                      Schedule is the five-field cron expression (UTC) of every service's BackupSchedule. Default
+                      daily at 03:00.
+                    type: string
+                required:
+                - cloudflareSecretRef
+                type: object
               billing:
                 description: |-
                   Billing turns Lake's billing on: the operator gives the Lake LAKE_BILLING=on (lake

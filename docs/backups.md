@@ -21,7 +21,8 @@ What backs up today, per datastore, and the research behind each mechanism, are 
 | **ClickHouse** mechanism (`BACKUP ... TO S3`) | **Implemented.** The first datastore with a mechanism. |
 | **Postgres** mechanism (Lake's control plane, Cloud v1's control DB, Lake `postgres` services) | **Not built: waiting on Steve's choice** of tool ([research](research/backups/README.md#postgres-the-decision-that-is-open)). A Postgres `BackupSchedule` reports `Ready=False`, `MechanismNotAvailable`. |
 | Zetta, Kafka, Cassandra, TiDB, Valkey, SQLite, DuckDB, Polars | Not built; each is filed (see [Follow-ups](#follow-ups)). Refused the same way. |
-| Owners creating schedules (a Lake for its services, an `OramaCloudV1` for its datastores) and showing a late backup on themselves | Not built; filed. Today a schedule is a resource you write. |
+| Owners creating schedules (a Lake for its services, an `OramaCloudV1` for its datastores) and showing a late or failed backup on themselves | **Implemented** ([#740](https://github.com/oramasearch/orama-operator/issues/740), [Owners](#owners)). Not yet applied to any cluster. |
+| The datastore's own network access during a run (accepting the run's pod; egress to the bucket for a server that writes it itself) | **Implemented** ([#740](https://github.com/oramasearch/orama-operator/issues/740), [How one backup runs](#how-one-backup-runs)). |
 | Restore and the scheduled restore rehearsal | Not built; their kinds are settled after these two (issue body). |
 | Usage metering of backup storage | Not built; [#435](https://github.com/oramasearch/orama-operator/issues/435). |
 
@@ -76,7 +77,14 @@ outcome, the size and a message in the words of whatever refused. The controller
 Backup's status. The issue's design had the Job write the status itself; reading the termination
 message instead means the backup pod holds no Kubernetes credential at all.
 
-When the Backup has succeeded or failed, the credentials copy and the network policy are deleted.
+4. **A second `NetworkPolicy`, `<job>-ds`, on the datastore's pods** (`spec.datastore.podSelector`,
+   or the kind's default selector): they accept connections from the backup pod, which the
+   namespace's default-deny would refuse, and, for a kind whose server writes the backup to the
+   bucket itself (ClickHouse's `BACKUP ... TO S3`, TiDB's BR on TiKV, Cassandra's Medusa), they may
+   reach public addresses on 443 with the same exceptions. It exists only while the run does
+   ([#740](https://github.com/oramasearch/orama-operator/issues/740)).
+
+When the Backup has succeeded or failed, the credentials copy and both network policies are deleted.
 
 ### Status
 
@@ -154,6 +162,31 @@ spec:
 ```
 
 Nothing like this is applied to any cluster yet: applying a resource is Steve's consent.
+
+## Owners
+
+[#740](https://github.com/oramasearch/orama-operator/issues/740). The resource that owns a datastore
+writes its schedules, so nobody writes one by hand, and a late or failed backup is visible on that
+owner.
+
+**A `Lake` with `spec.backups`** owns a `CloudflareR2Bucket` `lake-<name>-backups` in its namespace
+(`deletionPolicy: Retain`, made with the account token in `spec.backups.cloudflareSecretRef`, its
+credentials allowed for every workspace namespace that has a schedule) and, for each ready managed
+service, a `BackupSchedule` `<datastore>-backup` in the service's workspace namespace, with a
+connection Secret `<datastore>-backup-connection` for the kinds whose Job talks to the server. The
+connection comes from the service's connection document, which the Lake already reads from lake's
+control Postgres (decision 51). A schedule that is not ready, a failed newest backup or a late one is
+appended to the service's `service_status` message (nothing is added while all is well, so a steady
+service writes nothing) and summarised in the Lake's `BackupsOnSchedule` condition. Deleting a
+service deletes its schedule and connection; its Backups stay. Details:
+[`lake/backups.md`](lake/backups.md#managed-services).
+
+**An `OramaCloudV1`** with Cloudflare on and a token owns `<stack>-backups` (`Retain`) and a daily
+schedule for its control DB (`Postgres`, `<stack>-controldb`) and in-cluster analytics
+(`ClickHouse`, `<stack>-analytics`, with `<stack>-analytics-backup-connection` from its generated
+password). The cache (Redis) holds what the stack rebuilds, the broker (RabbitMQ) is a transport, and
+the engine is rebuilt from its sources, so none gets a schedule. Its `BackupsOnSchedule` condition
+says what is late or failed, without changing the stack's phase.
 
 ## Platform
 

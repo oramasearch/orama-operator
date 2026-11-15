@@ -301,6 +301,10 @@ func (r *BackupReconciler) createRun(ctx context.Context, b *oramav1alpha1.Backu
 		return err
 	}
 
+	if err := ensureDatastoreRunPolicy(ctx, r.Client, r.Scheme, b, jobName, b.Spec.Datastore, map[string]string{backupNameLabel: dnsLabelValue(b.Name)}, labels); err != nil {
+		return err
+	}
+
 	pullSecrets, err := copyOperatorPullSecrets(ctx, r.Client, r.APIReader, r.OperatorNamespace, b.Namespace)
 	if err != nil {
 		return err
@@ -316,12 +320,19 @@ func (r *BackupReconciler) createRun(ctx context.Context, b *oramav1alpha1.Backu
 }
 
 func newBackupJob(b *oramav1alpha1.Backup, image, prefix, jobName, bucketSecret string, pullSecrets []string, labels map[string]string) *batchv1.Job {
-	connection := b.Spec.Datastore.ConnectionSecretRef.Name
 	fromSecret := func(env, secret, key string, optional bool) corev1.EnvVar {
 		return corev1.EnvVar{Name: env, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key, Optional: boolPtr(optional),
 		}}}
 	}
+	env := connectionEnv(b.Spec.Datastore, fromSecret)
+	env = append(env,
+		fromSecret(backup.EnvBucketEndpoint, bucketSecret, "endpoint", false),
+		fromSecret(backup.EnvBucketName, bucketSecret, "bucket", false),
+		fromSecret(backup.EnvBucketRegion, bucketSecret, "region", true),
+		fromSecret(backup.EnvBucketAccessKey, bucketSecret, "accessKeyId", false),
+		fromSecret(backup.EnvBucketSecretKey, bucketSecret, "secretAccessKey", false),
+	)
 	var references []corev1.LocalObjectReference
 	for _, name := range pullSecrets {
 		references = append(references, corev1.LocalObjectReference{Name: name})
@@ -354,18 +365,7 @@ func newBackupJob(b *oramav1alpha1.Backup, image, prefix, jobName, bucketSecret 
 							"--prefix", prefix,
 							"--timeout", fmt.Sprintf("%ds", backupJobDeadline-60),
 						},
-						Env: []corev1.EnvVar{
-							fromSecret(backup.EnvDatastoreHost, connection, "host", false),
-							fromSecret(backup.EnvDatastorePort, connection, "port", true),
-							fromSecret(backup.EnvDatastoreUsername, connection, "username", false),
-							fromSecret(backup.EnvDatastorePassword, connection, "password", false),
-							fromSecret(backup.EnvDatastoreDatabase, connection, "database", true),
-							fromSecret(backup.EnvBucketEndpoint, bucketSecret, "endpoint", false),
-							fromSecret(backup.EnvBucketName, bucketSecret, "bucket", false),
-							fromSecret(backup.EnvBucketRegion, bucketSecret, "region", true),
-							fromSecret(backup.EnvBucketAccessKey, bucketSecret, "accessKeyId", false),
-							fromSecret(backup.EnvBucketSecretKey, bucketSecret, "secretAccessKey", false),
-						},
+						Env:                      env,
 						TerminationMessagePath:   corev1.TerminationMessagePathDefault,
 						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 						Resources: corev1.ResourceRequirements{
@@ -430,6 +430,7 @@ func (r *BackupReconciler) cleanupRun(ctx context.Context, b *oramav1alpha1.Back
 	for _, object := range []client.Object{
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: jobName + "-bucket", Namespace: b.Namespace}},
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: b.Namespace}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: datastoreRunPolicyName(jobName), Namespace: b.Namespace}},
 	} {
 		if err := deleteIfExists(ctx, r.Client, object); err != nil {
 			return err

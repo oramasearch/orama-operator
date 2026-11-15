@@ -224,6 +224,15 @@ type LakeSpec struct {
 	// +optional
 	Payments *LakePaymentsSpec `json:"payments,omitempty"`
 
+	// Backups gives the Lake's data to the backup system (operator#740, docs/lake/backups.md): the
+	// Lake owns a CloudflareR2Bucket lake-<name>-backups (deletionPolicy Retain) made with the
+	// Cloudflare account token named here, and one BackupSchedule per managed service, in the
+	// service's workspace namespace. A late or failed backup shows in the service's service_status
+	// message and in the Lake's BackupsOnSchedule condition. Without it nothing is backed up, and
+	// BackupsOnSchedule says so.
+	// +optional
+	Backups *LakeBackupsSpec `json:"backups,omitempty"`
+
 	// Billing turns Lake's billing on: the operator gives the Lake LAKE_BILLING=on (lake
 	// docs/api/billing.md). Off, the default, a Lake bills nothing and takes no payments: it
 	// registers no billing capabilities, builds no payment provider, and answers its Stripe webhook
@@ -792,6 +801,24 @@ type LakeZettaSpec struct {
 	// +kubebuilder:validation:Enum=dial-out-only;wan-accessible
 	// +optional
 	Reachability string `json:"reachability,omitempty"`
+}
+
+// LakeBackupsSpec is where and how often a Lake's managed services are backed up.
+type LakeBackupsSpec struct {
+	// CloudflareSecretRef names a Secret in spec.namespace with a Cloudflare account token (keys
+	// `token` and `accountID`) allowed to create R2 buckets and account API tokens: it makes the
+	// backup bucket and the token scoped to it (docs/backups.md, "The bucket").
+	CloudflareSecretRef corev1.LocalObjectReference `json:"cloudflareSecretRef"`
+	// Schedule is the five-field cron expression (UTC) of every service's BackupSchedule. Default
+	// daily at 03:00.
+	// +kubebuilder:default="0 3 * * *"
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+	// Keep is how many succeeded backups each schedule keeps. Default 7.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=7
+	// +optional
+	Keep int32 `json:"keep,omitempty"`
 }
 
 // LakePostgresBackupSpec describes scheduled object-store backups for a Lake control-plane

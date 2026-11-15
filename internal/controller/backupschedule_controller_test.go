@@ -27,7 +27,7 @@ func testBackupSchedule(kind oramav1alpha1.BackupDatastoreKind) *oramav1alpha1.B
 	return &oramav1alpha1.BackupSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "events", Namespace: "ws-1", CreationTimestamp: metav1.NewTime(scheduleCreated)},
 		Spec: oramav1alpha1.BackupScheduleSpec{
-			Datastore: oramav1alpha1.BackupDatastoreRef{Kind: kind, Name: "events", ConnectionSecretRef: oramav1alpha1.LocalSecretReference{Name: "events-connection"}},
+			Datastore: oramav1alpha1.BackupDatastoreRef{Kind: kind, Name: "events", ConnectionSecretRef: &oramav1alpha1.LocalSecretReference{Name: "events-connection"}},
 			Bucket:    oramav1alpha1.BackupBucketRef{Name: "lake-backups", Namespace: "backups"},
 			Schedule:  "0 3 * * *",
 			Keep:      2,
