@@ -350,8 +350,11 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 		t.Fatalf("workspace credential = %s, pending %v, err %v", credential, pending, err)
 	}
 	if err := kube.Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: lakeNamespace(lake)},
-		Data:       map[string][]byte{testWorkspaceZettaID: credential},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: serviceConnectionSecret(lake.Name, "ws-0123456789ab"), Namespace: testWorkspaceName,
+			Labels: serviceConnectionLabels(lake, "ws-0123456789ab", testWorkspaceZettaID),
+		},
+		Data: map[string][]byte{serviceConnectionKey: credential},
 	}); err != nil {
 		t.Fatal(err)
 	}

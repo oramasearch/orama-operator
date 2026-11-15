@@ -52,6 +52,12 @@ type LakeReconciler struct {
 	// OperatorNamespace is the namespace of the manager pod that reads Lake's control database and
 	// Zetta API. Empty omits those in-cluster ingress allowances in local unit tests.
 	OperatorNamespace string
+	// ServiceConnectionURL is the control plane's in-cluster https base URL, where a lake image
+	// that reads LAKE_SERVICE_CONNECTION_URL asks for one service connection at a time
+	// (lake_service_connections.go, operator#773). Empty keeps every Lake on the aggregate mount.
+	ServiceConnectionURL string
+	// ServiceConnectionCAFile is the control plane's CA certificate, given to the Lake pod.
+	ServiceConnectionCAFile string
 	// ServiceStores opens lake's control Postgres for the managed-services poll. Nil uses pgx;
 	// tests substitute a fake store.
 	ServiceStores LakeServiceStoreOpener
@@ -279,6 +285,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeAdminToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile admin token: %w", err)
 	}
+	// The credential, CA and namespace label an on-demand image uses to ask for one service
+	// connection (lake_service_connections.go, operator#773).
+	if err := r.reconcileLakeServiceConnectionAccess(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.reconcileLakeDeployToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile deployment token: %w", err)
 	}
@@ -365,7 +376,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	deploy := &appsv1.Deployment{}
 	if schemaReady {
 		deploy, err = r.reconcileLakeDeployment(
-			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing, clerk, payments,
+			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing, clerk, payments, manifest.Status,
 		)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
@@ -745,6 +756,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 	sealing lakeSealingMaterial,
 	clerk lakeClerkState,
 	payments lakePaymentsState,
+	manifest *oramav1alpha1.LakeImageManifest,
 ) (*appsv1.Deployment, error) {
 	terminationGracePeriodSeconds := int64(lakeTerminationGracePeriodSeconds)
 	strategy, affinity := lakeRollout(replicas, storeAccessModes, lake.Spec.Rollout.OverlapOnSharedStore, labels)
@@ -829,6 +841,11 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 					DefaultMode: &mode,
 				}},
 			})
+		}
+		if lakeServicesEnabled(lake) && lakeServiceConnectionsOnDemand(lake, manifest, r.ServiceConnectionURL) {
+			// The image asks the operator for one connection when it needs it (operator#773): no
+			// service credential is mounted.
+			applyLakeServiceConnectionsOnDemand(lake, &deployment.Spec.Template, r.ServiceConnectionURL)
 		}
 		if len(lakeAgentLibrary(lake)) > 0 {
 			// The library agents' bus credentials (lake docs/api/agent-bus.md), one file each.

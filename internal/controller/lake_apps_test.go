@@ -25,7 +25,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -153,9 +152,13 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 		ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB(lake.Name) + "-app", Namespace: "lake"},
 		Data:       map[string][]byte{"uri": []byte("postgresql://test:private@localhost/lake")},
 	}
+	// The bound service's own connection Secret in the app's workspace namespace (operator#773).
 	connections := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: "lake"},
-		Data:       map[string][]byte{testPostgresID: []byte(`{"uri":"postgresql://user:private@db/app"}`)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: serviceConnectionSecret(lake.Name, "svc-0123456789ab"), Namespace: testWorkspaceName,
+			Labels: serviceConnectionLabels(lake, "svc-0123456789ab", testPostgresID),
+		},
+		Data: map[string][]byte{serviceConnectionKey: []byte(`{"uri":"postgresql://user:private@db/app"}`)},
 	}
 	pullSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "docker-pull", Namespace: "lake"},
@@ -163,9 +166,6 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 		Data: map[string][]byte{
 			corev1.DockerConfigJsonKey: []byte(`{"auths":{"https://index.docker.io/v1/":{"username":"hub","password":"hub-token"}}}`),
 		},
-	}
-	if err := controllerutil.SetControllerReference(lake, connections, kubeClient.Scheme()); err != nil {
-		t.Fatal(err)
 	}
 	for _, object := range []client.Object{credentials, connections, pullSecret} {
 		if err := kubeClient.Create(ctx, object); err != nil {

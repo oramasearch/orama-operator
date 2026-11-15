@@ -475,11 +475,20 @@ password. A present service keeps its key while its
 connection cannot be read, so a transient failure never removes a file lake depends on; the key
 of an absent service, or of a row that no longer exists, is dropped.
 
-For [Apps](apps.md), every present service with a connection also has a key equal to its service
-ID in this same Secret. It is an exact alias of `<slug>.json`, retained across temporary credential
-read failures and removed on withdrawal or row removal. Store connections keep only their existing
-`<slug>.json` keys. Apps resolve same-workspace service IDs and mount only requested connections,
-using the service name as the filename. Existing Lake consumers continue using slug keys.
+Every present service, workspace Zetta and store with a connection also has **its own Secret,
+`lake-<lake>-<slug>-connection`, in its workspace namespace** (key `connection.json`, labels
+`orama.cloud/connection: service`, `orama.cloud/connection-lake`, `orama.cloud/connection-slug`,
+`orama.cloud/connection-service-id`), read only by the operator (operator#773). While the aggregate
+below is written, a slug's own Secret is written only once the aggregate carries it, so either one
+being there means lake can read the connection. It is removed with the service, and moved when the
+service's namespace changes. A Secret of that name that does not carry this Lake's label is never
+overwritten.
+
+For [Apps](apps.md), a synced app's `bindings.services` are read from those Secrets, **in the app's
+own workspace namespace only**: a service ID of another workspace is never found, whatever the app
+row names, so the app stays `BindingPending`. The app's bindings file still uses the service name as
+the filename. The aggregate also carries a key equal to each service ID, an exact alias of
+`<slug>.json`, for older consumers.
 
 The lake Deployment mounts the Secret read-only at **`/var/run/lake/services`** (volume
 `services`, `optional: true`, mode `0440`) and gets **`LAKE_SERVICE_DIR=/var/run/lake/services`**.
@@ -488,6 +497,42 @@ It no longer gets `LAKE_WORKSPACE_DIR` or `LAKE_WORKSPACE_URL_TEMPLATE`: lake re
 own data plane. kubelet refreshes a whole-directory Secret volume in place (about a minute), so a
 new key never restarts lake, and lake should retry a missing file rather than fail. The superseded
 Secret `lake-<lake>-workspaces` is deleted once services run.
+
+### Connections on demand (operator#773)
+
+The aggregate puts every tenant's database password in one file tree inside the Lake process: one
+path traversal or file read there reads them all. A lake image whose manifest `environment` lists
+**`LAKE_SERVICE_CONNECTION_URL`** (`status.imageManifest.serviceConnectionsOnDemand`) asks the
+operator for one connection when it needs it instead:
+
+- `POST https://<operator>-control-plane.<operator namespace>.svc:<port>/v1/service_connection`
+  with `{"service":"<slug>"}` and `Authorization: Bearer <token>`. The answer is
+  `{"service":"<slug>","connection":{…}}`, the same JSON as `<slug>.json`, with `Cache-Control:
+  no-store`. A slug of another Lake, or a connection Secret outside one of this Lake's workspace
+  namespaces (labelled `orama.cloud/lake: <lake>`), is `404 not_found`; any other credential is
+  `401`. Every answer is logged with the Lake and slug, never the value.
+- The token is the Lake's own **`lake-<lake>-connections`** Secret (key `token`, prefix `lake_conn_`,
+  minted once). It grants only this operation, for this Lake's services; it is neither the admin
+  token nor the deploy token, and the deploy token is refused here.
+- The Lake pod gets `LAKE_SERVICE_CONNECTION_URL`, `LAKE_SERVICE_CONNECTION_TOKEN_FILE` and
+  `LAKE_SERVICE_CONNECTION_CA_FILE`, a projected volume at `/var/run/lake/service-connection` (the
+  token and the control plane's CA certificate, from ConfigMap `lake-<lake>-control-plane-ca`, mode
+  `0440`), and the pod label `orama.cloud/service-connection-client: "true"`. It gets **no
+  `services` volume and no `LAKE_SERVICE_DIR`**.
+- The Lake namespace is labelled `orama.cloud/service-connection-clients: "true"`, the Lake's network
+  sandbox allows its pods to the operator's control-plane port (`allow-lake-to-operator-connections`),
+  and the chart's control-plane NetworkPolicy admits that namespace and pod label on that port only.
+- `lake-<lake>-services` is still written until the Lake Deployment's template mounts no
+  `services` volume and its rollout is complete, then deleted, so an older pod never loses a file
+  during the roll.
+
+The credential, the CA ConfigMap, the namespace label and the egress allowance exist for every Lake
+whenever the control plane listens (`--control-plane-service-url`, set by the chart on every
+cluster), so an image that switches finds them already there. An image whose manifest does not list
+the variable keeps the aggregate mount exactly as before. Lake's half is to read a connection from
+the operation instead of `<service_dir>/<slug>.json` (and treat `LAKE_SERVICE_CONNECTION_URL` as
+enabling services), and to list the variable in `lake manifest`; roll the operator first, then that
+lake image.
 
 ## Status
 

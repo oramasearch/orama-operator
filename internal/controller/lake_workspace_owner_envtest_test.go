@@ -295,6 +295,14 @@ func TestWorkspaceCreatedAfterStartGetsItsConnection(t *testing.T) {
 	if got := string(secret.Data[workspaceServiceID]); got != want {
 		t.Fatalf("service-id key = %q, want %q", got, want)
 	}
+	// Its own connection Secret, in its workspace namespace (operator#773).
+	own := &corev1.Secret{}
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: serviceConnectionSecret(lake.Name, workspaceSlug)}, own); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(own.Data[serviceConnectionKey]); got != want || own.Labels[serviceConnectionIDLabel] != workspaceServiceID {
+		t.Fatalf("workspace connection Secret = %q labels %v, want %q", got, own.Labels, want)
+	}
 	if got := workspaceStore.rows[0]; got.Phase != WorkspacePhaseReady {
 		t.Fatalf("delivered workspace status = %+v", got)
 	}

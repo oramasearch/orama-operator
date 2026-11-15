@@ -218,6 +218,9 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 			),
 		),
 	}
+	if egress := r.lakeServiceConnectionEgress(lakeSelector); egress != nil {
+		allowances = append(allowances, *egress)
+	}
 	allowances = append(allowances, lakeInternalIngressAllowances(lake, lakeSelector, cnpgSelector, zettaSelector, agentSelector, schemaSelector)...)
 	allowances = append(allowances, lakeWorkspaceServiceAllowances(lakeSelector, workspaceNamespaces)...)
 	appAllowances, appErr := r.lakeAppProxyAllowances(ctx, lake, lakeSelector)

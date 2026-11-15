@@ -465,12 +465,13 @@ func (r *LakeWorkspacesReconciler) workspaceConnectionDelivered(
 	if err != nil || credential == nil {
 		return false, err
 	}
-	var secret corev1.Secret
-	key := client.ObjectKey{Namespace: lakeNamespace(lake), Name: lakeServicesSecret(lake.Name)}
-	if err := r.apiReader().Get(ctx, key, &secret); err != nil {
-		return false, client.IgnoreNotFound(err)
+	// The services pass writes the Zetta's own connection Secret in the workspace namespace once lake
+	// can read it, from the aggregate mount or on demand (operator#773).
+	delivered, err := serviceConnectionByID(ctx, r.apiReader(), lake, namespace, row.ZettaServiceID)
+	if err != nil {
+		return false, err
 	}
-	return bytes.Equal(secret.Data[row.ZettaServiceID], credential), nil
+	return bytes.Equal(delivered, credential), nil
 }
 
 func workspaceLabels(lake *oramav1alpha1.Lake, row *LakeWorkspaceRow) map[string]string {

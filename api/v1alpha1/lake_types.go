@@ -949,6 +949,12 @@ type LakeImageManifest struct {
 	// StripeProducts are the products the image bills under: the Lake's PaymentCatalog.
 	// +optional
 	StripeProducts []LakeStripeProduct `json:"stripeProducts,omitempty"`
+	// ServiceConnectionsOnDemand is true when the image's manifest environment lists
+	// LAKE_SERVICE_CONNECTION_URL: lake then asks the operator for one service's connection when it
+	// needs it, and the operator stops mounting every service credential into the Lake pod
+	// (operator#773, docs/lake/services.md#connections-on-demand).
+	// +optional
+	ServiceConnectionsOnDemand bool `json:"serviceConnectionsOnDemand,omitempty"`
 }
 
 // LakeStripeProduct is one product a lake image bills under.

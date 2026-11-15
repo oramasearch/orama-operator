@@ -22,7 +22,8 @@ namespace labelled `orama.cloud/deployment-clients: "true"`. Declare these label
 versioned resources; namespace label administration is part of granting deployment access. Unlabelled
 pods, including pods in the manager namespace, cannot reach the deployment port. The policy preserves
 metrics on 8080 and health probes on 8081; neither port may be selected as the deployment port. There
-are no current in-cluster callers in the operator, Lake, or bridge configuration. Administrators can
+are no current in-cluster callers of the deployment operations in the operator, Lake, or bridge
+configuration; Lake pods call only their own service-connection operation (below). Administrators can
 still use Kubernetes-authenticated port-forwarding without caller labels.
 
 ## Authentication and scope
@@ -128,6 +129,18 @@ schemas match the REST operations. Successful calls return both text containing 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}
 ```
+
+## Lake's service connections (not part of the deployment contract)
+
+The same listener serves `POST /v1/service_connection`, which is lake's, not liquid's, and is not in
+`openapi.json`: an on-demand lake image asks for one managed service's or store's connection, with
+the Lake's own `lake-<lake>-connections` credential (never the deploy or admin token), and gets it
+only for that Lake's own workspace namespaces. The chart's NetworkPolicy admits it from namespaces
+labelled `orama.cloud/service-connection-clients: "true"` and pods labelled
+`orama.cloud/service-connection-client: "true"`, which the operator sets on the Lake namespace and on
+the Lake pods of such an image. The manager learns its own address from `--control-plane-service-url`
+and gives Lake pods the CA in `--control-plane-ca-file`. See
+[`docs/lake/services.md`](../lake/services.md#connections-on-demand-operator773) (operator#773).
 
 ## Contract drift
 

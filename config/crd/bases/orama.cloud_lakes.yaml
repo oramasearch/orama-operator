@@ -1936,6 +1936,13 @@ spec:
                     description: SchemaVersion is the embedded schema's sha256:<12
                       hex>.
                     type: string
+                  serviceConnectionsOnDemand:
+                    description: |-
+                      ServiceConnectionsOnDemand is true when the image's manifest environment lists
+                      LAKE_SERVICE_CONNECTION_URL: lake then asks the operator for one service's connection when it
+                      needs it, and the operator stops mounting every service credential into the Lake pod
+                      (operator#773, docs/lake/services.md#connections-on-demand).
+                    type: boolean
                   stripeProducts:
                     description: 'StripeProducts are the products the image bills
                       under: the Lake''s PaymentCatalog.'

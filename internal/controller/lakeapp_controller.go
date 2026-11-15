@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2083,6 +2084,9 @@ func (r *LakeAppReconciler) requestsForLakeAppSourceSecret(ctx context.Context, 
 	if requests := r.requestsForLakeAppObject(ctx, object); len(requests) > 0 {
 		return requests
 	}
+	if requests := r.requestsForServiceConnection(ctx, secret); requests != nil {
+		return requests
+	}
 	var apps oramav1alpha1.LakeAppList
 	if err := r.List(ctx, &apps, client.InNamespace(secret.Namespace)); err != nil {
 		return nil
@@ -2093,6 +2097,29 @@ func (r *LakeAppReconciler) requestsForLakeAppSourceSecret(ctx context.Context, 
 		if r.lakeAppReferencesSecret(ctx, app, secret.Name) {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)})
 		}
+	}
+	return requests
+}
+
+// requestsForServiceConnection wakes the synced apps of a connection Secret's workspace namespace
+// that bind its service (operator#773). Nil when the Secret is not a service connection.
+func (r *LakeAppReconciler) requestsForServiceConnection(ctx context.Context, secret *corev1.Secret) []reconcile.Request {
+	if secret.Labels[serviceConnectionKindLabel] != serviceConnectionKindValue {
+		return nil
+	}
+	id := secret.Labels[serviceConnectionIDLabel]
+	var apps oramav1alpha1.LakeAppList
+	if err := r.List(ctx, &apps); err != nil {
+		return []reconcile.Request{}
+	}
+	requests := []reconcile.Request{}
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		if app.Spec.Sync == nil || app.Spec.Bindings == nil || app.Spec.LakeRef != secret.Labels[serviceConnectionLakeLabel] ||
+			app.Spec.Sync.WorkspaceNamespace != secret.Namespace || !slices.Contains(app.Spec.Bindings.Services, id) {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)})
 	}
 	return requests
 }

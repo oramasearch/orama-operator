@@ -112,9 +112,11 @@ credentials belong in lake's secret store, never these JSON columns. `bindings_j
 
 `zetta` can be null or absent. The sync checks each service ID against a present `services` row
 in the same workspace and resolves its name. Duplicate or unsafe filenames fail validation.
-The Service reconciler publishes an ID key alongside its existing `<slug>.json` key in the
-Lake-owned `lake-<lake>-services` Secret; both contain the same connection document. Only requested
-ID keys are copied to `app-bindings` in the app namespace. The pod mounts them as
+The services poll writes each service's connection into its own Secret,
+`lake-<lake>-<slug>-connection`, in the service's workspace namespace (operator#773). A requested
+service ID is read from that Secret **in the app's own workspace namespace only**, so a service of
+another workspace is never bound; only requested connections are copied to `app-bindings` in the app
+namespace. The pod mounts them as
 `/var/run/orama/bindings/services/<service name>`. Withdrawn services lose both keys; an app whose
 connection is unavailable stops its workload and reports binding progress.
 

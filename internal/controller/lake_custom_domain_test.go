@@ -311,7 +311,7 @@ func TestCustomDomainLifecycleEnvtest(t *testing.T) {
 		}
 		deployment, err := reconciler.reconcileLakeDeployment(
 			ctx, lake, ns, svc, lake.Spec.Image, svc+"-store", []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			labels, 1, lakeDefaultPort, lakeSealingMaterial{KID: "kid", PublicKey: make([]byte, 32)}, lakeClerkState{}, lakePaymentsState{},
+			labels, 1, lakeDefaultPort, lakeSealingMaterial{KID: "kid", PublicKey: make([]byte, 32)}, lakeClerkState{}, lakePaymentsState{}, nil,
 		)
 		if err != nil {
 			t.Fatalf("reconcile deployment: %v", err)

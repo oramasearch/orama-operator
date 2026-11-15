@@ -24,6 +24,19 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.controlPlane.service.port }}
+    # Lake pods asking for one service connection (operator#773). The operator labels the Lake
+    # namespace and, for a lake image that asks on demand, its Lake pods; the operation needs the
+    # Lake's own connection credential, which is neither its admin nor its deploy token.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              orama.cloud/service-connection-clients: "true"
+          podSelector:
+            matchLabels:
+              orama.cloud/service-connection-client: "true"
+      ports:
+        - protocol: TCP
+          port: {{ .Values.controlPlane.service.port }}
     # Preserve the manager's metrics and health endpoints independently of deployment access.
     - ports:
         - protocol: TCP
