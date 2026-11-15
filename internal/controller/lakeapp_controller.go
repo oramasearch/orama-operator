@@ -696,10 +696,7 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		addLakeAppSecretDigest(digests, targetName, data)
 	}
 
-	pullName := lake.Spec.PullSecretName
-	if mode == oramav1alpha1.LakeAppModeImage && app.Spec.PullSecretName != "" {
-		pullName = app.Spec.PullSecretName
-	}
+	pullName := lakeAppPlatformPullSecretName(lake, app, mode)
 	if app.Spec.Sync != nil && (pullName != "" || lake.Spec.Host != "") {
 		data, reason, message, err := r.mergedLakeAppPullSecret(ctx, lake, app, namespace, pullName)
 		if err != nil || reason != "" {
@@ -730,6 +727,24 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 	}
 	result.Digest = lakeAppSecretDigest(digests)
 	return result, "", "", nil
+}
+
+// lakeAppPlatformPullSecretName is the source pull Secret whose entries go into the app's pull
+// Secret, or "" for none. The Lake's platform pull Secret (spec.pullSecretName) is used only for
+// the platform's own app runtime image (runtime mode, lakeAppsRuntimeImage). An image-mode app runs
+// an image its owner chose, so it never gets the platform's registry authority: a tenant naming a
+// private platform image by digest would otherwise have the kubelet pull it with Orama's
+// credential (#801, LSR-139). An image-mode app gets only its own spec.pullSecretName (set on a
+// LakeApp written by hand, never by a synchronized row) and, when synchronized, lake's registry
+// token for the Lake's host.
+func lakeAppPlatformPullSecretName(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, mode string) string {
+	if mode == oramav1alpha1.LakeAppModeImage {
+		if app.Spec.Sync != nil {
+			return ""
+		}
+		return app.Spec.PullSecretName
+	}
+	return lake.Spec.PullSecretName
 }
 
 func (r *LakeAppReconciler) mergedLakeAppPullSecret(

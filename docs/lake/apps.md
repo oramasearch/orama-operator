@@ -269,10 +269,19 @@ The Lake-level settings are:
   HTTPS on these two-level names needs a certificate per zone ([#515](https://github.com/oramasearch/orama-operator/issues/515));
 - `spec.apps.ingressClass`: the app Ingress class, defaulting to `nginx`.
 
-An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference. Its optional
-`spec.pullSecretName` overrides the Lake's pull Secret. For synchronized apps, the controller
-creates a `kubernetes.io/dockerconfigjson` Secret whose `auths` preserve the selected source
-Secret entries and add `spec.host` with username `app` and the generated `pull` token as password.
+An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference.
+
+**The platform pull Secret pulls only the platform's image** ([#801](https://github.com/oramasearch/orama-operator/issues/801),
+LSR-139). The Lake's `spec.pullSecretName` (Orama's registry credential) goes into an app's pull
+Secret only in runtime mode, where the pod runs the platform's `spec.apps.runtimeImage`. An
+image-mode app runs an image its owner chose, so it never gets it: a tenant naming a private
+platform image by digest would otherwise have the kubelet pull it with Orama's authority. A
+synchronized image-mode app's pull Secret holds lake's registry (`spec.host`, user `app`) and
+nothing else; an image elsewhere must be public. A hand-written image-mode LakeApp may name its own
+`spec.pullSecretName`; synchronized rows never set one. For synchronized apps, the controller
+creates a `kubernetes.io/dockerconfigjson` Secret whose `auths` hold the selected source Secret's
+entries (runtime mode: the Lake's; image mode: none) and add `spec.host` with username `app` and
+the generated `pull` token as password.
 The Deployment names this merged Secret in `imagePullSecrets`; deleting the app token Secret
 rotates both the registered pull-token hash and the password in the merged Secret. The source pull
 Secret always remains in the Lake namespace. Standalone CRs retain the original copy behavior into
