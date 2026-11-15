@@ -85,6 +85,20 @@ spec:
                   Deployment each, and the launches of user-created agents on agent-runtime (lake#231). Every
                   Lake runs them, on the operator's default images unless the spec overrides one.
                 properties:
+                  isolation:
+                    description: |-
+                      Isolation is where the library agents' processes run (operator#1169, lake#871). Shared, the
+                      default, runs one process per library agent for every workspace of the Lake. PerWorkspace runs
+                      one process per library agent for each running workspace, each holding only a bus credential
+                      bound to that workspace (lake's <agent>.<workspace id> file), and no shared process: an
+                      enterprise or isolated install. PerWorkspace takes effect only for a lake image whose manifest
+                      lists the agent_bus_workspace_credentials feature; until then the Lake keeps Shared and
+                      condition AgentIsolation says why. Every library agent still runs either way. See
+                      docs/lake/agents.md#one-agent-process-per-workspace.
+                    enum:
+                    - Shared
+                    - PerWorkspace
+                    type: string
                   jobDeadlineSeconds:
                     description: JobDeadlineSeconds bounds one job launch.
                     format: int64
@@ -1982,6 +1996,13 @@ spec:
                     description: Version and Revision are the lake release and source
                       commit the image reports.
                     type: string
+                  workspaceBoundAgentBus:
+                    description: |-
+                      WorkspaceBoundAgentBus is true when the image's manifest features list
+                      agent_bus_workspace_credentials: lake then treats a LAKE_AGENT_BUS_DIR file named
+                      <agent>.<workspace id> as a bus credential bound to that workspace, so spec.agents.isolation
+                      PerWorkspace can run one agent process per workspace (operator#1169, lake#871).
+                    type: boolean
                 required:
                 - image
                 - supported

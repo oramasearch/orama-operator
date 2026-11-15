@@ -879,7 +879,7 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
   controller's metrics, the counter arithmetic across restarts, and what is not counted (lake#661).
 - [`workload-resources.md`](workload-resources.md) — the `workload_resources` contract lake meters compute from: what each kind maps to, the effective-request arithmetic, GPU class and VRAM, and when a row is written, kept and deleted (lake#643).
 - [`methodology-runs.md`](methodology-runs.md) — a workspace methodology's runs as untrusted code: the stage, sandbox and collect pods, their namespace and policies, phases, the per-workspace queue, GPU placement and metering (lake#655, orama-operator#293), and serving a trained model from Ship → Models (lake#690).
-- [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, and each library agent's own agent-bus credential (lake#228, lake#231, lake#244, lake#269).
+- [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, each library agent's own agent-bus credential, and one agent process per workspace for a `spec.agents.isolation: PerWorkspace` Lake (lake#228, lake#231, lake#244, lake#269, operator#1169).
 
 ## Regions
 

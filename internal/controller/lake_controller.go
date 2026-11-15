@@ -308,9 +308,6 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeAgentServiceToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile agent service token: %w", err)
 	}
-	if err := r.reconcileLakeAgentBusTokens(ctx, &lake, ns, labels); err != nil {
-		return ctrl.Result{}, err
-	}
 
 	// The Clerk instance (spec.clerk, lake_clerk.go): before the Deployment, which reads its keys.
 	clerk, err := r.reconcileLakeClerk(ctx, &lake, ns, labels)
@@ -325,6 +322,17 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	manifest, err := r.reconcileLakeImageManifest(ctx, &lake, ns)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("read image manifest: %w", err)
+	}
+	// The library agents' bus credentials (lake_agents.go), one per agent or, for a Lake whose
+	// agents run per workspace, one per (agent, workspace) (lake_agents_per_workspace.go,
+	// operator#1169). After the manifest, which decides whether the image supports the latter; before
+	// the Deployment, which mounts them.
+	agentPlacement, err := r.lakeAgentPlacementFor(ctx, &lake, ns, manifest)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.reconcileLakeAgentBusTokens(ctx, &lake, ns, labels, agentPlacement); err != nil {
+		return ctrl.Result{}, err
 	}
 	// Payments (spec.payments, lake_payments.go): before the Deployment, which reads its keys.
 	payments, err := r.reconcileLakePayments(ctx, &lake, ns, labels, manifest.Status)
@@ -500,6 +508,14 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			conditionsChanged = true
 		}
 	} else if apimeta.RemoveStatusCondition(&desiredConditions, lakeCustomDomainConditionType) {
+		conditionsChanged = true
+	}
+	// AgentIsolation exists only on a Lake with spec.agents.isolation PerWorkspace (operator#1169).
+	if agentCondition := lakeAgentIsolationCondition(&lake, agentPlacement); agentCondition != nil {
+		if apimeta.SetStatusCondition(&desiredConditions, *agentCondition) {
+			conditionsChanged = true
+		}
+	} else if apimeta.RemoveStatusCondition(&desiredConditions, lakeAgentIsolationConditionType) {
 		conditionsChanged = true
 	}
 	// PaymentsReady exists only on a Lake with spec.payments, or while what it made is removed.
@@ -772,13 +788,17 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 
 	containerSecurityContext := hardenedSecurityContext()
 	containerSecurityContext.RunAsNonRoot = boolPtr(true)
+	busKeys, busBound, err := r.lakeAgentBusKeys(ctx, lake, namespace)
+	if err != nil {
+		return nil, err
+	}
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		deployment.Labels = labels
 		deployment.Spec.Replicas = &replicas
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
@@ -856,6 +876,9 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 			// The owner-only passphrase file liquid needs to create lake's identity (operator#1168).
 			applyLakeIdentityPassphrase(lake, &deployment.Spec.Template, image)
 		}
+		// lake reads its bus credentials when it starts: credentials bound to workspaces (operator#1169)
+		// restart it when a workspace's are added or removed. Empty, and absent, for shared agents.
+		setLakeAgentBusKeysHash(&deployment.Spec.Template.ObjectMeta, lakeAgentBusKeysHash(busKeys, busBound))
 		if len(lakeAgentLibrary(lake)) > 0 {
 			// The library agents' bus credentials (lake docs/api/agent-bus.md), one file each.
 			mode := int32(0o440)

@@ -117,7 +117,7 @@ func TestLibraryAgentsRunAsDeploymentsAndLeaveWhenUnlisted(t *testing.T) {
 		t.Fatal("the service token is minted once")
 	}
 	// Each library agent gets its own bus credential, kept across reconciles.
-	if err := h.reconciler.reconcileLakeAgentBusTokens(ctx, h.lake, testServiceNamespace, labels); err != nil {
+	if err := h.reconciler.reconcileLakeAgentBusTokens(ctx, h.lake, testServiceNamespace, labels, lakeAgentPlacement{}); err != nil {
 		t.Fatal(err)
 	}
 	var bus corev1.Secret
@@ -128,7 +128,7 @@ func TestLibraryAgentsRunAsDeploymentsAndLeaveWhenUnlisted(t *testing.T) {
 	if len(askToken) != 64 || len(projectToken) != 64 || askToken == projectToken || askToken == minted {
 		t.Fatalf("one distinct bus token per agent, never the service token: %v", bus.Data)
 	}
-	if err := h.reconciler.reconcileLakeAgentBusTokens(ctx, h.lake, testServiceNamespace, labels); err != nil {
+	if err := h.reconciler.reconcileLakeAgentBusTokens(ctx, h.lake, testServiceNamespace, labels, lakeAgentPlacement{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = h.client.Get(ctx, client.ObjectKeyFromObject(&bus), &bus)

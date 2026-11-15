@@ -706,7 +706,24 @@ type LakeAgentsSpec struct {
 	// +kubebuilder:validation:Minimum=60
 	// +optional
 	JobDeadlineSeconds *int64 `json:"jobDeadlineSeconds,omitempty"`
+	// Isolation is where the library agents' processes run (operator#1169, lake#871). Shared, the
+	// default, runs one process per library agent for every workspace of the Lake. PerWorkspace runs
+	// one process per library agent for each running workspace, each holding only a bus credential
+	// bound to that workspace (lake's <agent>.<workspace id> file), and no shared process: an
+	// enterprise or isolated install. PerWorkspace takes effect only for a lake image whose manifest
+	// lists the agent_bus_workspace_credentials feature; until then the Lake keeps Shared and
+	// condition AgentIsolation says why. Every library agent still runs either way. See
+	// docs/lake/agents.md#one-agent-process-per-workspace.
+	// +kubebuilder:validation:Enum=Shared;PerWorkspace
+	// +optional
+	Isolation string `json:"isolation,omitempty"`
 }
+
+// The values of spec.agents.isolation.
+const (
+	LakeAgentIsolationShared       = "Shared"
+	LakeAgentIsolationPerWorkspace = "PerWorkspace"
+)
 
 // LakeLibraryAgent is one specialized agent of lake's Agent Library.
 type LakeLibraryAgent struct {
@@ -961,6 +978,12 @@ type LakeImageManifest struct {
 	// docs/lake/README.md#identity-passphrase).
 	// +optional
 	IdentityPassphraseFile bool `json:"identityPassphraseFile,omitempty"`
+	// WorkspaceBoundAgentBus is true when the image's manifest features list
+	// agent_bus_workspace_credentials: lake then treats a LAKE_AGENT_BUS_DIR file named
+	// <agent>.<workspace id> as a bus credential bound to that workspace, so spec.agents.isolation
+	// PerWorkspace can run one agent process per workspace (operator#1169, lake#871).
+	// +optional
+	WorkspaceBoundAgentBus bool `json:"workspaceBoundAgentBus,omitempty"`
 }
 
 // LakeStripeProduct is one product a lake image bills under.

@@ -111,6 +111,9 @@ type lakeManifestDocument struct {
 	Environment []struct {
 		Name string `json:"name"`
 	} `json:"environment"`
+	// Features names behaviours that no variable announces; the operator looks only for the ones
+	// that change what it runs (lakeFeatureWorkspaceBoundAgentBus).
+	Features []string `json:"features"`
 }
 
 // lakeManifestPod is what the manifest Job's pod reported.
@@ -453,6 +456,7 @@ func lakeManifestFromDocument(document lakeManifestDocument) (*oramav1alpha1.Lak
 	return &oramav1alpha1.LakeImageManifest{
 		ServiceConnectionsOnDemand: onDemand,
 		IdentityPassphraseFile:     passphraseFile,
+		WorkspaceBoundAgentBus:     slices.Contains(document.Features, lakeFeatureWorkspaceBoundAgentBus),
 		Supported:                  true,
 		Version:                    document.Version,
 		Revision:                   document.Revision,
