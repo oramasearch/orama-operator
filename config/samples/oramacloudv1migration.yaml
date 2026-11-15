@@ -1,7 +1,7 @@
 # Copy one Cloud v1 team from a source deployment into the OramaCloudV1 stack v1-dev (operator#653). Apply it in the stack's
 # namespace. Each change to step, apply or attempt runs that step once, as a Job
 # (<name>-<step>-<attempt>, with -dry-run before the attempt for a seed or catchUp without apply);
-# the tool's status --json lands in .status.result. See docs/cloud-v1-migration.md.
+# the tool's status --json lands in .status.result.
 #
 # Order: plan, seed without apply (the tool's dry run), seed with apply, catchUp with apply (raise
 # attempt for each further catch-up before the cutover), verify. The stack must keep
