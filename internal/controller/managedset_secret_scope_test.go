@@ -181,8 +181,8 @@ func TestAMigrationsProd1CredentialsNeverReachANonprodMember(t *testing.T) {
 		`"settings":{"credentialsSecretRef":{"name":"v1-nonprod-prod1-settings-ssm"}}}`
 	for _, credential := range []string{"v1-nonprod-prod1-db-ro", "v1-nonprod-prod1-master-key", "v1-nonprod-prod1-settings-ssm"} {
 		t.Run(credential, func(t *testing.T) {
-			migration := pilotMigration("pilot-1", credential, "team-4e01bc49-evidence")
-			migration.Spec = *rawJSON(`{"teamID":"4e01bc49-b388-43c2-8986-2395a0b8fe52","runID":"pilot-1","step":"plan",` + source + `}`)
+			migration := pilotMigration("pilot-1", credential, "team-7e57a000-evidence")
+			migration.Spec = *rawJSON(`{"teamID":"7e57a000-0000-4000-8000-000000000001","runID":"pilot-1","step":"plan",` + source + `}`)
 			objects := append(pilotObjects(), setSecret("v1-nonprod-prod1-master-key", "prod1-master"), setSecret("v1-nonprod-prod1-settings-ssm", "prod1-iam"))
 			c := setTestClient(t, append(objects, pilotSet(migration))...)
 			members := &fakeMembers{ready: map[string]bool{"v1-dev": true}}

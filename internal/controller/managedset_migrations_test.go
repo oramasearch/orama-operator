@@ -29,7 +29,7 @@ const pilotOwner = "OramaCloudV1Set.v1-nonprod"
 
 func pilotMigration(name string, secrets ...string) oramav1alpha1.SetMigration {
 	migration := oramav1alpha1.SetMigration{Name: name, Member: "v1-dev",
-		Spec: *rawJSON(`{"teamID":"4e01bc49-b388-43c2-8986-2395a0b8fe52","projectIDs":["a0d16f69-1a49-4659-8a60-008886765691"],"runID":"` + name + `","step":"plan"}`)}
+		Spec: *rawJSON(`{"teamID":"7e57a000-0000-4000-8000-000000000001","projectIDs":["7e57b000-0000-4000-8000-000000000002"],"runID":"` + name + `","step":"plan"}`)}
 	for _, secret := range secrets {
 		migration.Secrets = append(migration.Secrets, oramav1alpha1.SetSecret{Name: secret, Namespace: "lake"})
 	}
@@ -39,7 +39,7 @@ func pilotMigration(name string, secrets ...string) oramav1alpha1.SetMigration {
 // pilotSet is v1-nonprod with one member, v1-dev, and the pilot's migration into it.
 func pilotSet(migrations ...oramav1alpha1.SetMigration) *oramav1alpha1.OramaCloudV1Set {
 	if migrations == nil {
-		migrations = []oramav1alpha1.SetMigration{pilotMigration("pilot-1", "v1-nonprod-prod1-db-ro", "team-4e01bc49-evidence")}
+		migrations = []oramav1alpha1.SetMigration{pilotMigration("pilot-1", "v1-nonprod-prod1-db-ro", "team-7e57a000-evidence")}
 	}
 	return &oramav1alpha1.OramaCloudV1Set{
 		ObjectMeta: metav1.ObjectMeta{Name: "v1-nonprod"},
@@ -59,7 +59,7 @@ func pilotSet(migrations ...oramav1alpha1.SetMigration) *oramav1alpha1.OramaClou
 func pilotObjects() []client.Object {
 	objects := managedCluster("orama-nonprod-cluster-01", "westus2", "nonprod")
 	for _, name := range []string{"oramasearch-dockerhub", "v1-nonprod-llm-keys", "v1-nonprod-prod1-db-ro", "other-db-ro",
-		"team-4e01bc49-evidence", "team-2-evidence"} {
+		"team-7e57a000-evidence", "team-2-evidence"} {
 		objects = append(objects, setSecret(name, name+"-value"))
 	}
 	return objects
@@ -129,7 +129,7 @@ func TestASetAppliesItsMigrationIntoItsMember(t *testing.T) {
 	if req.Spec["targetRef"] != "v1-dev" || req.Spec["step"] != "plan" || req.Spec["runID"] != "pilot-1" {
 		t.Fatalf("spec: %+v", req.Spec)
 	}
-	if names := secretNames(req.Secrets); !slices.Equal(names, []string{"v1-nonprod-prod1-db-ro", "team-4e01bc49-evidence"}) {
+	if names := secretNames(req.Secrets); !slices.Equal(names, []string{"v1-nonprod-prod1-db-ro", "team-7e57a000-evidence"}) {
 		t.Fatalf("a migration gets its own Secrets and not the stack's: %v", names)
 	}
 	for _, secret := range req.Secrets {
@@ -140,7 +140,7 @@ func TestASetAppliesItsMigrationIntoItsMember(t *testing.T) {
 
 	set := getV1Set(t, c)
 	want := oramav1alpha1.SetMigrationStatus{Name: "pilot-1", Member: "v1-dev", Cluster: "orama-nonprod-cluster-01", Namespace: "v1-dev",
-		Step: "plan", Phase: "Running", Message: "Job pilot-1-plan-0 is running", Secrets: []string{"team-4e01bc49-evidence", "v1-nonprod-prod1-db-ro"}}
+		Step: "plan", Phase: "Running", Message: "Job pilot-1-plan-0 is running", Secrets: []string{"team-7e57a000-evidence", "v1-nonprod-prod1-db-ro"}}
 	if len(set.Status.Migrations) != 1 || !equalMigrationStatus(set.Status.Migrations[0], want) {
 		t.Fatalf("status.migrations:\n got %+v\nwant %+v", set.Status.Migrations, want)
 	}
@@ -209,8 +209,8 @@ func TestSetMigrationStatusIsWrittenOnlyOnAChange(t *testing.T) {
 // source. Two migrations may share a Secret from one source.
 func TestAMigrationsSecretsNeverChangeWhatTheStackMounts(t *testing.T) {
 	stack := pilotMigration("pilot-1", "v1-nonprod-prod1-db-ro")
-	stack.Secrets = append(stack.Secrets, oramav1alpha1.SetSecret{Name: "team-4e01bc49-evidence", Namespace: "lake", As: "v1-nonprod-llm-keys"},
-		oramav1alpha1.SetSecret{Name: "team-4e01bc49-evidence", Namespace: "lake", As: "oramasearch-dockerhub"})
+	stack.Secrets = append(stack.Secrets, oramav1alpha1.SetSecret{Name: "team-7e57a000-evidence", Namespace: "lake", As: "v1-nonprod-llm-keys"},
+		oramav1alpha1.SetSecret{Name: "team-7e57a000-evidence", Namespace: "lake", As: "oramasearch-dockerhub"})
 	other := pilotMigration("pilot-2", "team-2-evidence")
 	other.Secrets = append(other.Secrets, oramav1alpha1.SetSecret{Name: "other-db-ro", Namespace: "lake", As: "v1-nonprod-prod1-db-ro"})
 	shared := pilotMigration("pilot-3", "v1-nonprod-prod1-db-ro", "team-2-evidence")
@@ -233,7 +233,7 @@ func TestAMigrationsSecretsNeverChangeWhatTheStackMounts(t *testing.T) {
 			},
 		},
 		"one secret, one source, two migrations": {
-			migrations: []oramav1alpha1.SetMigration{pilotMigration("pilot-1", "v1-nonprod-prod1-db-ro", "team-4e01bc49-evidence"), shared},
+			migrations: []oramav1alpha1.SetMigration{pilotMigration("pilot-1", "v1-nonprod-prod1-db-ro", "team-7e57a000-evidence"), shared},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -275,7 +275,7 @@ func TestRemovingAMigrationDeletesItThenItsSecrets(t *testing.T) {
 	members := &fakeMembers{ready: map[string]bool{"v1-dev": true}, migrationStatus: map[string]map[string]any{
 		"pilot-1": {"phase": "Succeeded", "step": "seed"}, "pilot-2": {"phase": "Succeeded", "step": "plan"}}}
 	c := setTestClient(t, append(pilotObjects(), pilotSet(
-		pilotMigration("pilot-1", "v1-nonprod-prod1-db-ro", "team-4e01bc49-evidence"),
+		pilotMigration("pilot-1", "v1-nonprod-prod1-db-ro", "team-7e57a000-evidence"),
 		pilotMigration("pilot-2", "v1-nonprod-prod1-db-ro", "team-2-evidence"),
 	))...)
 	if _, err := reconcileV1Set(t, c, members); err != nil {
@@ -292,7 +292,7 @@ func TestRemovingAMigrationDeletesItThenItsSecrets(t *testing.T) {
 	if len(members.deletedMigrations) != 1 || members.deletedMigrations[0].Name != "pilot-1" || members.deletedMigrations[0].Namespace != "v1-dev" {
 		t.Fatalf("deleted: %+v", members.deletedMigrations)
 	}
-	if names := secretNames(members.deletedMigrations[0].Secrets); !slices.Equal(names, []string{"team-4e01bc49-evidence"}) {
+	if names := secretNames(members.deletedMigrations[0].Secrets); !slices.Equal(names, []string{"team-7e57a000-evidence"}) {
 		t.Fatalf("the Secrets to delete once it is gone are its own and not pilot-2's: %v", names)
 	}
 	if len(members.applied) != 1 || len(members.migrations) != 1 || members.migrations[0].Name != "pilot-2" {
@@ -413,7 +413,7 @@ func TestAnImmutableChangeIsReportedAndTheMigrationIsKept(t *testing.T) {
 	refused := errors.New(`the cluster refused OramaCloudV1Migration pilot-1: OramaCloudV1Migration.orama.cloud "pilot-1" is invalid: spec: Invalid value: "object": the target, team, projects, run and source are immutable; declare a new migration instead`)
 	members.migrationErr = map[string]error{"pilot-1": refused}
 	editV1Set(t, c, func(set *oramav1alpha1.OramaCloudV1Set) {
-		set.Spec.Migrations[0].Spec = *rawJSON(`{"teamID":"00000000-0000-0000-0000-000000000000","projectIDs":["a0d16f69-1a49-4659-8a60-008886765691"],"runID":"pilot-1","step":"plan"}`)
+		set.Spec.Migrations[0].Spec = *rawJSON(`{"teamID":"00000000-0000-0000-0000-000000000000","projectIDs":["7e57b000-0000-4000-8000-000000000002"],"runID":"pilot-1","step":"plan"}`)
 	})
 	if _, err := reconcileV1Set(t, c, members); !errors.Is(err, refused) {
 		t.Fatalf("want the refusal returned, got %v", err)

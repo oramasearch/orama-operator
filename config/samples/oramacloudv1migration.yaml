@@ -1,4 +1,4 @@
-# Copy one Prod 1 team into the OramaCloudV1 stack v1-dev (operator#653). Apply it in the stack's
+# Copy one Cloud v1 team from a source deployment into the OramaCloudV1 stack v1-dev (operator#653). Apply it in the stack's
 # namespace. Each change to step, apply or attempt runs that step once, as a Job
 # (<name>-<step>-<attempt>, with -dry-run before the attempt for a seed or catchUp without apply);
 # the tool's status --json lands in .status.result. See docs/cloud-v1-migration.md.
@@ -12,32 +12,32 @@
 apiVersion: orama.cloud/v1alpha1
 kind: OramaCloudV1Migration
 metadata:
-  name: team-4e01bc49
+  name: team-7e57a000
   namespace: v1-dev
 spec:
   targetRef: v1-dev
-  teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
-  projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]   # the team's complete, reviewed project set
-  runID: pilot-1
+  teamID: 7e57a000-0000-4000-8000-000000000001
+  projectIDs: [7e57b000-0000-4000-8000-000000000002]   # the team's complete, reviewed project set
+  runID: run-1
   step: seed
   apply: true
-  evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}   # the reviewed isolation receipt
-  # The reviewed cloud-v1-migration build (oramacore-aws#108), pinned by digest: replace the zeros.
+  evidenceSecretRef: {name: team-7e57a000-evidence, key: isolation.json}   # the reviewed isolation receipt
+  # The reviewed cloud-v1-migration build, pinned by digest: replace the zeros.
   image: docker.io/oramasearch/cloud-v1-migration@sha256:0000000000000000000000000000000000000000000000000000000000000000
   pullSecretName: oramasearch-dockerhub
   removeOnDelete: true
   # runVolume: {size: 20Gi}                  # the default; storageClassName defaults to the cluster's
   source:
-    databaseSecretRef: {name: v1-nonprod-prod1-db-ro, key: url}   # SELECT-only PlanetScale URL
-    databaseHost: aws.connect.psdb.cloud                        # the host in that URL, for egress only
-    writerURL: https://writer.prod1.example.com                 # Prod 1's writer origin
-    readerURL: https://reader.prod1.example.com                 # Prod 1's reader origin
-    masterKeySecretRef: {name: v1-nonprod-prod1-master-key, key: key}
+    databaseSecretRef: {name: source-db-ro, key: url}   # a SELECT-only URL of the source database
+    databaseHost: db.example.com                        # the host in that URL, for egress only
+    writerURL: https://writer.prod1.example.com                 # the source's writer origin
+    readerURL: https://reader.prod1.example.com                 # the source's reader origin
+    masterKeySecretRef: {name: source-master-key, key: key}
     deploymentRevision: v1.2.39
     schemaRevision: 890a7e97
     settings:                                # the writer's info.json, read through one SSM document
       region: us-east-2
-      instanceID: i-0b9478719a8f91e2b
-      document: OramaMigrationReadIndexInfo
+      instanceID: i-0123456789abcdef0
+      document: ExampleReadIndexInfo
       dataDir: /opt/oramacore/.data/writer
-      credentialsSecretRef: {name: v1-nonprod-prod1-settings-ssm}   # access_key_id, secret_access_key
+      credentialsSecretRef: {name: source-settings-ssm}   # access_key_id, secret_access_key

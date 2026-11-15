@@ -204,7 +204,7 @@ func TestCloudV1IdentityOneShotJobs(t *testing.T) {
 	m := migrationTestResource(nil)
 	h := newMigrationHarness(t, m, migrationStack(t, nil)...)
 	h.reconcile()
-	job := h.job("team-4e01bc49-seed-0")
+	job := h.job("team-7e57a000-seed-0")
 	assertCloudV1Identity(t, job.Spec.Template.Spec, job.Name)
 	assertCloudV1Account(t, h.kube, m, job.Name)
 	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: "schema"}}
