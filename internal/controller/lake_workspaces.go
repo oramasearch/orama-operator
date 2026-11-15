@@ -1430,7 +1430,7 @@ func (r *LakeWorkspacesReconciler) deleteLegacyWorkspace(
 			}
 		}
 	}
-	for _, name := range []string{legacyName + "-zetta-admin", legacyName + "-zetta-cluster"} {
+	for _, name := range []string{legacyName + "-zetta-admin", legacyName + "-zetta-cluster", legacyName + zettaConnectionRootSuffix} {
 		var secret corev1.Secret
 		key := client.ObjectKey{Namespace: legacyNamespace, Name: name}
 		if err := r.Get(ctx, key, &secret); err != nil {

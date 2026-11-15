@@ -47,6 +47,19 @@ const (
 	zettaClusterTokenFile      = zettaClusterTokenMountPath + "/token"
 	// 0440: owner root, group fsGroup (10001, the zetta user's group), no access for others.
 	zettaClusterTokenFileMode int32 = 0o440
+
+	// The connector-credential root secret (operator#1166, zetta#1314), mounted from Secret
+	// <name>-zetta-connection-root (key root) as a read-only file outside the data volume. Zetta
+	// seals every saved connection's credential under it, so a copy of /data alone opens none of
+	// them. The engine refuses a file inside --data-dir, one writable by group or others, and a
+	// secret shorter than 32 characters; 0440 (root, and fsGroup 10001 the zetta user) and 64 hex
+	// characters satisfy all three.
+	zettaConnectionRootVolume    = "connection-root"
+	zettaConnectionRootMountPath = "/run/secrets/zetta-connection-root"
+	zettaConnectionRootKey       = "root"
+	zettaConnectionRootFile      = zettaConnectionRootMountPath + "/" + zettaConnectionRootKey
+	zettaConnectionRootFileEnv   = "ZETTA_CONNECTION_ROOT_SECRET_FILE"
+	zettaConnectionRootSuffix    = "-zetta-connection-root"
 )
 
 var zettaManagedEnvNames = map[string]struct{}{
@@ -398,6 +411,14 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	// 2.58 Connector-credential root secret — UNCONDITIONAL (operator#1166, zetta#1314). Zetta seals
+	//      saved connector credentials under it instead of a key derived from the join token it keeps in
+	//      /data, so a copy of the data volume opens no stored source credential. Minted once into
+	//      `<name>-zetta-connection-root` and mounted on every node before the StatefulSet references it.
+	if err := r.reconcileZettaConnectionRoot(ctx, &z); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 2.6 Peer LoadBalancer — OPT-IN (spec.exposePeerLoadBalancer) and ONLY for a wan-accessible slice.
 	//     A cloud LB fronting the peer port makes a GENUINELY wan-accessible slice reachable from other
 	//     clusters (its public IP → siblings' spec.externalPeers + this slice's .status.wanAddress).
@@ -602,6 +623,45 @@ func (r *OramaZettaClusterReconciler) reconcileZettaClusterToken(ctx context.Con
 	return nil
 }
 
+// zettaConnectionRootSecretName is the Secret holding a cluster's connector-credential root secret.
+func zettaConnectionRootSecretName(z *oramav1alpha1.OramaZettaCluster) string {
+	return z.Name + zettaConnectionRootSuffix
+}
+
+// reconcileZettaConnectionRoot ensures the Secret holding this cluster's connector-credential root
+// secret exists (operator#1166, zetta#1314). Every node of the cluster mounts the same Secret, because
+// each node opens what another sealed. The operator mints it ONCE (32 random bytes as 64 hex) and never
+// writes the key again while it holds anything: a new value would orphan every sealed credential.
+// Rotation is by hand and the engine's own: put the new secret on the first line and keep the old one
+// below it; each node re-seals at its next start, and the old line is dropped once every node has
+// restarted. The value is never logged.
+func (r *OramaZettaClusterReconciler) reconcileZettaConnectionRoot(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) error {
+	name := zettaConnectionRootSecretName(z)
+	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
+		sec.Labels = zettaLabels(z)
+		if len(sec.Data[zettaConnectionRootKey]) == 0 { // mint once; preserve (and any rotation lines) after
+			secret, gerr := randHex(32) // 32 bytes → 64 hex chars, above the engine's 32-character minimum
+			if gerr != nil {
+				return gerr
+			}
+			if sec.Data == nil {
+				sec.Data = map[string][]byte{}
+			}
+			sec.Data[zettaConnectionRootKey] = []byte(secret)
+		}
+		return controllerutil.SetControllerReference(z, sec, r.Scheme)
+	})
+	if err != nil {
+		return err
+	}
+	if op == controllerutil.OperationResultCreated {
+		logf.FromContext(ctx).Info("provisioned the connector-credential root secret — saved connections are sealed under it, outside the data volume (zetta#1314)",
+			"component", "zetta-connection-root", "secret", name)
+	}
+	return nil
+}
+
 // reconcileZettaIngress exposes the cluster at spec.host via an nginx Ingress that proxies the WHOLE
 // host to the Zetta node's own HTTP server on :4800 — root `/` is the node's web dashboard
 // (oramasearch/zetta#647), every other path is MCP/REST/serving. When spec.dnsSecretRef is also set it
@@ -796,6 +856,10 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 		// (operator#721).
 		{Name: "ZETTA_CLUSTER_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-cluster"}, Key: "token"}}},
+		// The connector-credential root secret as a file outside /data (operator#1166, zetta#1314). An
+		// image that predates zetta#1314 ignores the variable and keeps its old sealing; one that has it
+		// and finds no file refuses connector credentials, so the operator rolls before that image.
+		{Name: zettaConnectionRootFileEnv, Value: zettaConnectionRootFile},
 	}
 	if z.Spec.HostNetwork {
 		// Pack ordinals onto per-ordinal ports; seed peers off HOST_IP (the node's real address, via the
@@ -843,6 +907,14 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 					Items:       []corev1.KeyToPath{{Key: "token", Path: "token"}},
 					DefaultMode: int32Ptr(zettaClusterTokenFileMode),
 				}},
+			}, {
+				// The connector-credential root secret, outside the data volume (operator#1166).
+				Name: zettaConnectionRootVolume,
+				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+					SecretName:  zettaConnectionRootSecretName(z),
+					Items:       []corev1.KeyToPath{{Key: zettaConnectionRootKey, Path: zettaConnectionRootKey}},
+					DefaultMode: int32Ptr(zettaClusterTokenFileMode),
+				}},
 			}},
 			// The image runs zetta as uid 10001; fsGroup makes the mounted PVC group-writable so the
 			// node can create /data/security (mints its cluster cert/token) etc. Azure/most CSI disks
@@ -871,6 +943,7 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: "data", MountPath: zettaDataDir},
 					{Name: zettaClusterTokenVolume, MountPath: zettaClusterTokenMountPath, ReadOnly: true},
+					{Name: zettaConnectionRootVolume, MountPath: zettaConnectionRootMountPath, ReadOnly: true},
 				},
 				Resources: resources,
 				SecurityContext: &corev1.SecurityContext{
