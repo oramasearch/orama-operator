@@ -24,8 +24,8 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Production credentials never reach a non-production member (orama-operator#787, #789; LSR-038,
-// LSR-040). The checks read only the resources: each member's cluster's purpose tag, the sets that
+// Production credentials never reach a non-production member (orama-operator#787, #789). The
+// checks read only the resources: each member's cluster's purpose tag, the sets that
 // copy a Secret, the migration field that names one, and the Secret's own purpose label.
 
 func orgSecret(name string, labels map[string]string) *corev1.Secret {
@@ -54,10 +54,10 @@ func v1Sets(prodSecrets, nonprodSecrets []string) []client.Object {
 			}},
 		}
 	}
-	objects := append(managedCluster("orama-nonprod-cluster-01", "westus2", "nonprod"),
-		managedCluster("orama-production-cluster-02", "swedencentral", "production")...)
-	return append(objects, set("v1-prod", "orama-production-cluster-02", "v1-eu", prodSecrets),
-		set("v1-nonprod", "orama-nonprod-cluster-01", "v1-dev", nonprodSecrets))
+	objects := append(managedCluster("example-nonprod", "westus2", "nonprod"),
+		managedCluster("example-production-eu", "swedencentral", "production")...)
+	return append(objects, set("v1-prod", "example-production-eu", "v1-eu", prodSecrets),
+		set("v1-nonprod", "example-nonprod", "v1-dev", nonprodSecrets))
 }
 
 func reconcileV1SetNamed(t *testing.T, c client.Client, members *fakeMembers, name string) error {
@@ -76,7 +76,7 @@ func v1SetNamed(t *testing.T, c client.Client, name string) *oramav1alpha1.Orama
 	return &set
 }
 
-// LSR-040 (#789): v1-nonprod copied the same orama-system/cloudflare-api-token as v1-prod, so the
+// #789: v1-nonprod copied the same orama-system/cloudflare-api-token as v1-prod, so the
 // nonprod cluster held the production DNS credential. A Secret a production set copies is never
 // copied into a nonprod member; the production set keeps getting it, so production is unchanged.
 func TestAProductionSetsSecretIsNeverCopiedIntoANonprodMember(t *testing.T) {
@@ -171,7 +171,7 @@ func boolIndex(b bool) int {
 	return 0
 }
 
-// LSR-038 (#787): a migration into v1-dev was given Prod 1's engine master key, its read-only
+// #787: a migration into v1-dev was given Prod 1's engine master key, its read-only
 // database URL and the settings IAM key. Those are Prod 1's, so production, whatever the Secret is
 // called. They are never copied into a non-production member: the migration is refused and nothing
 // is copied. A Secret standing in for Prod 1 that is labelled nonprod is a fixture, and is copied.
@@ -223,8 +223,8 @@ func TestAMigrationsProd1CredentialsReachAProductionMember(t *testing.T) {
 	migration := pilotMigration("pilot-1", "v1-nonprod-prod1-db-ro")
 	migration.Spec = *rawJSON(`{"teamID":"t","runID":"pilot-1","step":"plan","source":{"databaseSecretRef":{"name":"v1-nonprod-prod1-db-ro","key":"url"}}}`)
 	set := pilotSet(migration)
-	set.Spec.Clusters[0].ClusterRef = "orama-production-cluster-02"
-	objects := append(pilotObjects(), managedCluster("orama-production-cluster-02", "swedencentral", "production")...)
+	set.Spec.Clusters[0].ClusterRef = "example-production-eu"
+	objects := append(pilotObjects(), managedCluster("example-production-eu", "swedencentral", "production")...)
 	c := setTestClient(t, append(objects, set)...)
 	members := &fakeMembers{ready: map[string]bool{"v1-dev": true}}
 	if _, err := reconcileV1Set(t, c, members); err != nil {
@@ -236,8 +236,8 @@ func TestAMigrationsProd1CredentialsReachAProductionMember(t *testing.T) {
 }
 
 // TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes is the static form of the rule over
-// the files in config/clusters/sets and config/clusters/<cluster>/operator.yaml (LSR-040's
-// "statically list every Secret source per set and assert the prod and nonprod sets are disjoint",
+// the files in config/clusters/sets and config/clusters/<cluster>/operator.yaml: every Secret
+// source is listed per set and the prod and nonprod sets are disjoint (orama-operator#789,
 // and orama-operator#832 for the OramaOperators' pull Secrets). A set's purpose is its clusters'
 // purpose tag, read from config/clusters/<cluster>/cluster.yaml; an OramaOperator's is its cluster's.
 func TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes(t *testing.T) {
@@ -342,7 +342,7 @@ func describePurposes(purposes map[string][]string) string {
 
 // lakeSets is lake-prod on a production cluster and lake-nonprod on the nonprod cluster, each
 // copying the named Secrets from the lake namespace, with the Stripe and OpenAI Secrets the Lakes
-// read (orama-operator#790, LSR-041).
+// read (orama-operator#790).
 func lakeSets(prodSecrets, nonprodSecrets []string) []client.Object {
 	refs := func(names []string) []oramav1alpha1.SetSecret {
 		var out []oramav1alpha1.SetSecret
@@ -362,20 +362,20 @@ func lakeSets(prodSecrets, nonprodSecrets []string) []client.Object {
 			}},
 		}
 	}
-	objects := append(managedCluster("orama-nonprod-cluster-01", "westus2", "nonprod"),
-		managedCluster("orama-production-cluster-02", "swedencentral", "production")...)
+	objects := append(managedCluster("example-nonprod", "westus2", "nonprod"),
+		managedCluster("example-production-eu", "swedencentral", "production")...)
 	objects = append(objects, setSecret("lake-prod-stripe", "sk_live"), setSecret("lake-prod-openai", "sk-prod"),
 		setSecret("lake-nonprod-stripe", "sk_test"), setSecret("clerk-lake-prod", "clerk-prod"))
 	if prodSecrets != nil {
-		objects = append(objects, set("lake-prod", "orama-production-cluster-02", "shared", prodSecrets))
+		objects = append(objects, set("lake-prod", "example-production-eu", "shared", prodSecrets))
 	}
 	if nonprodSecrets != nil {
-		objects = append(objects, set("lake-nonprod", "orama-nonprod-cluster-01", "dev", nonprodSecrets))
+		objects = append(objects, set("lake-nonprod", "example-nonprod", "dev", nonprodSecrets))
 	}
 	return objects
 }
 
-// LSR-041 (#790): lake-nonprod copied lake-prod's Stripe and OpenAI Secrets into dev, testing and
+// #790: lake-nonprod copied lake-prod's Stripe and OpenAI Secrets into dev, testing and
 // staging. A Secret labelled production is never copied into a nonprod Lake, even when no
 // production set lists it.
 func TestALakeSetNeverCopiesASecretLabelledProductionIntoANonprodMember(t *testing.T) {
@@ -412,10 +412,10 @@ func TestAnOrderedLakeSetOnANonprodClusterGetsNoProductionSecret(t *testing.T) {
 		}
 	}
 	source := &oramav1alpha1.LakeOrderSource{ObjectMeta: metav1.ObjectMeta{Name: "lake-live"},
-		Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: "lake-prod", HostDomain: "lake.live"}}
+		Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: "lake-prod", HostDomain: "lakelive.example"}}
 	const name = "order-0123456789ab"
 	ordered, err := orderLakeSet(orderPass{source: source, set: prod, member: map[string]any{}},
-		CloudOrder{ID: "0123456789ab"}, name, "orama-nonprod-cluster-01", name+".lake.live")
+		CloudOrder{ID: "0123456789ab"}, name, "example-nonprod", name+".lakelive.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +443,7 @@ func TestAProductionOrderSourcesMemberSecretIsNeverCopiedIntoANonprodMember(t *t
 	} {
 		t.Run(name, func(t *testing.T) {
 			source := &oramav1alpha1.LakeOrderSource{ObjectMeta: metav1.ObjectMeta{Name: "lake-live"},
-				Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: tc.lakeSetRef, HostDomain: "lake.live",
+				Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: tc.lakeSetRef, HostDomain: "lakelive.example",
 					MemberSecrets: []oramav1alpha1.SetSecret{{Name: "clerk-lake-prod", Namespace: "lake", As: "clerk-secret-key"}}}}
 			c := setTestClient(t, append(lakeSets([]string{"lake-prod-stripe"}, []string{"clerk-lake-prod"}), source)...)
 			members := &fakeMembers{ready: map[string]bool{"dev": true}}

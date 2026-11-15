@@ -47,7 +47,7 @@ func pilotSet(migrations ...oramav1alpha1.SetMigration) *oramav1alpha1.OramaClou
 			ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 				Template: *rawJSON(`{"profile":"light","images":{"tag":"v1-sandbox"}}`),
 				Secrets:  []oramav1alpha1.SetSecret{{Name: "oramasearch-dockerhub", Namespace: "lake"}},
-				Clusters: []oramav1alpha1.SetMember{{ClusterRef: "orama-nonprod-cluster-01", Name: "v1-dev", Namespace: "v1-dev",
+				Clusters: []oramav1alpha1.SetMember{{ClusterRef: "example-nonprod", Name: "v1-dev", Namespace: "v1-dev",
 					Secrets: []oramav1alpha1.SetSecret{{Name: "v1-nonprod-llm-keys", Namespace: "lake"}}}},
 				DeletionPolicy: oramav1alpha1.SetDeletionRetain,
 			},
@@ -57,7 +57,7 @@ func pilotSet(migrations ...oramav1alpha1.SetMigration) *oramav1alpha1.OramaClou
 }
 
 func pilotObjects() []client.Object {
-	objects := managedCluster("orama-nonprod-cluster-01", "westus2", "nonprod")
+	objects := managedCluster("example-nonprod", "westus2", "nonprod")
 	for _, name := range []string{"oramasearch-dockerhub", "v1-nonprod-llm-keys", "v1-nonprod-prod1-db-ro", "other-db-ro",
 		"team-7e57a000-evidence", "team-2-evidence"} {
 		objects = append(objects, setSecret(name, name+"-value"))
@@ -139,7 +139,7 @@ func TestASetAppliesItsMigrationIntoItsMember(t *testing.T) {
 	}
 
 	set := getV1Set(t, c)
-	want := oramav1alpha1.SetMigrationStatus{Name: "pilot-1", Member: "v1-dev", Cluster: "orama-nonprod-cluster-01", Namespace: "v1-dev",
+	want := oramav1alpha1.SetMigrationStatus{Name: "pilot-1", Member: "v1-dev", Cluster: "example-nonprod", Namespace: "v1-dev",
 		Step: "plan", Phase: "Running", Message: "Job pilot-1-plan-0 is running", Secrets: []string{"team-7e57a000-evidence", "v1-nonprod-prod1-db-ro"}}
 	if len(set.Status.Migrations) != 1 || !equalMigrationStatus(set.Status.Migrations[0], want) {
 		t.Fatalf("status.migrations:\n got %+v\nwant %+v", set.Status.Migrations, want)
@@ -366,7 +366,7 @@ func TestDeletingASetOrAMemberWaitsForItsMigrations(t *testing.T) {
 		staging.Member = "v1-staging"
 		set := pilotSet(pilotMigration("pilot-1"), staging)
 		set.Spec.DeletionPolicy = oramav1alpha1.SetDeletionDelete
-		set.Spec.Clusters = append(set.Spec.Clusters, oramav1alpha1.SetMember{ClusterRef: "orama-nonprod-cluster-01", Name: "v1-staging"})
+		set.Spec.Clusters = append(set.Spec.Clusters, oramav1alpha1.SetMember{ClusterRef: "example-nonprod", Name: "v1-staging"})
 		members := &fakeMembers{ready: map[string]bool{"v1-dev": true, "v1-staging": true}}
 		c := setTestClient(t, append(pilotObjects(), set)...)
 		if _, err := reconcileV1Set(t, c, members); err != nil {
@@ -402,7 +402,7 @@ func TestDeletingASetOrAMemberWaitsForItsMigrations(t *testing.T) {
 // change, since deleting it removes the copied team.
 func TestAnImmutableChangeIsReportedAndTheMigrationIsKept(t *testing.T) {
 	set := pilotSet()
-	set.Spec.Clusters = append(set.Spec.Clusters, oramav1alpha1.SetMember{ClusterRef: "orama-nonprod-cluster-01", Name: "v1-staging"})
+	set.Spec.Clusters = append(set.Spec.Clusters, oramav1alpha1.SetMember{ClusterRef: "example-nonprod", Name: "v1-staging"})
 	members := &fakeMembers{ready: map[string]bool{"v1-dev": true, "v1-staging": true},
 		migrationStatus: map[string]map[string]any{"pilot-1": {"phase": "Succeeded", "step": "seed"}}}
 	c := setTestClient(t, append(pilotObjects(), set)...)
@@ -435,7 +435,7 @@ func TestAnImmutableChangeIsReportedAndTheMigrationIsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := getV1Set(t, c).Status.Migrations[0]
-	if len(members.migrations) != 0 || entry.Namespace != "v1-dev" || !strings.Contains(entry.Message, "it was applied into namespace v1-dev on orama-nonprod-cluster-01 and a migration does not move") {
+	if len(members.migrations) != 0 || entry.Namespace != "v1-dev" || !strings.Contains(entry.Message, "it was applied into namespace v1-dev on example-nonprod and a migration does not move") {
 		t.Fatalf("moved to another member: applied %+v, status %+v", members.migrations, entry)
 	}
 	if len(members.deletedMigrations) != 0 {
