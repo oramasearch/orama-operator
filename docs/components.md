@@ -154,8 +154,9 @@ storage and their StatefulSet, or the control DB's CNPG Cluster (judged by its c
 also restarts analytics-processor, which creates ClickHouse's tables only when it starts. The ordinary steps then create them again on the current
 storage settings. It derives everything from the cluster on every pass and keeps no record, so a volume
 already on its declared storage is left alone and a later change is reconciled the same way.
-index-builder's credentials hash includes `<cr>-controldb-app`, so it rolls when a new control DB brings a new
-owner password, as analytics-processor already did. Field reference:
+index-builder's credentials hash includes the Secret its `DATABASE_URL` comes from (its own role's
+`<cr>-controldb-index-builder`, or `<cr>-controldb-app` where it has no role), so it rolls when that password
+changes, as analytics-processor already did. Field reference:
 [crd-reference.md](crd-reference.md#replacing-a-volume-storageapprovedatadeletion).
 
 ## Cloudflare DNS ownership
@@ -971,8 +972,9 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   are raw JSON: their merged members are refused by member-cluster admission and the
   set reports those members as `Degraded`.
 - The dashboard never runs `db-migrate`; the operator's `PostgresSchema`s own the schema.
-  Dashboard and index-builder `DATABASE_URL` and analytics-processor render `PG_URI`
-  use `pgURIEnv` to read the CNPG-generated `<cr>-controldb-app` Secret's `uri` key.
+  analytics-processor render `PG_URI` uses `pgURIEnv` to read the CNPG-generated
+  `<cr>-controldb-app` Secret's `uri` key; the dashboard and index-builder read their own
+  roles' Secrets, and the owner's only where they have no role (below).
   Dashboard `POSTGRES_PASSWORD` uses `pgPasswordEnv` for its `password` key.
   The analytics template contains only placeholders; its init container escapes every
   value for sed replacement, preserving `&`, `\` and `#` in credentials and URIs.
@@ -1037,7 +1039,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
 ### The control DB's schema
 
 On a writable control DB (the primary, or any stack without `replicate: true` on a read tier) the
-operator owns five `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
+operator owns six `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
 Each file and its `PostgresSchema` are written only once the one before reports `phase: Applied`
 for its **current** `spec.version` and `metadata.generation`; a stale `Applied` does not release
 the next. A streaming replica receives the primary's schema and owns none.
@@ -1049,6 +1051,7 @@ the next. A streaming replica receives the primary's schema and owns none.
 | 3 | `<cr>-controldb-reference-data` | `reference-data.sql` | none (`applyEveryVersion`) | The reference rows again, with this stack's Stripe prices, re-applied whenever the rows or the prices change |
 | 4 | `<cr>-controldb-migration-grants` | `migration-grants.sql` | none (`applyEveryVersion`) | The `migration` role's grants ([#653](https://github.com/oramasearch/orama-operator/issues/653)): `SELECT, INSERT, UPDATE, DELETE` on every table in `public` and `USAGE, SELECT` on its sequences, now and as default privileges. Its header names the versions of schemas 1 and 2, so a new version of a schema that creates tables re-applies it |
 | 5 | `<cr>-controldb-dashboard-grants` | `dashboard-grants.sql` | none (`applyEveryVersion`) | The `dashboard` role's grants ([#99](https://github.com/oramasearch/orama-operator/issues/99)): `CONNECT, TEMPORARY` on the database (the `projects` delete trigger creates a temporary table), `SELECT, INSERT, UPDATE, DELETE` on every table in `public` except the rows the operator owns (`subscription_plans`, `stripe_addon_prices`, `llms`, `oramacore_clusters`: `SELECT` only), and `USAGE, SELECT` on its sequences, now and as default privileges. No DDL, no `TRUNCATE`, no other schema. Same header rule as schema 4 |
+| 6 | `<cr>-controldb-index-builder-grants` | `index-builder-grants.sql` | none (`applyEveryVersion`) | The `index_builder` role ([#822](https://github.com/oramasearch/orama-operator/issues/822)) holds **no** privilege: every privilege on the tables and sequences of `public` and `CREATE` on the schema is revoked, now and as default privileges. It grants nothing; a `REVOKE` from a missing role fails the Job, so `Applied` also proves CNPG created the role. Same header rule as schema 4 |
 
 - **Why a second schema for 0008.** A database built from the 0000 to 0007 file already has
   `crawler_configs`, so the first schema's Job skips it; 0008 appended there would never reach
@@ -1110,7 +1113,7 @@ the next. A streaming replica receives the primary's schema and owns none.
   running dashboard keeps the owner's credentials until its role can sign in, and then rolls once.
   A read-tier replica's dashboard keeps the owner's credentials until replica credentials are wired.
   The owner (`<cr>-controldb-app`) is left to the `PostgresSchema` Jobs, the cluster-row Job and
-  pgAdmin; index-builder and analytics-processor still use it
+  pgAdmin; analytics-processor still uses it
   ([#99](https://github.com/oramasearch/orama-operator/issues/99) follow-ups below).
   `TestControlDBSchemasAgainstPostgres` signs in as the role and checks it can read every table and
   do the dashboard's writes, including the delete triggers, and is refused DDL, `TRUNCATE`, writes
@@ -1119,6 +1122,23 @@ the next. A streaming replica receives the primary's schema and owns none.
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
 CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
+
+- **The index-builder role** ([#822](https://github.com/oramasearch/orama-operator/issues/822),
+  `controldb_index_builder_role.go`). index-builder's only Postgres client is Prisma, for large-index
+  builds, against four tables of its own schema (`indexes_forced_to`, `google_cloud_clusters`,
+  `google_cloud_clusters_machines`, `google_cloud_clusters_deployments`) that are not in the control DB
+  and that nothing migrates. Large-index builds are not carried over to Prod 2 (decided under Steve's
+  2026-11-14 delegation, the recommendation on #822). So `spec.managed.roles` declares
+  `index_builder`, `login: true`, no other attribute, `connectionLimit: 10`, password
+  `<cr>-controldb-index-builder` (same shape as the dashboard's), and its grants (schema 6) leave it
+  nothing beyond what `PUBLIC` holds (`CONNECT`, `TEMPORARY`, `USAGE` on `public`). index-builder's
+  `DATABASE_URL` comes from that Secret; the Deployment is not written until schema 6 reports its
+  current version `Applied`, so a running one keeps the owner's credential until then and rolls once.
+  A large-index build fails on a permission error instead of a missing table, and the owner
+  credential is no longer in the pod. A read-tier replica keeps the owner's credential, as the
+  dashboard does. If large-index builds are carried over later, their tables go in a schema of
+  their own, `index_builder`, and the role gets `SELECT` on the first three and `SELECT, INSERT,
+  UPDATE` on `google_cloud_clusters_deployments`.
 
 > **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
 > exposing storage size + the DB name as CR fields; a Service alias the app can use.

@@ -161,6 +161,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	if err := r.ensureDashboardRoleSecret(ctx, oc); err != nil {
 		return err
 	}
+	if err := r.ensureIndexBuilderRoleSecret(ctx, oc); err != nil {
+		return err
+	}
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
@@ -177,7 +180,7 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 				"limits":   map[string]interface{}{string(corev1.ResourceEphemeralStorage): v1EphemeralLimit},
 			},
 			"managed": map[string]interface{}{"roles": []interface{}{
-				migrationManagedRole(oc, len(migrations) > 0), dashboardManagedRole(oc)}},
+				migrationManagedRole(oc, len(migrations) > 0), dashboardManagedRole(oc), indexBuilderManagedRole(oc)}},
 		}
 		if image := oc.Spec.Images.Overrides["controldb"]; image != "" {
 			spec["imageName"] = image
@@ -306,6 +309,7 @@ var controlDBSchemaSuffixes = []string{
 	"-controldb-reference-data",
 	"-controldb-migration-grants",
 	dashboardGrantsSchemaSuffix,
+	indexBuilderGrantsSchemaSuffix,
 }
 
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
@@ -339,7 +343,10 @@ func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error)
 		controlDBSchema{suffix: controlDBSchemaSuffixes[3], key: "migration-grants.sql",
 			guard: "crawler_configs", everyVersion: true, sql: migrationGrantsSQL(schemas)},
 		controlDBSchema{suffix: controlDBSchemaSuffixes[4], key: "dashboard-grants.sql",
-			guard: "crawler_configs", everyVersion: true, sql: dashboardGrantsSQL(schemas)}), nil
+			guard: "crawler_configs", everyVersion: true, sql: dashboardGrantsSQL(schemas)},
+		// Then index-builder's role, which is left with no privileges (operator#822).
+		controlDBSchema{suffix: controlDBSchemaSuffixes[5], key: "index-builder-grants.sql",
+			guard: "crawler_configs", everyVersion: true, sql: indexBuilderGrantsSQL(schemas)}), nil
 }
 
 // migrationGrantsSQL gives the migration role what the migration tool needs and nothing more
