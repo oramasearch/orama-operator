@@ -116,7 +116,7 @@ func TestStoreMountsWrapperServicePods(t *testing.T) {
 
 	// The copy in the workload's namespace: the credential fields only, owned by the Lake.
 	copied := &corev1.Secret{}
-	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: testBucketCopy}, copied); err != nil {
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: testBucketCopy}, copied); err != nil {
 		t.Fatal(err)
 	}
 	if !metav1.IsControlledBy(copied, h.lake) || copied.Labels[storeIDLabel] != testBucketStoreID || len(copied.Data) != 2 ||
@@ -157,7 +157,7 @@ func TestStoreMountsWrapperServicePods(t *testing.T) {
 	if _, found := h.sqliteTemplate().Annotations[storeCredentialsAnnotation]; found {
 		t.Fatal("digest kept without a bucket")
 	}
-	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: testBucketCopy}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: testBucketCopy}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("copy kept after the bucket was unmounted: %v", err)
 	}
 }

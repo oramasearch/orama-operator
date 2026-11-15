@@ -41,9 +41,9 @@ func sqliteCatalogCase() catalogCase {
 			h.setStatus(statefulSetGVK, c.name(), map[string]interface{}{"replicas": int64(1), "readyReplicas": int64(1)})
 		},
 		passwordSecret: testSQLiteName + "-credentials", passwordKey: "token",
-		endpoint: "http://prod-svc-bbbbbbbbbbbb.lake.svc.cluster.local:8080",
+		endpoint: "http://prod-svc-bbbbbbbbbbbb.prod-ws-123e4567e89b.svc.cluster.local:8080",
 		credential: func(token string) string {
-			return `{"kind":"sqlite","endpoint":"http://prod-svc-bbbbbbbbbbbb.lake.svc.cluster.local:8080","token":"` + token + `","database":"main"}`
+			return `{"kind":"sqlite","endpoint":"http://prod-svc-bbbbbbbbbbbb.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"` + token + `","database":"main"}`
 		},
 		claimLabels: map[string]string{"app.kubernetes.io/name": "lake-sqlite", "app.kubernetes.io/instance": testSQLiteName, serviceIDLabel: testSQLiteID},
 	}
@@ -232,7 +232,7 @@ func TestServicesSQLiteDataClaimNeedsTheStatefulSetLabels(t *testing.T) {
 	// data-<name>-0 as the StatefulSet made it, and a claim of the same pattern without its labels.
 	h.create(catalogClaim(c, "data-"+c.name()+"-0"))
 	stranger := &corev1.PersistentVolumeClaim{}
-	stranger.Name, stranger.Namespace = "data-"+c.name()+"-1", testServiceNamespace
+	stranger.Name, stranger.Namespace = "data-"+c.name()+"-1", testServiceWorkspaceNamespace
 	stranger.Labels = map[string]string{"app.kubernetes.io/instance": c.name()}
 	h.create(stranger)
 
@@ -244,10 +244,10 @@ func TestServicesSQLiteDataClaimNeedsTheStatefulSetLabels(t *testing.T) {
 	if err := h.client.Get(context.Background(), client.ObjectKeyFromObject(stranger), &corev1.PersistentVolumeClaim{}); err != nil {
 		t.Fatalf("a claim without the StatefulSet's labels was deleted: %v", err)
 	}
-	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: "data-" + c.name() + "-0"}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: "data-" + c.name() + "-0"}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("the data claim survived: %v", err)
 	}
-	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("the credentials Secret survived: %v", err)
 	}
 }
@@ -278,7 +278,7 @@ func TestServicesSQLiteCountsTowardQuota(t *testing.T) {
 	if h2.exists(statefulSetGVK, testSQLiteName) || h2.exists(serviceGVK, testSQLiteName) {
 		t.Fatal("a service over quota was created")
 	}
-	if err := h2.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: testSQLiteName + "-credentials"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+	if err := h2.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: testSQLiteName + "-credentials"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("a service over quota generated a token: %v", err)
 	}
 }
@@ -289,7 +289,7 @@ func TestServicesSQLiteQuotaIgnoresOtherStatefulSets(t *testing.T) {
 	lake := serviceTestLake()
 	lake.Spec.Services.MaxServices = 1
 	own := &appsv1.StatefulSet{}
-	own.Name, own.Namespace = "lake-prod-other", testServiceNamespace
+	own.Name, own.Namespace = "lake-prod-other", testServiceWorkspaceNamespace
 	own.Labels = map[string]string{serviceLakeLabel: "prod"}
 	own.OwnerReferences = lakeOwnerRef(lake)
 	store := &fakeServiceStore{services: []LakeService{testService(testSQLiteID, testSQLiteSlug, serviceKindSQLite, `{}`, false)}}

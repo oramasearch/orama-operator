@@ -350,6 +350,8 @@ func validateService(lake *oramav1alpha1.Lake, svc *LakeService) (lakeServiceSpe
 		return lakeServiceSpec{}, fmt.Errorf("workspace_id and its reconciled namespace are required")
 	case len(validation.IsDNS1123Label(svc.WorkspaceNamespace)) != 0:
 		return lakeServiceSpec{}, fmt.Errorf("workspace namespace is invalid")
+	case svc.WorkspaceNamespace == lakeNamespace(lake):
+		return lakeServiceSpec{}, errors.New(lakeNamespaceServiceMessage(lake))
 	case len(serviceResourceName(lake.Name, svc.Slug))+serviceNameOverhead(svc.Kind) > validation.DNS1035LabelMaxLength:
 		return lakeServiceSpec{}, fmt.Errorf("lake name %q is too long for service resource names", lake.Name)
 	}
@@ -580,6 +582,15 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 				}
 				continue
 			}
+			// The Lake namespace never holds a tenant service, so nothing is deleted there in a
+			// service's name either (operator#778): a leftover there is reported, never removed.
+			if svc.WorkspaceNamespace == lakeNamespace(lake) {
+				result := serviceResult{phase: ServicePhaseFailed, message: lakeNamespaceServiceMessage(lake)}
+				if err := writeServiceStatus(ctx, store, svc, result); err != nil {
+					log.Error(err, "service status write deferred", "service", svc.ID)
+				}
+				continue
+			}
 			result, err := r.deleteLakeService(ctx, lake, svc.WorkspaceNamespace, namespace, svc)
 			if err != nil {
 				log.Error(err, "service deletion deferred", "service", svc.ID, "slug", svc.Slug)
@@ -797,7 +808,7 @@ func setServiceMetadata(obj metav1.Object, lake *oramav1alpha1.Lake, svc *LakeSe
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	labels["app.kubernetes.io/name"] = "lake-service"
+	labels["app.kubernetes.io/name"] = serviceAppNameValue
 	labels["app.kubernetes.io/instance"] = lake.Name
 	labels["app.kubernetes.io/managed-by"] = "orama-operator"
 	labels[serviceLakeLabel] = lake.Name
