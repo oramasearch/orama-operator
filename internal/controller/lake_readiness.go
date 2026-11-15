@@ -40,11 +40,7 @@ func lakeDeploymentReadiness(deployment *appsv1.Deployment, desired int32) lakeC
 			return lakeComponentReadiness{"Degraded", "ProgressDeadlineExceeded", "Deployment progress deadline exceeded: " + condition.Message}
 		}
 	}
-	// A surge rollout keeps old pods serving until the new ones are ready, so Ready also waits
-	// for every old pod to leave (replicas == updatedReplicas), as kubectl rollout status does.
-	if desired > 0 && deployment.Status.ReadyReplicas >= desired &&
-		deployment.Status.UpdatedReplicas >= desired && deployment.Status.AvailableReplicas >= desired &&
-		deployment.Status.Replicas <= deployment.Status.UpdatedReplicas {
+	if desired > 0 && deploymentRolledOut(deployment, desired) {
 		return lakeComponentReadiness{phase: "Ready"}
 	}
 	return lakeComponentReadiness{
@@ -55,10 +51,13 @@ func lakeDeploymentReadiness(deployment *appsv1.Deployment, desired int32) lakeC
 }
 
 // Mirror the schema's reported status while checking that it applies to the current desired schema.
+// desiredVersion is the version the Lake's image needs (lakeDesiredSchemaVersion); "" while the
+// image's manifest is being read, when the PostgresSchema's own version counts.
 func (r *LakeReconciler) lakeSchemaStatus(
 	ctx context.Context,
 	lake *oramav1alpha1.Lake,
 	namespace string,
+	desiredVersion string,
 ) (string, string, lakeComponentReadiness) {
 	if !lakePostgresEnabled(lake) {
 		return "", "", lakeComponentReadiness{phase: "Ready"}
@@ -82,7 +81,7 @@ func (r *LakeReconciler) lakeSchemaStatus(
 		if ps.Status.Message != "" {
 			state.message += ": " + ps.Status.Message
 		}
-	case phase == "Applied" && (ps.Status.AppliedVersion != lakeSchemaVersion() ||
+	case phase == "Applied" && ((desiredVersion != "" && ps.Status.AppliedVersion != desiredVersion) ||
 		ps.Status.AppliedVersion != ps.Spec.Version ||
 		!apimeta.IsStatusConditionTrue(ps.Status.Conditions, "Applied")):
 		state.reason = "SchemaNotCurrent"
@@ -116,4 +115,18 @@ func lakeAggregateReadiness(lake *oramav1alpha1.Lake, components []lakeComponent
 		Reason:             state.reason,
 		Message:            state.message,
 	}
+}
+
+// deploymentRolledOut is whether a Deployment's rollout to its current template is complete, as
+// kubectl rollout status decides: desired replicas of the new template, every one available, and no
+// replica of an old template left. A surge rollout keeps the old pod serving while the new one
+// starts; ready, updated and available counts all reach desired then, before the new version
+// answers (orama-operator#1049: an App read Ready and its page reloaded onto the old version).
+func deploymentRolledOut(deployment *appsv1.Deployment, desired int32) bool {
+	status := deployment.Status
+	return status.UpdatedReplicas >= desired &&
+		status.ReadyReplicas >= desired &&
+		status.AvailableReplicas >= desired &&
+		status.AvailableReplicas >= status.UpdatedReplicas &&
+		status.Replicas <= status.UpdatedReplicas
 }

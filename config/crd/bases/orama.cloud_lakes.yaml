@@ -21,6 +21,15 @@ spec:
     - jsonPath: .spec.host
       name: Host
       type: string
+    - jsonPath: .spec.image
+      name: Image
+      type: string
+    - jsonPath: .status.imageManifest.version
+      name: Version
+      type: string
+    - jsonPath: .status.imageManifest.revision
+      name: Revision
+      type: string
     - jsonPath: .status.readyReplicas
       name: Ready
       type: integer
@@ -113,7 +122,7 @@ spec:
                       type: object
                     type: array
                   model:
-                    default: gpt-5.5
+                    default: gpt-6.1-sol
                     description: Model is the frontier model agents default to.
                     type: string
                   openaiSecretName:
@@ -304,6 +313,30 @@ spec:
                     x-kubernetes-map-type: atomic
                 required:
                 - secretKeySecretRef
+                type: object
+              customDomain:
+                description: |-
+                  CustomDomain serves this Lake on a host in a zone the customer owns, white-labelled
+                  (orama-operator#947, docs/lake/custom-domains.md). The operator writes no DNS record in the
+                  customer's zone: it publishes in status.customDomain the CNAME and the ownership TXT record the
+                  customer creates, checks both by DNS lookup, and only then routes the host, with its own
+                  Let's Encrypt certificate (HTTP-01) that cert-manager renews. Once the certificate is issued
+                  the Lake's public host becomes CustomDomain.Host (LAKE_PUBLIC_HOST); spec.host keeps working
+                  as an alias (LAKE_HOST_ALIASES) and stays the Lake's name on the operator's control rows
+                  (LAKE_CONTROL_HOST). Removing it removes the route, the certificate and the variables.
+                  It needs IngressEnabled and Host.
+                properties:
+                  host:
+                    description: |-
+                      Host is the customer's host name, for example data.example.com. It must be a name the
+                      customer can point a CNAME at: one below their zone's apex, or the apex with a provider that
+                      flattens CNAMEs.
+                    maxLength: 253
+                    minLength: 4
+                    pattern: ^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$
+                    type: string
+                required:
+                - host
                 type: object
               deploySync:
                 description: |-
@@ -1612,6 +1645,19 @@ spec:
             - message: 'spec.payments needs spec.billing.enabled: a Lake with billing
                 off takes no payments'
               rule: '!has(self.payments) || (has(self.billing) && self.billing.enabled)'
+            - message: 'spec.customDomain needs spec.host and spec.ingressEnabled:
+                the Orama host stays the Lake''s alias and the custom host is routed
+                through the Lake''s ingress'
+              rule: '!has(self.customDomain) || (has(self.host) && size(self.host)
+                > 0 && has(self.ingressEnabled) && self.ingressEnabled)'
+            - message: spec.customDomain.host must differ from spec.host and spec.apexHost
+              rule: '!has(self.customDomain) || (self.customDomain.host != self.host
+                && (!has(self.apexHost) || self.customDomain.host != self.apexHost))'
+            - message: 'with spec.customDomain the operator sets LAKE_PUBLIC_HOST,
+                LAKE_HOST_ALIASES and LAKE_CONTROL_HOST: remove them from spec.env'
+              rule: '!has(self.customDomain) || !has(self.env) || !self.env.exists(e,
+                e.name == ''LAKE_PUBLIC_HOST'' || e.name == ''LAKE_HOST_ALIASES''
+                || e.name == ''LAKE_CONTROL_HOST'')'
           status:
             description: status defines the observed state of Lake
             properties:
@@ -1678,6 +1724,86 @@ spec:
                   - type
                   type: object
                 type: array
+              customDomain:
+                description: |-
+                  CustomDomain reports spec.customDomain: the records the customer creates, whether they are
+                  found, and whether the host is routed (docs/lake/custom-domains.md). Absent without it.
+                properties:
+                  certificateNotAfter:
+                    description: CertificateNotAfter is when the issued certificate
+                      expires; cert-manager renews it before.
+                    format: date-time
+                    type: string
+                  certificateReady:
+                    description: CertificateReady is whether the host's certificate
+                      is issued and valid.
+                    type: boolean
+                  host:
+                    description: Host is the spec.customDomain.host this status is
+                      for.
+                    type: string
+                  message:
+                    description: Message says what is missing, in plain words.
+                    type: string
+                  phase:
+                    description: |-
+                      Phase is Pending (the records are not both found yet), Verified (both found; the route and
+                      its certificate are being made) or Routed (the host is served with an issued certificate,
+                      and is the Lake's public host).
+                    enum:
+                    - Pending
+                    - Verified
+                    - Routed
+                    type: string
+                  records:
+                    description: |-
+                      Records are the DNS records the customer creates in their zone: the CNAME that routes the
+                      host to this cluster, the TXT record that proves they own it, and any record a Clerk
+                      instance on their domain asks for. Found says whether the last lookup saw it.
+                    items:
+                      description: LakeCustomerDNSRecord is one DNS record the customer
+                        creates in their own zone.
+                      properties:
+                        found:
+                          description: Found is whether the operator's last lookup
+                            saw the record with this value.
+                          type: boolean
+                        name:
+                          description: Name is the record's full name.
+                          type: string
+                        purpose:
+                          description: |-
+                            Purpose is routing (sends the host to this cluster), ownership (proves the customer controls
+                            the name) or clerk (a record a Clerk instance on the customer's domain needs).
+                          enum:
+                          - routing
+                          - ownership
+                          - clerk
+                          type: string
+                        type:
+                          description: Type is CNAME, A, AAAA or TXT.
+                          type: string
+                        value:
+                          description: 'Value is what the record holds: the CNAME
+                            target, the address, or the TXT text.'
+                          type: string
+                      required:
+                      - name
+                      - purpose
+                      - type
+                      - value
+                      type: object
+                    type: array
+                  verifiedTime:
+                    description: |-
+                      VerifiedTime is when both records were first found for Host. Verification is not undone by
+                      a later failed lookup; Records shows what the lookup sees now.
+                    format: date-time
+                    type: string
+                required:
+                - host
+                - phase
+                type: object
               dataServices:
                 description: |-
                   DataServices reports the operational evidence for every data service associated with the
@@ -1754,6 +1880,94 @@ spec:
                 description: DataServicesSummary is the managed/unmanaged count displayed
                   by kubectl get lakes.
                 type: string
+              imageManifest:
+                description: |-
+                  ImageManifest is what the Lake's image reported through `lake manifest`, read once per image
+                  by a Job (orama-operator#936): its schema, the Stripe events it handles and its Stripe
+                  products. Supported is false for an image that predates the command; the operator then uses
+                  its vendored schema and lists.
+                properties:
+                  databaseEnv:
+                    description: DatabaseEnv is the variable the migration command
+                      reads the control database URI from.
+                    type: string
+                  guardTable:
+                    description: GuardTable is the guard table the newest migration
+                      creates.
+                    type: string
+                  guardTables:
+                    description: 'GuardTables are every *_guard table the schema creates:
+                      what a restore rehearsal counts.'
+                    items:
+                      type: string
+                    type: array
+                  image:
+                    description: Image is the spec.image the manifest was read from.
+                    type: string
+                  imageRef:
+                    description: |-
+                      ImageRef is the image by digest, as the manifest pod ran it (from its imageID); the migration
+                      Job runs this reference, so it runs the bytes the manifest came from. Empty when the runtime
+                      did not report one.
+                    type: string
+                  latestMigration:
+                    description: LatestMigration is the newest migration the embedded
+                      schema records.
+                    type: string
+                  migrateArgs:
+                    description: MigrateArgs are the migration command's arguments,
+                      wait flag included.
+                    items:
+                      type: string
+                    type: array
+                  migrations:
+                    description: 'Migrations are every migration the schema records:
+                      what a restore rehearsal requires.'
+                    items:
+                      type: string
+                    type: array
+                  revision:
+                    type: string
+                  schemaVersion:
+                    description: SchemaVersion is the embedded schema's sha256:<12
+                      hex>.
+                    type: string
+                  stripeProducts:
+                    description: 'StripeProducts are the products the image bills
+                      under: the Lake''s PaymentCatalog.'
+                    items:
+                      description: LakeStripeProduct is one product a lake image bills
+                        under.
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                      required:
+                      - id
+                      - name
+                      type: object
+                    type: array
+                  stripeWebhookEvents:
+                    description: |-
+                      StripeWebhookEvents are the Stripe events the image handles: the Lake's webhook endpoint
+                      subscribes to exactly these.
+                    items:
+                      type: string
+                    type: array
+                  supported:
+                    description: |-
+                      Supported is false when the image predates `lake manifest` (it exits 2 with its usage text
+                      and no JSON): the operator then applies its vendored schema and uses its own Stripe lists.
+                    type: boolean
+                  version:
+                    description: Version and Revision are the lake release and source
+                      commit the image reports.
+                    type: string
+                required:
+                - image
+                - supported
+                type: object
               lastBackupTime:
                 description: LastBackupTime is the completion time reported by the
                   newest CNPG Backup.
@@ -1780,8 +1994,10 @@ spec:
                   | Applying | Applied | Failed.'
                 type: string
               schemaVersion:
-                description: SchemaVersion is the applied schema's content hash (sha256:<12
-                  hex>), from the PostgresSchema.
+                description: |-
+                  SchemaVersion is the applied schema version, from the PostgresSchema: the vendored schema's
+                  content hash (sha256:<12 hex>), or image:<digest> when the image migrates itself
+                  (orama-operator#936).
                 type: string
               sealing:
                 description: Sealing publishes the cluster-bound recipient used by

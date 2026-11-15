@@ -76,73 +76,85 @@ func runRender(t *testing.T, c corev1.Container, tmplName, tmpl, outDir string, 
 	return string(b)
 }
 
-// Only the reader-only config holds reader_side.analytics, with the analytics key placeholder and
-// Prod 1's seven header mappings; only the readers' render-config reads <cr>-analytics-api-key.
+// Every reader config holds reader_side.analytics, with the analytics key placeholder and Prod 1's
+// seven header mappings, and only the readers' render-config reads <cr>-analytics-api-key: on
+// side-only images reader.yaml, on the combined image combined-reader.yaml (#1051). No writer
+// config has the block.
 func TestReaderConfigRendersAnalytics(t *testing.T) {
-	h := newEngineHarness(t)
-	h.reconcile(engineOC(withSideImages))
-	cm := h.engineConfig()
+	for _, m := range []struct {
+		name      string
+		mutate    func(*oramav1alpha1.OramaCloudV1)
+		readerKey string
+		writerKey string
+	}{
+		{"side-only", withSideImages, readerConfigKey, writerConfigKey},
+		{"combined", nil, combinedReaderConfigKey, combinedConfigKey},
+	} {
+		t.Run(m.name, func(t *testing.T) {
+			h := newEngineHarness(t)
+			h.reconcile(engineOC(m.mutate))
+			cm := h.engineConfig()
 
-	rs, _ := parseYAML(t, cm.Data[readerConfigKey])["reader_side"].(map[string]any)
-	analytics, ok := rs["analytics"].(map[string]any)
-	if !ok {
-		t.Fatalf("reader.yaml has no reader_side.analytics:\n%s", cm.Data[readerConfigKey])
-	}
-	if got := analytics["api_key"]; got != "__ANALYTICS_API_KEY__" {
-		t.Errorf("reader_side.analytics.api_key = %v, want the analytics key placeholder", got)
-	}
-	if got := analytics["metadata_from_headers"]; !reflect.DeepEqual(got, prod1AnalyticsHeaders) {
-		t.Errorf("metadata_from_headers = %v, want Prod 1's %v", got, prod1AnalyticsHeaders)
-	}
-	if strings.Contains(cm.Data[readerConfigKey], "__MASTER_API_KEY__") {
-		t.Error("reader.yaml holds the master key placeholder")
-	}
+			rs, _ := parseYAML(t, cm.Data[m.readerKey])["reader_side"].(map[string]any)
+			analytics, ok := rs["analytics"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s has no reader_side.analytics:\n%s", m.readerKey, cm.Data[m.readerKey])
+			}
+			if got := analytics["api_key"]; got != "__ANALYTICS_API_KEY__" {
+				t.Errorf("reader_side.analytics.api_key = %v, want the analytics key placeholder", got)
+			}
+			if got := analytics["metadata_from_headers"]; !reflect.DeepEqual(got, prod1AnalyticsHeaders) {
+				t.Errorf("metadata_from_headers = %v, want Prod 1's %v", got, prod1AnalyticsHeaders)
+			}
+			if strings.Contains(cm.Data[m.readerKey], "__MASTER_API_KEY__") {
+				t.Errorf("%s holds the master key placeholder", m.readerKey)
+			}
 
-	if _, ok := parseYAML(t, cm.Data[writerConfigKey])["reader_side"]; ok {
-		t.Error("writer.yaml has a reader_side")
-	}
-	init := renderInit(t, h.reader().Spec.Template.Spec)
-	if !slices.ContainsFunc(init.Env, func(e corev1.EnvVar) bool {
-		return reflect.DeepEqual(e, secretKeyEnv("ANALYTICS_API_KEY", "v1-analytics-api-key", "ANALYTICS_API_KEY"))
-	}) {
-		t.Errorf("reader render-config does not take ANALYTICS_API_KEY from v1-analytics-api-key: %+v", init.Env)
-	}
-	if readsAnalyticsKey(renderInit(t, h.writer().Spec.Template.Spec)) {
-		t.Error("the writer's render-config reads the analytics key")
-	}
-
-	// The combined config has no analytics block, and neither side's render-config reads the key.
-	h = newEngineHarness(t)
-	h.reconcile(engineOC(nil))
-	cm = h.engineConfig()
-	if strings.Contains(cm.Data[combinedConfigKey], "analytics:") || strings.Contains(cm.Data[combinedConfigKey], "__ANALYTICS_API_KEY__") {
-		t.Errorf("the combined config has an analytics block:\n%s", cm.Data[combinedConfigKey])
-	}
-	for side, spec := range h.podTemplates() {
-		if readsAnalyticsKey(renderInit(t, spec.Spec)) {
-			t.Errorf("combined %s render-config reads the analytics key", side)
-		}
+			if strings.Contains(cm.Data[m.writerKey], "analytics:") || strings.Contains(cm.Data[m.writerKey], "__ANALYTICS_API_KEY__") {
+				t.Errorf("%s has an analytics block:\n%s", m.writerKey, cm.Data[m.writerKey])
+			}
+			init := renderInit(t, h.reader().Spec.Template.Spec)
+			if !slices.ContainsFunc(init.Env, func(e corev1.EnvVar) bool {
+				return reflect.DeepEqual(e, secretKeyEnv("ANALYTICS_API_KEY", "v1-analytics-api-key", "ANALYTICS_API_KEY"))
+			}) {
+				t.Errorf("reader render-config does not take ANALYTICS_API_KEY from v1-analytics-api-key: %+v", init.Env)
+			}
+			if readsAnalyticsKey(renderInit(t, h.writer().Spec.Template.Spec)) {
+				t.Error("the writer's render-config reads the analytics key")
+			}
+		})
 	}
 }
 
 // The readers' render-config fills reader_side.analytics.api_key with ANALYTICS_API_KEY, never the
-// master key.
+// master key, on side-only and combined images.
 func TestReaderRenderFillsAnalyticsKey(t *testing.T) {
-	h := newEngineHarness(t)
-	h.reconcile(engineOC(withSideImages))
-	env := map[string]string{"ANALYTICS_API_KEY": "test-analytics-key", "MASTER_API_KEY": "test-master-key",
-		"BROKER_PASSWORD": "broker-pass"}
-	for _, p := range llmProviders(engineOC(withSideImages)) {
-		env[llmKeyEnv(p.Name)] = "llm-key"
-	}
-	out := runRender(t, renderInit(t, h.reader().Spec.Template.Spec), readerConfigKey, h.engineConfig().Data[readerConfigKey], "/etc/oramacore/", env)
-	rs, _ := parseYAML(t, out)["reader_side"].(map[string]any)
-	analytics, _ := rs["analytics"].(map[string]any)
-	if got := analytics["api_key"]; got != "test-analytics-key" {
-		t.Errorf("rendered reader_side.analytics.api_key = %v, want ANALYTICS_API_KEY", got)
-	}
-	if strings.Contains(out, "__ANALYTICS_API_KEY__") || strings.Contains(out, "test-master-key") {
-		t.Error("the rendered reader config holds the placeholder or the master key")
+	for _, m := range []struct {
+		name      string
+		mutate    func(*oramav1alpha1.OramaCloudV1)
+		readerKey string
+	}{
+		{"side-only", withSideImages, readerConfigKey},
+		{"combined", nil, combinedReaderConfigKey},
+	} {
+		t.Run(m.name, func(t *testing.T) {
+			h := newEngineHarness(t)
+			h.reconcile(engineOC(m.mutate))
+			env := map[string]string{"ANALYTICS_API_KEY": "test-analytics-key", "MASTER_API_KEY": "test-master-key",
+				"BROKER_PASSWORD": "broker-pass"}
+			for _, p := range llmProviders(engineOC(m.mutate)) {
+				env[llmKeyEnv(p.Name)] = "llm-key"
+			}
+			out := runRender(t, renderInit(t, h.reader().Spec.Template.Spec), m.readerKey, h.engineConfig().Data[m.readerKey], "/etc/oramacore/", env)
+			rs, _ := parseYAML(t, out)["reader_side"].(map[string]any)
+			analytics, _ := rs["analytics"].(map[string]any)
+			if got := analytics["api_key"]; got != "test-analytics-key" {
+				t.Errorf("rendered reader_side.analytics.api_key = %v, want ANALYTICS_API_KEY", got)
+			}
+			if strings.Contains(out, "__ANALYTICS_API_KEY__") || strings.Contains(out, "test-master-key") {
+				t.Error("the rendered reader config holds the placeholder or the master key")
+			}
+		})
 	}
 }
 

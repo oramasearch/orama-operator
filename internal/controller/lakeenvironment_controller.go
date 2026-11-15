@@ -871,7 +871,7 @@ func environmentDeploymentState(environment *oramav1alpha1.LakeEnvironment, depl
 	if deployment.Status.ObservedGeneration < deployment.Generation {
 		return oramav1alpha1.LakeEnvironmentPhaseProgressing, "DeploymentProgressing", "waiting for the Deployment controller to observe the latest change"
 	}
-	if deployment.Status.ReadyReplicas >= desired && deployment.Status.UpdatedReplicas >= desired && deployment.Status.AvailableReplicas >= desired {
+	if deploymentRolledOut(deployment, desired) {
 		return oramav1alpha1.LakeEnvironmentPhaseReady, "DeploymentReady", fmt.Sprintf("all %d replicas ready", desired)
 	}
 	return oramav1alpha1.LakeEnvironmentPhaseProgressing, "DeploymentProgressing", fmt.Sprintf("%d/%d replicas ready", deployment.Status.ReadyReplicas, desired)

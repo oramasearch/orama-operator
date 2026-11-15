@@ -1,0 +1,332 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: observabilityagents.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: ObservabilityAgent
+    listKind: ObservabilityAgentList
+    plural: observabilityagents
+    shortNames:
+    - obsagent
+    singular: observabilityagent
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterRef
+      name: Cluster
+      type: string
+    - jsonPath: .spec.hubRef
+      name: Hub
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: string
+    - jsonPath: .status.connected
+      name: Connected
+      type: boolean
+    - jsonPath: .status.message
+      name: Message
+      priority: 1
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ObservabilityAgent is one cluster's observability agents, reporting to one hub of the matching
+          purpose. Reconciled on the managing cluster, which writes the provider's concrete kind onto the
+          agent's cluster, links it to the hub, and gives it its own deploy key.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ObservabilityAgentSpec is the node agents of one cluster.
+            properties:
+              alerting:
+                description: |-
+                  Alerting is where this cluster's own alerts go, instead of the hub's receivers. A nonprod
+                  cluster reporting to the managing cluster's hub names its own: the hub's receivers are
+                  production's, and their Secrets are never copied to a nonprod cluster.
+                properties:
+                  receivers:
+                    description: Receivers get every alert of their severities, from
+                      the hub's cluster and every agent's.
+                    items:
+                      description: AlertReceiver is where an alert is delivered. Exactly
+                        one of slack and webhook is set.
+                      properties:
+                        name:
+                          description: Name is the receiver's name in Alertmanager.
+                          maxLength: 40
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        severities:
+                          description: Severities are the alert severities delivered
+                            here. Empty means critical and warning.
+                          items:
+                            enum:
+                            - critical
+                            - warning
+                            - info
+                            type: string
+                          type: array
+                        slack:
+                          description: Slack posts to an incoming webhook.
+                          properties:
+                            channel:
+                              description: Channel overrides the webhook's default
+                                channel.
+                              maxLength: 80
+                              type: string
+                            urlSecretRef:
+                              description: |-
+                                URLSecretRef holds the incoming webhook URL. It is copied to each cluster that routes alerts
+                                here under the production-credential rules (docs/crd-reference.md).
+                              properties:
+                                key:
+                                  minLength: 1
+                                  type: string
+                                name:
+                                  minLength: 1
+                                  type: string
+                                namespace:
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              - namespace
+                              type: object
+                          required:
+                          - urlSecretRef
+                          type: object
+                        webhook:
+                          description: Webhook posts Alertmanager's JSON to a URL,
+                            for a pager or an on-prem system.
+                          properties:
+                            urlSecretRef:
+                              description: ObservabilitySecretKeyRef names one key
+                                of a Secret on the managing cluster.
+                              properties:
+                                key:
+                                  minLength: 1
+                                  type: string
+                                name:
+                                  minLength: 1
+                                  type: string
+                                namespace:
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              - namespace
+                              type: object
+                          required:
+                          - urlSecretRef
+                          type: object
+                      required:
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: a receiver is exactly one of slack and webhook
+                        rule: has(self.slack) != has(self.webhook)
+                    maxItems: 8
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                required:
+                - receivers
+                type: object
+              clusterRef:
+                description: |-
+                  ClusterRef is the KubernetesCluster the agents run on. Empty is the managing cluster itself,
+                  as for a hub: it is production, reports to the managing cluster's hub over no link, and is
+                  registered under that hub's name. Immutable.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: clusterRef is immutable
+                  rule: self == oldSelf
+              hubRef:
+                description: |-
+                  HubRef names the ObservabilityHub the agents report to. The managing cluster's hub takes
+                  production and nonprod agents; a hub on a nonprod cluster takes only nonprod agents.
+                minLength: 1
+                type: string
+              imagePullSecretRef:
+                description: |-
+                  ImagePullSecretRef is a registry credentials Secret on the managing cluster, copied to the
+                  agent's cluster under the production-credential rules. Give each cluster its own.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              nodeMemory:
+                anyOf:
+                - type: integer
+                - type: string
+                default: 2Gi
+                description: |-
+                  NodeMemory is the memory each node agent may use. Its in-memory data store is sized from the
+                  same number, so a larger value keeps more history on each node.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+            required:
+            - hubRef
+            - imagePullSecretRef
+            type: object
+          status:
+            description: ObservabilityAgentStatus is what the managing cluster last
+              read for one agent.
+            properties:
+              components:
+                items:
+                  description: ObservabilityComponentStatus is one deployable component's
+                    readiness.
+                  properties:
+                    message:
+                      description: Message says why it is not ready.
+                      type: string
+                    name:
+                      type: string
+                    ready:
+                      description: Ready is true when every replica the component
+                        wants is available.
+                      type: boolean
+                  required:
+                  - name
+                  - ready
+                  type: object
+                type: array
+              concreteRef:
+                description: ConcreteRef is the concrete resource on the agent's cluster,
+                  Kind namespace/name.
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              connected:
+                description: Connected is true once the hub reports the cluster registered
+                  and heartbeating.
+                type: boolean
+              hubPurpose:
+                description: HubPurpose is the hub cluster's purpose tag; production
+                  for the managing cluster.
+                type: string
+              link:
+                description: |-
+                  Link is how the agents reach the hub: "local" on the hub's own cluster, otherwise the
+                  PeerLink that carries it.
+                type: string
+              message:
+                type: string
+              metricsConnected:
+                description: MetricsConnected is true while the hub's Prometheus reads
+                  the cluster's metrics.
+                type: boolean
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: Phase is Pending, Progressing, Ready, Degraded or Refused.
+                type: string
+              purpose:
+                description: Purpose is the agent cluster's purpose tag.
+                type: string
+              ready:
+                description: Ready is "n/total" of the agent's components.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

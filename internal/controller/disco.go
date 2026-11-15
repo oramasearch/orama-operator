@@ -31,12 +31,13 @@ func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1
 		port:      discoPort,
 		env: []corev1.EnvVar{
 			clickhousePasswordEnv(oc),
+			secretKeyEnv("DISCO_SECRET", discoAuthSecretName(oc), "DISCO_SECRET"),
 			{Name: "DISCO_PORT", Value: "8080"},
 			// Use the SHARED embeddings Deployment (#14/#39), not a co-located sidecar —
 			// DISCO was the third redundant copy of the model weights.
 			{Name: "EMBEDDINGS_ENDPOINT", Value: oc.Name + "-embeddings:50051"},
 		},
-		credentialSecrets: []string{clickhouseAuthSecretName(oc)},
+		credentialSecrets: []string{clickhouseAuthSecretName(oc), discoAuthSecretName(oc)},
 		// The Go semantic cache holds entries in memory; give it a roomier limit than the light apps.
 		// Override via spec.components.disco.resources.
 		resources: resourcesOr(oc.Spec.Components.Disco.Resources, resourceReqs("128Mi", "100m", "1Gi")),

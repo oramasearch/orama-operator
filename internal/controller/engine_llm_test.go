@@ -334,13 +334,14 @@ func TestLLMCustomKeySecretWiring(t *testing.T) {
 			LocalObjectReference: corev1.LocalObjectReference{Name: "llm-keys"}, Key: "ANTHROPIC_API_KEY"}}},
 	}
 	// The credentials come first: on the writer the master key and oramacore-writer's password; on
-	// the combined readers an empty MASTER_API_KEY, masking the engine Secret's, and
-	// oramacore-reader's password (#99, #795).
+	// the combined readers an empty MASTER_API_KEY, masking the engine Secret's,
+	// oramacore-reader's password and the analytics key (#99, #795, #1051).
 	wants := map[string][]corev1.EnvVar{
 		"writer": append([]corev1.EnvVar{secretKeyEnv("MASTER_API_KEY", testMasterSecret, "MASTER_API_KEY"),
 			secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "writer-password")}, want...),
 		"reader": append([]corev1.EnvVar{{Name: "MASTER_API_KEY"},
-			secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "reader-password")}, want...),
+			secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "reader-password"),
+			secretKeyEnv("ANALYTICS_API_KEY", "v1-analytics-api-key", "ANALYTICS_API_KEY")}, want...),
 	}
 	cm := h.engineConfig()
 	for side, spec := range h.podTemplates() {

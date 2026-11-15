@@ -1,0 +1,856 @@
+{
+  "environment": [
+    {
+      "description": "Operator bearer for /v1 capabilities and MCP tools",
+      "name": "LAKE_ADMIN_TOKEN",
+      "required": true,
+      "secret": true
+    },
+    {
+      "description": "Directory of the agent bus tokens, one file per agent",
+      "name": "LAKE_AGENT_BUS_DIR",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The Agent Library agents this Lake runs (key=url,...)",
+      "name": "LAKE_AGENT_ENDPOINTS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Per-agent task lease lengths",
+      "name": "LAKE_AGENT_LEASE_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The frontier model Python agents run on (default gpt-4o)",
+      "name": "LAKE_AGENT_MODEL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Bearer the library agents present to Lake",
+      "name": "LAKE_AGENT_SERVICE_TOKEN",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "false refuses never-expiring keys and tokens",
+      "name": "LAKE_ALLOW_NON_EXPIRING_CREDENTIALS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The host whose every request gets the region picker",
+      "name": "LAKE_APEX_HOST",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Caps live apps per account (default 0: no limit)",
+      "name": "LAKE_APPS_PER_CUSTOMER",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Comma-separated names Ship apps cannot use",
+      "name": "LAKE_APPS_RESERVED_NAMES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Base image for source-backed Ship App builds",
+      "name": "LAKE_APPS_RUNTIME_IMAGE",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Parent domain for Ship app hosts; required for apps",
+      "name": "LAKE_APPS_WILDCARD",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Caps desired app replicas per account (default 0: no limit)",
+      "name": "LAKE_APP_REPLICAS_PER_CUSTOMER",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Prepaid balance: automatic top-ups per day (default 5)",
+      "name": "LAKE_AUTO_TOP_UPS_PER_DAY",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Prepaid balance: the first top-up (default 20)",
+      "name": "LAKE_BALANCE_FIRST_TOP_UP_USD",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Prepaid balance: the smallest top-up (default 20)",
+      "name": "LAKE_BALANCE_MINIMUM_TOP_UP_USD",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Prepaid balance: how far below zero paid work continues (default 50)",
+      "name": "LAKE_BALANCE_OVERDRAFT_USD",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Prepaid balance: how often balances are recomputed (default 300)",
+      "name": "LAKE_BALANCE_REFRESH_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Prepaid balance: the low-balance warning (default 10)",
+      "name": "LAKE_BALANCE_WARNING_USD",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The base-agent checkpoint inside a workspace",
+      "name": "LAKE_BASE_AGENT_MODEL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "on turns billing on (Orama Cloud); unset or off on an enterprise install",
+      "name": "LAKE_BILLING",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Tells accounts how to pay where invoices are paid outside Lake",
+      "name": "LAKE_BILLING_INSTRUCTIONS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Clerk publishable key; set, browser sign-in goes through Clerk",
+      "name": "LAKE_CLERK_PUBLISHABLE_KEY",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Clerk Backend API key; required with LAKE_CLERK_PUBLISHABLE_KEY",
+      "name": "LAKE_CLERK_SECRET_KEY",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Clerk webhook signing secret; enables POST /identity/clerk-webhook",
+      "name": "LAKE_CLERK_WEBHOOK_SECRET",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Postgres URI of the control plane; also what `lake migrate` applies to",
+      "name": "LAKE_CONTROL_DB_URI",
+      "required": true,
+      "secret": true
+    },
+    {
+      "description": "Bearer of Lake's own Zetta (the agent bus)",
+      "name": "LAKE_DATA_PLANE_TOKEN",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "URL of Lake's own Zetta (the agent bus)",
+      "name": "LAKE_DATA_PLANE_URL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Wait for in-flight requests on SIGTERM (default 20)",
+      "name": "LAKE_DRAIN_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "HTTP(S) origin for repository commands (default https://$LAKE_PUBLIC_HOST)",
+      "name": "LAKE_EXTERNAL_ORIGIN",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Bound on a request header's arrival (default 10)",
+      "name": "LAKE_HTTP_HEADER_TIMEOUT_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Closes idle keep-alive connections (default 75)",
+      "name": "LAKE_HTTP_IDLE_TIMEOUT_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Bound on a body read or response write without progress (default 60)",
+      "name": "LAKE_HTTP_IO_TIMEOUT_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Open connections before new ones get 503 (default 4096)",
+      "name": "LAKE_HTTP_MAX_CONNECTIONS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "A request's headers' total size; larger is 431 (default 1048576)",
+      "name": "LAKE_HTTP_MAX_HEADER_BYTES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Long polls and pulls at once (default 512)",
+      "name": "LAKE_HTTP_MAX_LONG_REQUESTS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Long polls and pulls at once per caller (default 64)",
+      "name": "LAKE_HTTP_MAX_LONG_REQUESTS_PER_CALLER",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Bytes per second a client must move while it holds a worker (default 1024)",
+      "name": "LAKE_HTTP_MIN_TRANSFER_RATE",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Requests handled at once (default 32)",
+      "name": "LAKE_HTTP_WORKERS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "A request's wait for a worker before 503 (default 10)",
+      "name": "LAKE_HTTP_WORKER_WAIT_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Base64 Ed25519 seed of Lake's TAAP identity; generated when absent",
+      "name": "LAKE_IDENTITY_SEED",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Key-encryption key for the generated identity and wrapped keys",
+      "name": "LAKE_INSTANCE_KEK",
+      "required": true,
+      "secret": true
+    },
+    {
+      "description": "Lake's in-cluster Service URL for agents and builds",
+      "name": "LAKE_INTERNAL_URL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Bearer of the environment logs source",
+      "name": "LAKE_LOGS_TOKEN",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Enables environment logs (Loki)",
+      "name": "LAKE_LOGS_URL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Transparency log aggregator; required in anchored mode",
+      "name": "LAKE_LOG_AGGREGATOR",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Transparency log mode: air-gapped, witnessed (default) or anchored",
+      "name": "LAKE_LOG_MODE",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "JSON witness endpoint/public_key records",
+      "name": "LAKE_LOG_WITNESSES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The witnesses' quorum",
+      "name": "LAKE_LOG_WITNESS_THRESHOLD",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Caps streamed OCI blobs (default 4294967296)",
+      "name": "LAKE_MAX_REGISTRY_BLOB_BYTES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "1 lets MCP connections reach private addresses (development only)",
+      "name": "LAKE_MCP_ALLOW_PRIVATE_ADDRESSES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The image a stdio MCP connection's App runs",
+      "name": "LAKE_MCP_RUNNER_IMAGE",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The image workspace methodologies are built from and run with",
+      "name": "LAKE_METHODOLOGY_RUNTIME_IMAGE",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "JSON model/provider allowlist of the model gateway; [] disables calls",
+      "name": "LAKE_MODEL_GATEWAY_MODELS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The model gateway's OpenAI-compatible provider",
+      "name": "LAKE_MODEL_PROVIDER_URL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "1 lets OIDC discovery reach private addresses",
+      "name": "LAKE_OIDC_ALLOW_PRIVATE_ADDRESSES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "OpenAI key for speech-to-text and the model gateway",
+      "name": "LAKE_OPENAI_API_KEY",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Bearer of the operator's Zetta; set with LAKE_OPERATOR_ZETTA_URL",
+      "name": "LAKE_OPERATOR_ZETTA_TOKEN",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Enables platform sync; needs LAKE_OPERATOR_ZETTA_TOKEN and LAKE_PUBLIC_HOST",
+      "name": "LAKE_OPERATOR_ZETTA_URL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Subscription expiry grace (default 259200)",
+      "name": "LAKE_ORDER_ENTITLEMENT_GRACE_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "JSON merged over the apex order sheet's default offers",
+      "name": "LAKE_ORDER_SHEET",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Platform poll interval (default 15)",
+      "name": "LAKE_PLATFORM_SYNC_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Price of a compute second, in millionths",
+      "name": "LAKE_PRICE_COMPUTE_SECOND_MICROS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Price currency (default USD)",
+      "name": "LAKE_PRICE_CURRENCY",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Price of a GiB-hour of storage, in millionths",
+      "name": "LAKE_PRICE_STORAGE_GIB_HOUR_MICROS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Price of a GiB transferred in, in millionths",
+      "name": "LAKE_PRICE_TRANSFER_IN_GIB_MICROS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Price of a GiB transferred out, in millionths",
+      "name": "LAKE_PRICE_TRANSFER_OUT_GIB_MICROS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Lake's public host name; tags every Stripe object Lake creates",
+      "name": "LAKE_PUBLIC_HOST",
+      "required": true,
+      "secret": false
+    },
+    {
+      "description": "This Lake's region",
+      "name": "LAKE_REGION",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The deployment's regions as JSON [{name,label,host,latitude,longitude}]",
+      "name": "LAKE_REGIONS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "This Lake's region label",
+      "name": "LAKE_REGION_LABEL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "1 lets replication reach private addresses (development and tests)",
+      "name": "LAKE_REPLICATION_ALLOW_PRIVATE_ADDRESSES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Peer Lake origins replication may pull from, comma separated",
+      "name": "LAKE_REPLICATION_PEERS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The longest one replication pull may take (default 600)",
+      "name": "LAKE_REPLICATION_TIMEOUT_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Bearer presented to peer Lakes; never the admin token",
+      "name": "LAKE_REPLICATION_TOKEN",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Orama's Resend key for order email",
+      "name": "LAKE_RESEND_API_KEY",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Order email sender",
+      "name": "LAKE_RESEND_FROM",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The cluster delivery key user secrets are sealed to",
+      "name": "LAKE_SEALING_PUBLIC_KEY",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Bound on the workspace search indexes kept loaded (default 268435456)",
+      "name": "LAKE_SEARCH_MEMORY_BYTES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Caps live services per account (default 0: no limit)",
+      "name": "LAKE_SERVICES_PER_CUSTOMER",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Enables managed services and workspaces (the operator's mount)",
+      "name": "LAKE_SERVICE_DIR",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Storage quota per account",
+      "name": "LAKE_STORAGE_QUOTA_BYTES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "1 lets a store's bucket endpoint be a private address (development)",
+      "name": "LAKE_STORE_ALLOW_PRIVATE_ADDRESSES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Wait for a predecessor to release the store root (default 90)",
+      "name": "LAKE_STORE_OWNER_WAIT_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Customer and instance data root (the store volume)",
+      "name": "LAKE_STORE_ROOT",
+      "required": true,
+      "secret": false
+    },
+    {
+      "description": "Stripe secret key; with LAKE_STRIPE_WEBHOOK_SECRET, invoices are paid online",
+      "name": "LAKE_STRIPE_SECRET_KEY",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Signing secret of the Stripe webhook endpoint",
+      "name": "LAKE_STRIPE_WEBHOOK_SECRET",
+      "required": false,
+      "secret": true
+    },
+    {
+      "description": "Where orders go (default support@orama.com)",
+      "name": "LAKE_SUPPORT_EMAIL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The speech model (default gpt-4o-transcribe)",
+      "name": "LAKE_TRANSCRIBE_MODEL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Timestamp renewal interval (default 31536000)",
+      "name": "LAKE_TSA_RENEWAL_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Renew a timestamp this long before it expires (default 2592000)",
+      "name": "LAKE_TSA_RENEW_BEFORE_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "PEM trust roots for timestamp tokens",
+      "name": "LAKE_TSA_TRUST_CERT",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "RFC 3161 timestamp authority",
+      "name": "LAKE_TSA_URL",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The tunnel client downloads (default /usr/share/lake/tunnel-clients)",
+      "name": "LAKE_TUNNEL_CLIENTS_DIR",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "1 lets webhooks reach private addresses (development)",
+      "name": "LAKE_WEBHOOK_ALLOW_PRIVATE_ADDRESSES",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "A workspace store's bucket lease (default 30)",
+      "name": "LAKE_WORKSPACE_STORE_LEASE_SECONDS",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "false opens workspace stores on first use only",
+      "name": "LAKE_WORKSPACE_STORE_PREOPEN",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Where liquid keeps Lake's local signing identity (default $HOME/.liquid)",
+      "name": "LIQUID_HOME",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "Trust roots for outbound TLS",
+      "name": "SSL_CERT_FILE",
+      "required": false,
+      "secret": false
+    },
+    {
+      "description": "The Zettas Lake may reach; unset, only Zettas on loopback",
+      "name": "ZETTA_EGRESS_ALLOW",
+      "required": true,
+      "secret": false
+    }
+  ],
+  "manifest_version": 1,
+  "migrate": {
+    "args": [
+      "migrate"
+    ],
+    "database_env": "LAKE_CONTROL_DB_URI",
+    "exit_codes": {
+      "0": "applied, or already current",
+      "1": "a statement failed; the transaction rolled back and nothing changed",
+      "2": "bad arguments or no database URI",
+      "3": "the database could not be reached within the wait"
+    },
+    "lock_key": 30506411375815015,
+    "wait_flag": "--wait-seconds"
+  },
+  "name": "lake",
+  "revision": "unknown",
+  "schema": {
+    "guard_table": "account_balances_guard",
+    "guard_tables": [
+      "identity_core_guard",
+      "identity_mfa_guard",
+      "secrets_guard",
+      "sso_federation_guard",
+      "offline_recovery_guard",
+      "forge_guard",
+      "pki_guard",
+      "metering_guard",
+      "drive_guard",
+      "auth_app_guard",
+      "agent_guard",
+      "settings_guard",
+      "platform_guard",
+      "identity_exit_guard",
+      "token_attenuation_guard",
+      "session_lookup_guard",
+      "custodial_identity_guard",
+      "services_guard",
+      "service_catalog_guard",
+      "sqlite_services_guard",
+      "analytics_services_guard",
+      "stores_guard",
+      "credentials_guard",
+      "agents_guard",
+      "agent_cron_guard",
+      "agent_tasks_guard",
+      "agent_task_events_guard",
+      "web_apps_guard",
+      "web_apps_operator_contract_guard",
+      "builds_guard",
+      "streams_guard",
+      "workspace_data_plane_guard",
+      "workspaces_guard",
+      "repository_names_guard",
+      "app_forward_auth_guard",
+      "agent_task_leases_guard",
+      "agent_launch_workspaces_guard",
+      "store_workspaces_guard",
+      "ask_message_workspaces_guard",
+      "opportunity_workspaces_guard",
+      "stream_owner_workspaces_guard",
+      "drive_share_link_workspaces_guard",
+      "application_webhook_workspaces_guard",
+      "drop_ask_messages_guard",
+      "repository_workspaces_guard",
+      "metering_workspaces_guard",
+      "forge_record_workspaces_guard",
+      "application_user_workspaces_guard",
+      "application_credential_workspaces_guard",
+      "secret_workspaces_guard",
+      "secret_lease_workspaces_guard",
+      "application_settings_workspaces_guard",
+      "platform_workspaces_guard",
+      "application_authorization_code_workspaces_guard",
+      "agent_task_workspaces_guard",
+      "audit_workspaces_guard",
+      "repository_records_guard",
+      "workspace_deletions_guard",
+      "assign_unrouted_repositories_guard",
+      "workspace_store_guard",
+      "oci_repository_routes_guard",
+      "workspace_volumes_guard",
+      "drop_moved_tables_guard",
+      "secret_mount_owners_guard",
+      "usage_limits_guard",
+      "billing_guard",
+      "payment_provider_guard",
+      "workload_resources_guard",
+      "organization_deletion_guard",
+      "metered_jobs_guard",
+      "methodology_runs_guard",
+      "mcp_connection_dispatch_guard",
+      "store_mounts_guard",
+      "app_transfer_guard",
+      "methodology_run_queue_guard",
+      "methodology_deployments_guard",
+      "network_guard",
+      "identity_links_guard",
+      "clerk_webhooks_guard",
+      "repository_liquid_ids_guard",
+      "cloud_orders_guard",
+      "billing_contacts_guard",
+      "account_deletion_guard",
+      "saml_sign_in_guard",
+      "root_recovery_participants_guard",
+      "clerk_revocation_guard",
+      "model_token_prices_guard",
+      "email_recovery_limits_guard",
+      "cloud_order_entitlements_guard",
+      "authentication_attempts_guard",
+      "account_balances_guard"
+    ],
+    "latest_migration": "0099_account_balances",
+    "migrations": [
+      "0001_identity_and_customers",
+      "0002_repositories",
+      "0004_organizations_policy",
+      "0005_audit",
+      "0006_repository_lifecycle",
+      "0007_identity_core",
+      "0008_mfa_recovery",
+      "0009_secrets",
+      "0010_sso_federation",
+      "0011_offline_recovery",
+      "0012_forge_export_import",
+      "0013_pki",
+      "0014_metering",
+      "0015_drive",
+      "0016_auth_apps",
+      "0017_agent_sessions",
+      "0018_settings_surface",
+      "0019_platform",
+      "0020_identity_exit",
+      "0021_token_attenuation",
+      "0022_session_lookup",
+      "0023_custodial_identities",
+      "0024_services",
+      "0025_service_catalog",
+      "0026_sqlite_services",
+      "0027_analytics_services",
+      "0028_stores",
+      "0029_non_expiring_credentials",
+      "0030_agent_launches",
+      "0031_agent_cron_schedules",
+      "0032_agent_tasks",
+      "0033_agent_task_events",
+      "0034_web_apps",
+      "0035_web_apps_operator_contract",
+      "0036_builds",
+      "0037_streams",
+      "0038_workspace_data_plane",
+      "0039_workspaces",
+      "0040_active_repository_names",
+      "0041_app_forward_auth",
+      "0042_agent_task_leases",
+      "0043_agent_launch_workspaces",
+      "0044_store_workspaces",
+      "0045_ask_message_workspaces",
+      "0046_opportunity_workspaces",
+      "0047_stream_owner_workspaces",
+      "0048_drive_share_link_workspaces",
+      "0049_application_webhook_workspaces",
+      "0050_drop_ask_messages",
+      "0051_repository_workspaces",
+      "0053_metering_workspaces",
+      "0054_forge_record_workspaces",
+      "0055_application_user_workspaces",
+      "0056_application_credential_workspaces",
+      "0057_secret_workspaces",
+      "0058_secret_lease_workspaces",
+      "0059_application_settings_workspaces",
+      "0060_platform_workspaces",
+      "0061_application_authorization_code_workspaces",
+      "0062_agent_task_workspaces",
+      "0063_audit_workspaces",
+      "0064_repository_records",
+      "0065_workspace_deletions",
+      "0066_assign_unrouted_repositories",
+      "0067_workspace_store",
+      "0068_oci_repository_routes",
+      "0069_workspace_volumes",
+      "0070_drop_moved_tables",
+      "0071_secret_mount_owners",
+      "0072_usage_limits",
+      "0073_billing",
+      "0074_payment_provider",
+      "0075_workload_resources",
+      "0076_organization_deletion",
+      "0077_metered_jobs",
+      "0078_methodology_runs",
+      "0079_mcp_connection_dispatch",
+      "0080_store_mounts",
+      "0081_app_transfer",
+      "0082_methodology_run_queue",
+      "0083_methodology_deployments",
+      "0084_network",
+      "0085_network_tunnel_ca",
+      "0086_identity_links",
+      "0087_clerk_webhooks",
+      "0088_repository_liquid_ids",
+      "0089_cloud_orders",
+      "0090_billing_contacts",
+      "0091_account_deletion",
+      "0092_saml_sign_in",
+      "0093_root_recovery_participants",
+      "0094_clerk_revocation",
+      "0095_model_token_prices",
+      "0096_email_recovery_limits",
+      "0097_cloud_order_entitlements",
+      "0098_authentication_attempts",
+      "0099_account_balances"
+    ],
+    "sha256": "56dd30b4d9c9fb90b40b0c1b699b11e328238c993310c379d460c00abacd8637",
+    "version": "sha256:56dd30b4d9c9"
+  },
+  "stripe": {
+    "products": [
+      {
+        "id": "lake_usage",
+        "name": "Lake usage"
+      },
+      {
+        "id": "lake_private_warehouse",
+        "name": "Lake Private Warehouse"
+      },
+      {
+        "id": "lake_dedicated_cluster",
+        "name": "Lake Dedicated Cluster"
+      }
+    ],
+    "webhook_events": [
+      "checkout.session.async_payment_failed",
+      "checkout.session.async_payment_succeeded",
+      "checkout.session.completed",
+      "checkout.session.expired",
+      "customer.subscription.created",
+      "customer.subscription.deleted",
+      "customer.subscription.paused",
+      "customer.subscription.resumed",
+      "customer.subscription.updated",
+      "invoice.marked_uncollectible",
+      "invoice.paid",
+      "invoice.payment_action_required",
+      "invoice.payment_failed",
+      "invoice.updated",
+      "invoice.voided",
+      "payment_intent.payment_failed",
+      "payment_intent.succeeded",
+      "setup_intent.succeeded"
+    ]
+  },
+  "version": "0.6.1"
+}

@@ -28,8 +28,11 @@ type LakeAppRow struct {
 	BindingsJSON, EnvJSON, SecretEnvRefs                           string
 	Desired                                                        string
 	Generation                                                     int64
-	Status                                                         LakeAppRowStatus
-	TokenHashes                                                    *oramav1alpha1.LakeAppTokenHashes
+	// RestartGeneration is apps.restart_generation (lake#1228): 0 when never restarted, or when
+	// Lake's schema predates 0104_app_restarts.
+	RestartGeneration int64
+	Status            LakeAppRowStatus
+	TokenHashes       *oramav1alpha1.LakeAppTokenHashes
 }
 
 type LakeAppRowStatus struct {
@@ -75,7 +78,8 @@ const listAppsSQL = `SELECT a.id::text, a.customer_id::text, a.workspace_id::tex
  COALESCE(a.bindings_json, '{}'::jsonb)::text, COALESCE(a.env_json, '{}'::jsonb)::text,
  COALESCE(a.secret_env_refs, '{}'::jsonb)::text, a.desired, a.generation,
  COALESCE(a.phase, 'Pending'), COALESCE(a.url, ''), COALESCE(a.ready, false), COALESCE(a.message, ''),
- COALESCE(a.observed_generation, 0), COALESCE(a.token_hashes_json, 'null'::jsonb)::text
+ COALESCE(a.observed_generation, 0), COALESCE(a.token_hashes_json, 'null'::jsonb)::text,
+ COALESCE((to_jsonb(a)->>'restart_generation')::bigint, 0)
  FROM apps a
  JOIN workspaces w ON w.id = a.workspace_id
  ORDER BY a.id`
@@ -95,7 +99,7 @@ func (s *pgxAppsStore) ListApps(ctx context.Context) ([]LakeAppRow, error) {
 			&app.Image, &app.Framework, &app.Port, &app.Replicas, &app.Host, &app.Auth,
 			&app.BindingsJSON, &app.EnvJSON, &app.SecretEnvRefs, &app.Desired, &app.Generation,
 			&app.Status.Phase, &app.Status.URL, &app.Status.Ready, &app.Status.Message,
-			&app.Status.ObservedGeneration, &hashes)
+			&app.Status.ObservedGeneration, &hashes, &app.RestartGeneration)
 		if err != nil {
 			return nil, errors.New("cannot decode apps row")
 		}

@@ -49,7 +49,7 @@ const (
 	agentPortName        = "http"
 	agentHealthPath      = "/healthz"
 	agentRunAsUser       = int64(10001)
-	agentDefaultModel    = "gpt-5.5"
+	agentDefaultModel    = "gpt-6.1-sol"
 	agentDefaultDeadline = int64(3600)
 	agentJobTTLSeconds   = int32(3600)
 	agentTempVolume      = "tmp"

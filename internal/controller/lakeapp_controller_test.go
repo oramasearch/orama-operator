@@ -208,8 +208,8 @@ func TestLakeAppEnvtestLifecycle(t *testing.T) {
 	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: lakeAppBindingsSecretName}, &binding); err != nil {
 		t.Fatal(err)
 	}
-	if string(binding.Data["zetta"]) != "workspace-token-2" {
-		t.Fatalf("rotated binding = %q", binding.Data["zetta"])
+	if token := lakeAppZettaBindingToken(t, binding.Data["zetta"]); token != "workspace-token-2" {
+		t.Fatalf("rotated binding token = %q", token)
 	}
 
 	updateLakeAppRevision(t, ctx, kubeClient, key, testLakeAppRevisionB)
@@ -374,7 +374,7 @@ func assertLakeAppCreated(t *testing.T, ctx context.Context, kubeClient client.C
 	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: lakeAppBindingsSecretName}, &binding); err != nil {
 		t.Fatal(err)
 	}
-	if len(binding.Data) != 2 || string(binding.Data["zetta"]) != "workspace-token-1" || len(binding.Data[testLakeAppServiceID]) == 0 {
+	if len(binding.Data) != 2 || lakeAppZettaBindingToken(t, binding.Data["zetta"]) != "workspace-token-1" || len(binding.Data[testLakeAppServiceID]) == 0 {
 		t.Fatalf("binding delivery = %#v", binding.Data)
 	}
 	if _, leaked := binding.Data["not-requested"]; leaked {

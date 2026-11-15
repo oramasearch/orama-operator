@@ -1,0 +1,51 @@
+# Pixie's release (#455), on the managing cluster: the one build every hub and agent runs
+# (docs/infrastructure/observability.md, rollout steps 1 and 4). Until it exists every
+# ObservabilityHub and ObservabilityAgent stays Pending.
+#
+# Built on 2026-10-31 from branch `orama` of oramasearch/pixie at ab00bae32f6b: the vendored commit
+# below plus hack/pixie-patches/0001-0004, amd64, with Pixie's release flags (-c opt --config=stamp
+# --config=x86_64_sysroot). The upstream dependencies are private mirrors, copied by digest; each
+# digest is the upstream's. Every repository is private (an anonymous lookup answers 404).
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityProvider
+metadata:
+  name: pixie
+spec:
+  type: pixie
+  pixie:
+    commit: 4b445e0b7907c79d034bcb4a227bbaede94d370a
+    vizierVersion: 0.14.16-pre-orama.1
+    cliVersion: 0.8.9-pre-orama.1
+    images:
+      # Built, tagged 0.14.16-pre-orama.1.
+      vizier-pem: docker.io/oramasearch/pixie-vizier-pem_image@sha256:22d7fb42354209f299940378333ce0228f8affdecc3000bee36e09e90745266c
+      vizier-kelvin: docker.io/oramasearch/pixie-vizier-kelvin_image@sha256:dafafd9cb0453acb6f5962d3a9d3cabe103dac2ec3f443f9bc29d5d029f79559
+      vizier-metadata: docker.io/oramasearch/pixie-vizier-metadata_server_image@sha256:1a28c3915786b2e8930f848450da63e3de288f9b72b142e79e731c3a9159fa40
+      vizier-query-broker: docker.io/oramasearch/pixie-vizier-query_broker_server_image@sha256:4baf60aac32f12d907ad229e705f2e8ece8f420c3215a55cbdb5a141897ce853
+      vizier-cloud-connector: docker.io/oramasearch/pixie-vizier-cloud_connector_server_image@sha256:b2c187a938fa930f73e388e15426427162281e37f67cf80f1008d9eeb5b10917
+      # Built, tagged 0.1.10-pre-orama.1.
+      cloud-api: docker.io/oramasearch/pixie-cloud-api_server_image@sha256:328174ef567c37dae5bb52b8b6331deb49d8e3236ff45d2ea823cbfb9648cf01
+      cloud-artifact-tracker: docker.io/oramasearch/pixie-cloud-artifact_tracker_server_image@sha256:ab67f66c0ca8808ba5ab0a7261355a310e7ad855d401c49b614d45e24ebb1b63
+      cloud-auth: docker.io/oramasearch/pixie-cloud-auth_server_image@sha256:0eb0041043031dfca3ce3f6c977d814e9904fba2870fb1ca32637cf6c854bbfb
+      cloud-config-manager: docker.io/oramasearch/pixie-cloud-config_manager_server_image@sha256:9730cdd28de02172ba45e87b81237ab5c49e65459bba093e5a7e07b4f9d8664a
+      cloud-cron-script: docker.io/oramasearch/pixie-cloud-cron_script_server_image@sha256:845f84b6668bf81e3b79fadf959f6e0fc97dd6e1eefcafd56bbb2c4e1cb908e6
+      cloud-indexer: docker.io/oramasearch/pixie-cloud-indexer_server_image@sha256:5e46cf90bef16c99e807386556271a54f1014bcaf726b42e6c744babf5d7bea8
+      cloud-plugin: docker.io/oramasearch/pixie-cloud-plugin_server_image@sha256:50b4a2b5e1bec22d211f484a81747ab9a74de0b6fc8981d7e6a15b1bfd53f572
+      cloud-profile: docker.io/oramasearch/pixie-cloud-profile_server_image@sha256:5b10d1e72ed52bfd89f0264bdc83d8d219cd243116fc56b9ed0e017544529c92
+      cloud-project-manager: docker.io/oramasearch/pixie-cloud-project_manager_server_image@sha256:1c329147a4ac2ad8eedca92fbfa65941bb3c681767e2ce3b9fadd7ca95d4e21f
+      cloud-proxy: docker.io/oramasearch/pixie-cloud-proxy_server_image@sha256:f0f403f2c80c2661d0f668ccf7edfaca004b43e08f01ff300c07e5f4df67fdb6
+      cloud-scriptmgr: docker.io/oramasearch/pixie-cloud-scriptmgr_server_image@sha256:c84009d4b0f492681f74e0601ebf89e3568c266bd7d064044b4f8bd9135cbb08
+      cloud-vzconn: docker.io/oramasearch/pixie-cloud-vzconn_server_image@sha256:4df530cc3ccb1e5e7f0d959f5b42327f58feb0cb891d40c056b9309d764035eb
+      cloud-vzmgr: docker.io/oramasearch/pixie-cloud-vzmgr_server_image@sha256:9f30c6194e5790ffa2a39a66956cd86502a442772ee4cff8f41ee7575ebabc26
+      # hack/pixie-script-bundle on the platform-nginx-unprivileged mirror, serving the bundle of
+      # 83 scripts that this build's px CLI made; tagged 0.1.10-pre-orama.1.
+      script-bundle: docker.io/oramasearch/pixie-script-bundle@sha256:f22ec1ca50417b900e581455a899685775cd1785fb7769db674cab60f7bf15b6
+      # Mirrors.
+      nats: docker.io/oramasearch/pixie-nats@sha256:ac7228464fbc7154e91c9a00cba85b5da1df9a3ded6c784cdd6009cece85a1e3              # ghcr.io/pixie-io/nats:2.9.25-scratch-pl1
+      curl: docker.io/oramasearch/pixie-curl@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922              # ghcr.io/pixie-io/pixie-oss-pixie-dev-public-curl:8.15.0
+      postgres: docker.io/oramasearch/pixie-postgres:16.15@sha256:34cd4159d07b3410a1b29da35072e2e927a0905e717a61afa3814624a2e8859a  # ghcr.io/cloudnative-pg/postgresql:16.15; CNPG reads the version from the tag
+      envoy: docker.io/oramasearch/pixie-envoy@sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9            # envoyproxy/envoy:v1.34.2
+      hydra: docker.io/oramasearch/pixie-hydra@sha256:61771c706934e1ffd66f86700a28a294ce4ed150fbf30cc131710924271a5871            # oryd/hydra:v1.9.2-sqlite
+      hydra-cli: docker.io/oramasearch/pixie-hydra-cli@sha256:faa6ca02e77e0a08f66bfa7470a5e06d80e6e68c9c35410c65a4ea7b501aea61    # oryd/hydra:v1.9.2-alpine
+      kratos: docker.io/oramasearch/pixie-kratos@sha256:fdcfac3da3b64e619af553451607e1ab00160e59860bb19ec145cdc6f6f9c41d          # oryd/kratos:v0.10.1
+      opensearch: docker.io/oramasearch/pixie-opensearch@sha256:be67c71b8d0e5edf1e9825145501c0136c3b8221206e1ce782ce17b04d0280b5  # opensearchproject/opensearch:2.19.6

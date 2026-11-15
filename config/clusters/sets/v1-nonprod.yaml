@@ -31,59 +31,10 @@ spec:
       # the writer accepts exactly these.
       jwtIssuer: https://app-dev.oramadev.net
   deletionPolicy: Retain
-  # Prod 1 teams copied into the members (operator#654; config/clusters/README.md, "Copying a Prod 1
-  # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
-  # namespace, with targetRef set to the member. A change to this file alone is merged and applied by Juan's side
-  # (orama-bridge decisions 20 October, 3). The four Secrets below must exist in orama-system on the managing cluster first.
-  migrations:
-  # The #149 pilot (orama-bridge#206): one team, one project, 330 documents, copied into v1-dev,
-  # verified, then removed by deleting this entry (removeOnDelete runs the tool's remove-target).
-  # Copied again by orama-bridge#222 on a new run volume: the first copy's reader storage broke
-  # (orama-bridge#219) and it was removed on 2026-10-21. runID and the receipt are unchanged.
-  #
-  # REFUSED by the operator since orama-operator#787 (LSR-038): the three v1-nonprod-prod1-* Secrets
-  # are named by spec.source, so they are Prod 1's credentials, which are production, and a Prod 1
-  # credential is never copied into a nonprod member. The set reports this migration Blocked and does
-  # not update it; what was already copied into v1-dev stays until this entry is removed. A nonprod
-  # rehearsal runs against a source standing in for Prod 1 whose Secrets carry
-  # orama.cloud/purpose=nonprod.
-  - name: team-4e01bc49
-    member: v1-dev
-    secrets:                                # copied into v1-dev first, deleted once the migration is gone
-    - name: v1-nonprod-prod1-db-ro          # url: the SELECT-only PlanetScale URL
-      namespace: orama-system
-    - name: v1-nonprod-prod1-master-key     # key: Prod 1's engine master key
-      namespace: orama-system
-    - name: v1-nonprod-prod1-settings-ssm   # access_key_id, secret_access_key: the SSM document's IAM key
-      namespace: orama-system
-    - name: team-4e01bc49-evidence          # isolation.json: the reviewed isolation receipt
-      namespace: orama-system
-    spec:                                   # an OramaCloudV1Migration's spec, without targetRef
-      teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
-      projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
-      runID: pilot-1
-      step: catchUp                         # the new copy (#222): seed Succeeded 2026-10-21; the last copy step
-      apply: true                           # writes v1-dev
-      evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:bbecb1d209ce107c45af404298973195acecee62c81db418cfab0cfa3268be97  # dev-28c5192c
-      pullSecretName: oramasearch-dockerhub
-      removeOnDelete: true
-      # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
-      # names: Prod 1's writer build and its control DB catalog.
-      source:
-        databaseSecretRef: {name: v1-nonprod-prod1-db-ro, key: url}
-        databaseHost: aws-us-east-2-1.pg.psdb.cloud
-        writerURL: https://writer.bovista.cluster.oramacore.com
-        readerURL: https://collections.orama.com
-        masterKeySecretRef: {name: v1-nonprod-prod1-master-key, key: key}
-        deploymentRevision: oramacore@1.2.39+890a7e9761dfec61ea8567dcab92b4df737318a2
-        schemaRevision: pg17.11-drizzle-push-catalog-sha256:d995b5cb539d
-        settings:
-          region: us-east-2
-          instanceID: i-0b9478719a8f91e2b
-          document: OramaMigrationReadIndexInfo
-          dataDir: /opt/oramacore/.data/writer
-          credentialsSecretRef: {name: v1-nonprod-prod1-settings-ssm}
+  # No Prod 1 migrations or migration-only Secret references remain. The pilot was removed
+  # on 2026-10-25; its source Secrets in managing-cluster orama-system await Steve (#979).
+  # A future nonprod rehearsal needs fixture credentials labelled orama.cloud/purpose=nonprod.
+  migrations: []
   # Nonprod's own Secrets: none of these is one a production set copies (orama-operator#789). The
   # operator refuses to copy a production set's Secret into a nonprod member, and
   # TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
@@ -193,14 +144,17 @@ spec:
       # production will run (orama-bridge decisions 2026-10-23, 3). Components not listed run the
       # v1-sandbox tag, because nothing newer exists for them.
       overrides:
-        # The Clerk dashboard from dashboard dev 1cfa443a: the Cloud v1 security fixes (dashboard#187),
-        # R2 upload signing (dashboard#186), the new-device sign-in code (dashboard#190) and custom system
-        # prompts read from the writer (dashboard#192); built with orama-cloud-v1-bridge
-        # build/images/dashboard/public.env.v1-dev, recorded in orama-cloud-v1-bridge#21.
-        dashboard: oramasearch/dashboard:v1-dev-1cfa443a-cv1@sha256:2444b592823e20566409f0395dcf3e94170c56d888af05ee1856d65632ed56da
-        # The combined OramaCore engine from oramacore-private develop 91a1b086: caca2a59 (v1.2.39 with
-        # oramacore#340, #341 and #343) plus the security fixes LSR-063, -064, -149 to -155, -234 and -235.
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-91a1b086@sha256:c55d42b1dbf1d057ca14001bf3fedf883ab06573386fd87c8e4557d7e5aed05a
+        # The Clerk dashboard from dashboard dev 6fb46b61: everything of 79abacb3 (the Cloud v1 security
+        # fixes, R2 upload signing, the new-device sign-in code, custom system prompts, GitHub sign-in hidden
+        # until #245), plus no Airbyte in the index GC or the data-source picker (dashboard#196, #197).
+        # Built with orama-cloud-v1-bridge build/images/dashboard/public.env.v1-dev, recorded in
+        # orama-cloud-v1-bridge#26. Sentry shares the Orama project with environment v1-dev and release
+        # dashboard@6fb46b61439b3c701b29d84da56a6d18e2de3dc4.
+        dashboard: oramasearch/dashboard:v1-dev-6fb46b61@sha256:d9650d4e42ef66f083c6703432e6a3104fb7461d9d893050b1d1fdb208843ec8
+        # Engine develop b6ee20fb (private #18-20): CPU BGE batches of 32, E5 eight,
+        # CPU arena disabled, and the configured embedding threads reach ONNX Runtime.
+        # Ordered deletion, proven legacy replay recovery, and V1 checkpoint compatibility (#262).
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-b6ee20fb@sha256:b34b18676a7a050829a354291f32681a524c11d13e86c4ad7370aeb6e5f30b48
         # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
         hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
         # Services from each repository's dev tip with the security fixes, recorded in

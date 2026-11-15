@@ -124,6 +124,10 @@ type ManagedSetStatus struct {
 	// MemberStatuses reports each member, in the order the set lists them.
 	// +optional
 	MemberStatuses []SetMemberStatus `json:"memberStatuses,omitempty"`
+	// Versions is each member and what it runs, its image tag where the version is an image
+	// ("dev=dev-aa9fefd5, testing=v0.7.0"), for the list views (kubectl get, Lens).
+	// +optional
+	Versions string `json:"versions,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`
 	// +optional
@@ -142,6 +146,7 @@ type ManagedSetStatus struct {
 //+kubebuilder:printcolumn:name="Members",type=integer,JSONPath=`.status.members`
 //+kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyMembers`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Versions",type=string,JSONPath=`.status.versions`
 //+kubebuilder:printcolumn:name="E2E",type=string,JSONPath=`.status.e2eSummary`
 //+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 
@@ -156,8 +161,10 @@ type LakeSet struct {
 	Status LakeSetStatus `json:"status,omitempty"`
 }
 
-// LakeSetSpec is a ManagedSetSpec plus the end-to-end runs against its members.
+// LakeSetSpec is a ManagedSetSpec plus the end-to-end runs and the restore rehearsals against its
+// members.
 // +kubebuilder:validation:XValidation:rule="!has(self.e2eTests) || self.e2eTests.all(t, self.clusters.exists_one(c, c.name == t.member))",message="every e2eTests[].member must name exactly one clusters[].name"
+// +kubebuilder:validation:XValidation:rule="!has(self.restoreRehearsals) || self.restoreRehearsals.all(t, self.clusters.exists_one(c, c.name == t.member))",message="every restoreRehearsals[].member must name exactly one clusters[].name"
 type LakeSetSpec struct {
 	ManagedSetSpec `json:",inline"`
 	// E2ETests run lake's end-to-end suite against members of this set: each becomes a
@@ -169,6 +176,58 @@ type LakeSetSpec struct {
 	// +listMapKey=name
 	// +kubebuilder:validation:MaxItems=16
 	E2ETests []SetE2ETest `json:"e2eTests,omitempty"`
+	// RestoreRehearsals rehearse a restore of members' data into throwaway resources: each becomes
+	// a LakeRestoreRehearsal named Name on its member's cluster, with spec.lakeRef set to the
+	// member's Lake. A rehearsal never touches the live data (docs/lake/restore-rehearsals.md). A
+	// rehearsal's spec cannot change once applied: to run one again, add an entry under a new name.
+	// Removing the entry deletes the rehearsal there, and anything of it still running.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=16
+	RestoreRehearsals []SetRestoreRehearsal `json:"restoreRehearsals,omitempty"`
+}
+
+// SetRestoreRehearsal is one restore rehearsal against one member.
+type SetRestoreRehearsal struct {
+	// Name is the LakeRestoreRehearsal's name on the member's cluster. LakeRestoreRehearsal is
+	// cluster-scoped, so it is unique on that cluster.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+	// Member names the set member (SetMember.Name) whose Lake is rehearsed.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=40
+	Member string `json:"member"`
+	// Spec is the LakeRestoreRehearsal's spec without lakeRef, which the set fills in: service
+	// (postgres or store), operation, from, targetImage.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Spec apiextensionsv1.JSON `json:"spec"`
+}
+
+// SetRestoreRehearsalStatus is one restore rehearsal as its member's cluster reports it.
+type SetRestoreRehearsalStatus struct {
+	Name   string `json:"name"`
+	Member string `json:"member"`
+	// Cluster is where it was applied.
+	// +optional
+	Cluster string `json:"cluster,omitempty"`
+	// Phase is the LakeRestoreRehearsal's own phase (Pending, Running, Succeeded, Failed),
+	// Pending while the set waits to apply it, Blocked when the set refuses to apply it, or
+	// Removing while it is being deleted. Message says why.
+	// +optional
+	Phase string `json:"phase,omitempty"`
+	// +optional
+	Message string `json:"message,omitempty"`
+	// Selected is the CNPG Backup or store VolumeSnapshot the rehearsal restored.
+	// +optional
+	Selected string `json:"selected,omitempty"`
+	// Evidence is what the rehearsal's verifier reported.
+	// +optional
+	Evidence string `json:"evidence,omitempty"`
+	// CompletedAt is when the rehearsal finished on its cluster.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 }
 
 // SetE2ETest is one end-to-end run against one member.
@@ -234,6 +293,10 @@ type LakeSetStatus struct {
 	// Empty when the set declares none.
 	// +optional
 	E2ESummary string `json:"e2eSummary,omitempty"`
+	// RestoreRehearsals reports each declared rehearsal in the order the set lists them, then
+	// those still being removed. They do not change the set's phase.
+	// +optional
+	RestoreRehearsals []SetRestoreRehearsalStatus `json:"restoreRehearsals,omitempty"`
 }
 
 //+kubebuilder:object:root=true

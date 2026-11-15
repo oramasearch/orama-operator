@@ -9,14 +9,11 @@
 # an object merges field by field, a list replaces the template's list), so a member cannot remove a
 # template field. The template holds only what both members share; each member carries the rest.
 #
-# NOT READY FOR CUTOVER. Applying this file needs Steve's explicit consent. Since 2026-10-24 it brings
-# v1-eu up on its production names under orama.ing, production's root domain (Juan, orama-bridge#244),
-# for the end-to-end test there, with no customer data copied and every cron and import suspended.
-# The items under "Blocked" below must be closed before the cutover, not before that test.
-# Apply it only once orama-production-cluster-02 runs an operator with orama-operator#920: an older CRD
-# drops storage.approveDataDeletion, and v1-eu's sandbox volumes would stay on Standard SSD.
-# Juan chose to leave the live sandbox-shaped set unchanged until this production file is ready
-# (#885, 2026-10-23). Both live members are now Ready; standalone auth is tracked in #929.
+# Serves production since 2026-10-27. This cleanup preserves the live cutover hosts, running
+# crons/import, writer resources and engine image observed on 2026-10-30. Applying this file needs
+# Juan's explicit consent for that apply (D8, agreed by Steve on 2026-10-25). Before applying,
+# recheck every removed migration is inactive with removeOnDelete false/unset and archive its
+# required run-volume evidence. The failed team-aee7dc1a catch-up remains declared below.
 #
 # Secrets
 # -------
@@ -153,13 +150,15 @@
 #     APIFY_TOKEN and harvest-master's GITHUB_PAT/GHCR_TOKEN still wait on decisions in #747.
 #   Outside-service decisions still required: Apify (#747), QStash (workers' QSTASH_TOKEN).
 #     Uploads use the stack's owned R2 bucket; copied Prod 1 AWS credentials do not verify readiness.
-#   Dashboard source preparation: RESEND_API_KEY, SLACK_TOKEN, Slack channels,
-#     S3_BUCKET_PREFIX and DATA_SOURCE_REQUEST_URL remain three-byte placeholders (read 2026-10-23).
-#     Scoped Vercel production candidates are staged privately where available, not installed.
+#   Dashboard source: RESEND_API_KEY, SLACK_TOKEN and both Slack channels reuse Prod 1 Vercel
+#     Production values, installed 2026-10-24 (orama-bridge#252, #253). EU invitation email and a
+#     marked signup notification were delivered; Juan permits shared-channel posts before cutover.
+#     S3_BUCKET_PREFIX and DATA_SOURCE_REQUEST_URL were three-byte placeholders on 2026-10-23.
 #     PRIVATE_API_KEY is prepared in this source (64 hex characters); the target import consumer
-#     reads the same dashboard source. Shared email/Slack inputs require isolation review.
+#     reads the same dashboard source.
 #     Clerk keys come from orama-system/clerk-cloud-v1-prod, copied only into v1-eu.
-#     Its standalone Frontend API is clerk.orama.ing; dashboard sign-in stays on app.orama.ing/login.
+#     Its primary domain is app.orama.com since 2026-10-26 (secondary application, Frontend API
+#     clerk.app.orama.com; orama-bridge decisions 25 October, 13), so sign-in works on app.orama.com/login only.
 #     controlDB.stripePrices carries Prod 1's live-mode price IDs (#378).
 #     REDIS_CACHE_URL/TOKEN and NEXT_PUBLIC_APP_URL in envFrom are overridden by operator env entries;
 #     uploads endpoint/bucket/region/access keys likewise use the owned R2 Secret once provisioned.
@@ -216,11 +215,14 @@ spec:
         manageLoadBalancers: false     # no geo load balancer across the members yet
       images:
         overrides:
-          # The production dashboard: dashboard dev 1cfa443a (the new-device sign-in code, dashboard#190;
-          # custom system prompts read from the writer, dashboard#192) built with orama-cloud-v1-bridge
-          # build/images/dashboard/public.env.v1-prod (app.orama.ing, standalone Cloud v1 Clerk);
-          # recorded in orama-cloud-v1-bridge#21.
-          dashboard: oramasearch/dashboard:v1-prod-1cfa443a-cv1@sha256:153dcd1df6c84c4c8697b47b5171335e46bb616a792c560253d94c07fc45a1a4
+          # The production dashboard: dashboard dev 6fb46b61, everything of 79abacb3 (the new-device sign-in
+          # code, custom system prompts read from the writer, GitHub sign-in hidden until #245) plus no Airbyte
+          # in the index GC or the data-source picker (dashboard#196, #197). Built with orama-cloud-v1-bridge
+          # build/images/dashboard/public.env.v1-prod for https://app.orama.com, Cloud v1's Clerk on
+          # clerk.app.orama.com (orama-bridge decisions 25 October, 13); recorded in orama-cloud-v1-bridge#26.
+          # Sentry uses the existing Orama project with environment v1-prod and release
+          # dashboard@6fb46b61439b3c701b29d84da56a6d18e2de3dc4.
+          dashboard: oramasearch/dashboard:v1-prod-6fb46b61@sha256:b5e35ecc17d53ab6768096337d60ba5b04a09d5c019886c9945ab4710d6a374f
       # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
       # default is Standard SSD. v1-eu was created as a sandbox on 10Gi Standard SSD volumes, which
       # cannot change class in place, so each volume approved its replacement once (approveDataDeletion,
@@ -234,6 +236,12 @@ spec:
           writer:
             gpu: false
             host: writer.orama.ing
+            extraHosts: [writer.bovista.cluster.oramacore.com]
+            # The medium profile's 4Gi limit OOM-killed the writer during the cutover's first copy batch
+            # (2026-10-26 02:38Z); the copy writes every cohort team's documents through it.
+            resources:
+              requests: {cpu: "2", memory: 8Gi}
+              limits: {cpu: "6", memory: 16Gi}
             # Prod 1's writer root volume is 500 GiB (snapshot of vol-0b8dcc408f8ea762f, orama-bridge
             # production-changes.md; oramacore-aws terraform/live/prod/main.tf root_volume_size = 500)
             # with 343 GiB free on 2026-10-12 (techops-docs incident-2026-10-12-reader-stalls.md, "Host
@@ -250,7 +258,13 @@ spec:
               - https://writer.orama.ing
           reader:
             host: collections.orama.ing
+            extraHosts: [bovista.cluster.oramacore.com]
             replicas: 2
+            # The medium profile's 2Gi limit is near each reader's use with one team copied; every cohort team's
+            # documents and embeddings land in each reader.
+            resources:
+              requests: {cpu: 250m, memory: 2Gi}
+              limits: {cpu: "1", memory: 8Gi}
             # Each reader's disk is 512Gi, #382's default: about twice the largest Prod 1 reader's use
             # (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3). A larger size grows them (#505).
             storage:
@@ -260,8 +274,11 @@ spec:
         dashboard:
           enabled: true
           host: app.orama.ing
-          # app.orama.com is added as an extra host at the cutover, which decides whether it serves
-          # the dashboard directly at cutover (orama-bridge#246). Until then it stays Prod 1's.
+          # The Ingress also answers app.orama.com, with its own origin certificate (DNS-01 in orama.com,
+          # orama-bridge decisions 25 October, 12). An extra host gets no DNS record: app.orama.com stays
+          # Prod 1's (Vercel) until the cutover runbook's step 8 points it here.
+          extraHosts:
+          - app.orama.com
           envFrom:
           - secretRef: { name: v1-prod-dashboard-env }
           # Cloud v1's own Clerk application, with sign-in on /login. Public runtime values
@@ -271,15 +288,17 @@ spec:
             valueFrom: {secretKeyRef: {name: clerk-cloud-v1-prod, key: secretKey}}
           - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
             valueFrom: {secretKeyRef: {name: clerk-cloud-v1-prod, key: publishableKey}}
-          - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app.orama.ing/auth/complete}
-          - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app.orama.ing/auth/complete}
+          # The image is built for app.orama.com, so the runtime value matches it rather than dashboard.host.
+          - {name: NEXT_PUBLIC_APP_URL, value: https://app.orama.com}
+          - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app.orama.com/auth/complete}
+          - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app.orama.com/auth/complete}
           stripeSecretKeySecretRef:
             name: v1-prod-dashboard-stripe
             key: STRIPE_SECRET_KEY
-          # Prod 1's Vercel crons as CronJobs; the cutover sets suspend: false in this file.
+          # Preserve Prod 1's replacement crons running since the cutover.
           crons:
             enabled: true
-            suspend: true
+            suspend: false
         docs:
           enabled: true
           host: docs.orama.ing
@@ -335,10 +354,10 @@ spec:
             approveDataDeletion: false
         analyticsProcessor:
           enabled: true
-          # The cutover sets suspend: false in this file.
+          # Preserve the analytics import running since the cutover.
           import:
             enabled: true
-            suspend: true
+            suspend: false
         cache:
           enabled: true
           mode: in-cluster
@@ -465,6 +484,11 @@ spec:
       profile: light
   # Retain: a member taken out of the set keeps running; it is never deleted by an edit to this list.
   deletionPolicy: Retain
+  # Prod 1 teams copied into the members (operator#654). Every migration is retired: the 37 Succeeded
+  # entries on 2026-10-31 (#1073), and the failed team-aee7dc1a catch-up with them, when an older
+  # copy of this file was applied by mistake at 03:25Z and its resource was deleted. Declaring it again
+  # would start a new catch-up against a decommissioned Prod 1, so the list stays empty.
+  migrations: []
   secrets:
   - name: oramasearch-dockerhub
     namespace: orama-system
@@ -488,9 +512,9 @@ spec:
       # what was tested there. Both members get them from here. Components not listed (docs, the
       # placeholder workers, oramacore-ai-server) run the v1-sandbox tag, because nothing newer exists.
       overrides:
-        # The combined OramaCore engine from oramacore-private develop 91a1b086: caca2a59 (v1.2.39 with
-        # oramacore#340, #341 and #343) plus the security fixes LSR-063, -064, -149 to -155, -234 and -235.
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-91a1b086@sha256:c55d42b1dbf1d057ca14001bf3fedf883ab06573386fd87c8e4557d7e5aed05a
+        # Preserve the production cutover engine (develop 86bc17ea); the later nonprod
+        # b6ee20fb build has not been rolled to production (orama-bridge#262).
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-86bc17ea@sha256:a45c691bd2f91286761584bdc7bcc1aced923495cd94b676c9218f9d9f3e8820
         # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
         hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
         # Services from each repository's dev tip with the security fixes, recorded in

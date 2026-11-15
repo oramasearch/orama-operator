@@ -36,8 +36,15 @@ https://clerk.com/docs/reference/spec/bapi/latest.json), with the instance's sec
 | Instance type and allowed origins | `GET /v1/instance` | Read |
 | Frontend API host and DNS targets | `GET /v1/domains` (the primary, non-satellite domain) | Read |
 | The `lake` JWT template: `{"aud":"lake","email":"{{user.primary_email_address}}","name":"{{user.full_name}}"}`, lifetime 300 s | `GET` then `POST /v1/jwt_templates`, or `PATCH /v1/jwt_templates/{id}` | Created when missing; updated when the claims or lifetime differ |
-| Allowed origins: `https://<host>`, and `https://<apexHost>` when set | `PATCH /v1/instance` (`allowed_origins`) | **Added, never removed.** Several Lakes may share the instance |
+| Allowed origins: `https://<host>`, `https://<apexHost>` when set, and `https://<spec.customDomain.host>` once its records are verified ([`custom-domains.md`](custom-domains.md)) | `PATCH /v1/instance` (`allowed_origins`) | **Added, never removed.** Several Lakes may share the instance |
 | Webhook endpoint `https://<host>/identity/clerk-webhook` for `user.created`, `user.updated`, `user.deleted`, `session.revoked`, `session.removed` and `session.ended` (the session events since lake v0.5.0, lake#948) | `POST /v1/webhooks/svix_url` (or `POST /v1/webhooks/svix` the first time), then Svix's Endpoint API with the App Portal token the link carries | An existing endpoint at the same URL is adopted, and its events are corrected if they differ. Its signing secret (`whsec_…`) is stored |
+
+On a Lake with `spec.customDomain`, a production instance's DNS targets in the customer's zone
+(the registrable domain of the customer's host) are not written: they are published in
+`status.customDomain.records` with purpose `clerk` for the customer to create, and kept in the owned
+Secret `lake-<name>-clerk` under `customerDNSRecords`. Targets in Orama's zone are written as above.
+A white-labelled Lake normally has its own production instance on the customer's domain; lake's
+`docs/deployment/white-label-sign-in.md` is the runbook.
 
 Endpoint management is Svix's API, not Clerk's, because Clerk delivers webhooks through
 [Svix](https://clerk.com/docs/guides/development/webhooks/overview). Clerk's Backend API only

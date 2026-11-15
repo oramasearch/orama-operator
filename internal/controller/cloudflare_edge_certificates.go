@@ -30,8 +30,6 @@ import (
 const (
 	edgeConditionEdgeCertificateOrders = "EdgeCertificateOrders"
 
-	cfPermissionCertificatesEdit = "Zone > SSL and Certificates > Edit"
-
 	// edgeCertificateAuthority and edgeCertificateValidityDays are the order's settings. Cloudflare
 	// renews a pack before it expires, so the validity only sets how often.
 	edgeCertificateAuthority    = "lets_encrypt"

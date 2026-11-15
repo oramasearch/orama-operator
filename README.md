@@ -51,8 +51,45 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.9.5** (2026-10-24), a patch carrying lake v0.6.0's schema and the prepaid
-balance's Stripe events ([`docs/releases/v0.9.5.md`](docs/releases/v0.9.5.md)). Before it, **v0.9.4**
+The current release is **v0.11.12** (2026-10-31), a patch: one Pixie hub shows every cluster (the managing cluster and nonprod
+join production's hub), and Pixie keeps each user's settings ([`docs/releases/v0.11.12.md`](docs/releases/v0.11.12.md)).
+Before it, **v0.11.11** (2026-10-31), a patch: the Pixie UI can run scripts, and a configuration change rolls the Pixie pods that
+read it ([`docs/releases/v0.11.11.md`](docs/releases/v0.11.11.md)).
+Before it, **v0.11.9** (2026-10-31), a patch: the hub Prometheus writes its configuration, so it federates every cluster
+and runs the hub's alert rules ([`docs/releases/v0.11.9.md`](docs/releases/v0.11.9.md)).
+Before that, **v0.11.8** (2026-10-31), a patch: people can sign in to the Pixie hubs. The organisation gets the
+administrator's email domain, which Pixie requires, and a hub's `users` give each person their own sign-in
+([`docs/releases/v0.11.8.md`](docs/releases/v0.11.8.md)).
+Before it, **v0.11.7** (2026-10-31), a patch: Pixie's metadata index is created as soon as OpenSearch is ready, so the
+indexer starts and the observability hubs can become Ready ([`docs/releases/v0.11.7.md`](docs/releases/v0.11.7.md)).
+Before that, **v0.11.6** (2026-10-31), a patch: the hubs' Prometheus can write its volume, the Pixie prune no longer deletes
+the database's own objects, and `config-manager` gets its Sentry ConfigMap
+([`docs/releases/v0.11.6.md`](docs/releases/v0.11.6.md)).
+Before that, **v0.11.5** (2026-10-31), a patch: Pixie's release, the `ObservabilityProvider` naming all 27 images by digest
+([`docs/releases/v0.11.5.md`](docs/releases/v0.11.5.md)).
+Earlier, **v0.11.4** (2026-10-30), a patch: the platform's kube-prometheus-stack no longer raises
+`KubeCPUQuotaOvercommit` and `KubeMemoryQuotaOvercommit` ([`docs/releases/v0.11.4.md`](docs/releases/v0.11.4.md)).
+Before it, **v0.11.3** (2026-10-30), a patch: no `KubeCPUOvercommit` and `KubeMemoryOvercommit`
+([`docs/releases/v0.11.3.md`](docs/releases/v0.11.3.md)).
+Before it, **v0.11.2** (2026-10-30), a patch: observability agents write their alert routing before Pixie's
+release exists ([`docs/releases/v0.11.2.md`](docs/releases/v0.11.2.md)).
+Before it, **v0.11.1** (2026-10-29), a patch: production's observability hub runs on the management cluster,
+and the `prod-support` cluster purpose is removed ([`docs/releases/v0.11.1.md`](docs/releases/v0.11.1.md)).
+Before it, **v0.11.0** (2026-10-29), a minor release: observability kinds and a self-hosted Pixie,
+zone-level authenticated origin pulls, and four Cloud v1 fixes ([`docs/releases/v0.11.0.md`](docs/releases/v0.11.0.md)).
+Before it, **v0.10.6** (2026-10-27), a patch: an App or environment is Ready only when its rollout
+is complete ([`docs/releases/v0.10.6.md`](docs/releases/v0.10.6.md)). Before it, **v0.10.5** (2026-10-27), a patch: App hosts stop flapping to Cloudflare 526
+([`docs/releases/v0.10.5.md`](docs/releases/v0.10.5.md)). Before that, **v0.10.4** (2026-10-26), a patch: agents default to `gpt-6.1-sol`, and a Lake restart
+replaces the App's pods ([`docs/releases/v0.10.4.md`](docs/releases/v0.10.4.md)). Before that, **v0.10.3** (2026-10-25), a patch: the Cloud v1 writer embeds 64 texts per batch, not
+50,000, so a CPU writer's memory stays bounded during a copy
+([`docs/releases/v0.10.3.md`](docs/releases/v0.10.3.md)). Before it, **v0.10.2** (2026-10-25), a patch: an app's
+Zetta binding is the JSON document app-runtime reads, and Cloud v1 stacks generate their DISCO and pgAdmin credentials
+([`docs/releases/v0.10.2.md`](docs/releases/v0.10.2.md)). Before it, **v0.10.1** (2026-10-25), a patch that shows
+versions as columns on `LakeSet` and `Lake` for `kubectl get` and Lens
+([`docs/releases/v0.10.1.md`](docs/releases/v0.10.1.md)). Before it, **v0.10.0**
+(2026-10-24) was the operator side of lake v0.7.0: a lake version is only its image
+([`docs/releases/v0.10.0.md`](docs/releases/v0.10.0.md)). Before it, **v0.9.5** carried lake v0.6.0's schema and the prepaid
+balance's Stripe events. Before that, **v0.9.4**
 (2026-10-24), a patch giving a Cloud v1 docs host its DNS record
 ([`docs/releases/v0.9.4.md`](docs/releases/v0.9.4.md)). Before that, **v0.9.3** (2026-10-24), a patch letting
 Cloud v1 storage approve replacing a volume it cannot change in place

@@ -42,7 +42,7 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1migrations,verbs=get;list;watch
@@ -142,6 +142,9 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"idp", r.reconcileIdP},
 		{"cloudflare", r.reconcileCloudflare},
 		{"demoSeed", r.reconcileDemoSeed},
+		// Scrape configuration, alert rules and dashboards on the platform's kube-prometheus-stack
+		// and Perses (operator#15); a cluster without them yet is not an error.
+		{"monitoring", r.reconcileMonitoring},
 		// Last, so a configuration error in it (a missing AWS Secret) never keeps another component
 		// from being reconciled (operator#446).
 		{"import-consumer", r.reconcileImportConsumer},

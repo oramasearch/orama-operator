@@ -68,7 +68,7 @@ func (r *LakeAppsReconciler) Reconcile(ctx context.Context, request ctrl.Request
 		return ctrl.Result{}, nil
 	}
 	parent := &LakeReconciler{Client: r.Client, Scheme: r.Scheme}
-	_, _, schema := parent.lakeSchemaStatus(ctx, &lake, lakeNamespace(&lake))
+	_, _, schema := parent.lakeSchemaStatus(ctx, &lake, lakeNamespace(&lake), lakeDesiredSchemaVersion(&lake, lake.Status.ImageManifest))
 	if schema.phase != "Ready" {
 		return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil
 	}
@@ -320,9 +320,11 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 		Sync: &oramav1alpha1.LakeAppSync{
 			ID: row.ID, CustomerID: row.CustomerID, WorkspaceID: row.WorkspaceID,
 			WorkspaceNamespace: row.WorkspaceNamespace, Generation: row.Generation,
+			RestartGeneration: row.RestartGeneration,
 		},
 	}
-	if row.CustomerID == "" || row.Generation < 1 || len(validation.IsDNS1123Label(row.Name)) != 0 {
+	if row.CustomerID == "" || row.Generation < 1 || row.RestartGeneration < 0 ||
+		len(validation.IsDNS1123Label(row.Name)) != 0 {
 		return spec, errors.New("app customer, generation or name is invalid")
 	}
 	if _, err := uuid.Parse(row.CustomerID); err != nil {

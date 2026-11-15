@@ -69,6 +69,32 @@ spec:
     - {name: clerk-lake-prod, namespace: lake, as: clerk-secret-key}
     - {name: stripe-live, namespace: lake, as: stripe}
   deletionPolicy: Retain
+  # Restore rehearsals (orama-operator#127, docs/lake/restore-rehearsals.md). Each entry becomes a
+  # LakeRestoreRehearsal on its member's cluster that restores into a throwaway scratch namespace
+  # and never touches the live claim, database, snapshots or backups. Commented out until the
+  # managing cluster runs an operator that knows spec.restoreRehearsals and the leaves run one with
+  # the store rehearsal and the rehearsal network allowance (the release after v0.9.5): applied
+  # earlier, the API server refuses the unknown field. Uncommenting and applying this file is
+  # Steve's consent. A rehearsal's spec cannot change: to run one again, add a new name.
+  #
+  # The store: restores the newest ready CSI snapshot of lake-<member>-store and reads every file.
+  # restoreRehearsals:
+  # - name: shared-store-restore-20261024
+  #   member: shared
+  #   spec: {service: store, operation: restore, from: latest}
+  # - name: shared-us-store-restore-20261024
+  #   member: shared-us
+  #   spec: {service: store, operation: restore, from: latest}
+  #
+  # The control database: needs spec.postgres.backup enabled (no CNPG Backup exists for either
+  # member on 2026-10-24, orama-operator#957) and spec.postgres.image pinned by digest
+  # (orama-operator#958). Until both, it fails at once with the reason and makes nothing.
+  # - name: shared-postgres-restore-20261024
+  #   member: shared
+  #   spec: {service: postgres, operation: restore, from: latest}
+  # - name: shared-us-postgres-restore-20261024
+  #   member: shared-us
+  #   spec: {service: postgres, operation: restore, from: latest}
   secrets:
   - name: oramasearch-dockerhub
     namespace: lake
@@ -82,7 +108,26 @@ spec:
     # lake.live hosts: the token scoped to the lake.live zone only (decision 64).
     dnsSecretRef:
       name: cloudflare-api-token-lake-live
-    image: oramasearch/lake:v0.6.1
+    image: oramasearch/lake:v0.8.1
+    # app-runtime v0.1.2 (2026-10-26): Streamlit behind the public host (#17), identity only behind Lake auth (#14), exact file bytes (#22).
+    apps:
+      runtimeImage: oramasearch/app-runtime:v0.1.3
+    # The agents' releases (2026-10-25), after nonprod and eu.lake.live ran them.
+    # lake v0.7.3 (hotfix, lake#1245): agents on gpt-5.5, because gpt-6.x refuses tools with reasoning_effort on Chat
+    # Completions; gpt-6.1-sol is the default again once the gateway uses the Responses API (v0.8.0). People choose per workspace.
+    agents:
+      model: gpt-6.1-sol
+      runtimeImage: oramasearch/agent-runtime:v0.2.0
+      library:
+      - {key: agent-ask-orama, image: oramasearch/agent-ask-orama:v0.2.1}
+      - {key: agent-application, image: oramasearch/agent-application:v0.2.7}
+      - {key: agent-autosuggest, image: oramasearch/agent-autosuggest:v0.2.0}
+      - {key: agent-autosuggest-corpus, image: oramasearch/agent-autosuggest-corpus:v0.2.0}
+      - {key: agent-creator, image: oramasearch/agent-creator:v0.2.0}
+      - {key: agent-eval-generator, image: oramasearch/agent-eval-generator:v0.2.0}
+      - {key: agent-experiments, image: oramasearch/agent-experiments:v0.2.2}
+      - {key: agent-project, image: oramasearch/agent-project:v0.2.0}
+      - {key: agent-project-corpus, image: oramasearch/agent-project-corpus:v0.2.0}
     ingressEnabled: true
     postgres:
       enabled: true

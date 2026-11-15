@@ -102,20 +102,31 @@ func lakeEdgeName(lake *oramav1alpha1.Lake) string { return "lake-" + lake.Name 
 // http://<host>/.well-known/acme-challenge/<token> on port 80, which must reach this cluster's
 // ingress controller (docs/lake/origin-tls.md, "HTTP-01").
 func lakeOriginSolvers(lake *oramav1alpha1.Lake, dnsZone string) []any {
-	http01 := map[string]any{"http01": map[string]any{"ingress": map[string]any{
-		"ingressClassName": ingressClassOrDefault(lake.Spec.IngressClassName),
-	}}}
+	newHTTP01 := func() map[string]any {
+		return map[string]any{"http01": map[string]any{"ingress": map[string]any{
+			"ingressClassName": ingressClassOrDefault(lake.Spec.IngressClassName),
+		}}}
+	}
+	// The customer's own host (#947) is in a zone no Orama token writes in: HTTP-01, always. A
+	// dnsNames selector is the most specific one cert-manager knows, so it wins over the zone's
+	// DNS-01 even before the zone is read.
+	var solvers []any
+	if host := lakeCustomDomainHost(lake); host != "" {
+		custom := newHTTP01()
+		custom["selector"] = map[string]any{"dnsNames": []any{host}}
+		solvers = append(solvers, custom)
+	}
 	if !lakeHasDNSCredential(lake) {
-		return []any{http01}
+		return append(solvers, newHTTP01())
 	}
 	dns01 := map[string]any{"dns01": map[string]any{"cloudflare": map[string]any{
 		"apiTokenSecretRef": map[string]any{"name": lake.Spec.DNSSecretRef.Name, "key": "token"},
 	}}}
 	if dnsZone == "" {
-		return []any{dns01}
+		return append(solvers, dns01)
 	}
 	dns01["selector"] = map[string]any{"dnsZones": []any{dnsZone}}
-	return []any{dns01, http01}
+	return append(solvers, dns01, newHTTP01())
 }
 
 // reconcileLakeOriginIssuer keeps the Lake's Let's Encrypt Issuer, with the solvers of
@@ -137,6 +148,19 @@ func reconcileLakeOriginIssuer(ctx context.Context, c client.Client, scheme *run
 		return controllerutil.SetControllerReference(lake, issuer, scheme)
 	})
 	return err
+}
+
+// lakeOriginPullSecretRef is the zone's distributed origin-pull Secret for a Lake that a set
+// manages, or nil (operator#633). The set copies the zone's CA, generated once on the managing
+// cluster, into the member's namespace under this name before it applies the Lake, so every
+// cluster serving the zone presents and trusts one CA. A Lake no set manages (the managing
+// cluster's own) uses the operator's per-cluster Secret, which on the managing cluster is the very
+// Secret the sets copy.
+func lakeOriginPullSecretRef(lake *oramav1alpha1.Lake, zoneID string) *corev1.LocalObjectReference {
+	if lake.Labels[managedBySetLabel] == "" {
+		return nil
+	}
+	return &corev1.LocalObjectReference{Name: originPullSecretName(zoneID)}
 }
 
 // reconcileLakeEdgePolicy keeps the Lake's EdgeProvider and EdgeZonePolicy for the zone of its
@@ -176,7 +200,8 @@ func reconcileLakeEdgePolicy(ctx context.Context, c client.Client, scheme *runti
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, c, policy, func() error {
 		policy.Labels = labels
-		policy.Spec = oramav1alpha1.EdgeZonePolicySpec{ProviderRef: corev1.LocalObjectReference{Name: name}, ZoneID: zoneID}
+		policy.Spec = oramav1alpha1.EdgeZonePolicySpec{ProviderRef: corev1.LocalObjectReference{Name: name}, ZoneID: zoneID,
+			OriginPullSecretRef: lakeOriginPullSecretRef(lake, zoneID)}
 		return controllerutil.SetControllerReference(lake, policy, scheme)
 	})
 	return err

@@ -3,6 +3,53 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.11.12](v0.11.12.md) — 2026-10-31. A patch: production's Pixie hub takes the managing cluster and nonprod too, agents
+  may name their own alert receivers, and the bootstrap writes each user's settings rows (#1124).
+- [v0.11.11](v0.11.11.md) — 2026-10-31. A patch: Envoy's CORS allows the hub's domain, so the UI runs scripts; every Pixie
+  pod template carries a fingerprint of the ConfigMaps it reads (#1117).
+- [v0.11.10](v0.11.10.md) — 2026-10-31. A patch: the UI fetches the PxL script bundle from its own origin and the API server
+  from the bundle server's Service (#1113).
+- [v0.11.9](v0.11.9.md) — 2026-10-31. A patch: the hub Prometheus sets a `scrapeConfigSelector`, so prometheus-operator writes
+  its configuration and the federation jobs and hub rules load (#1102).
+- [v0.11.8](v0.11.8.md) — 2026-10-31. A patch: people can sign in to the Pixie hubs. The organisation gets the
+  administrator's email domain, and `ObservabilityHub.spec.users` gives each person a generated password (#1103).
+- [v0.11.7](v0.11.7.md) — 2026-10-31. A patch: Pixie's metadata index is created once OpenSearch is ready, before the hub
+  is, so the indexer starts and the hubs can become Ready (#1098); how to reach the monitoring UIs (#1072).
+- [v0.11.6](v0.11.6.md) — 2026-10-31. A patch: the hub Prometheus owns its volume (`fsGroup`), a Pixie Postgres image must
+  carry its tag (#1091); the Pixie prune spares objects another controller owns, and `pl-sentry-dsn-config` is rendered (#1092).
+- [v0.11.5](v0.11.5.md) — 2026-10-31. A patch: Pixie's release (#455), `config/clusters/observability-provider.yaml` naming
+  all 27 images by digest, and the build patches they were made with (#1085). No operator code or CRD changes.
+- [v0.11.4](v0.11.4.md) — 2026-10-30. A patch: kube-prometheus-stack's `KubeCPUQuotaOvercommit` and `KubeMemoryQuotaOvercommit`
+  are off on every cluster, because Lake's workspace quotas are ceilings meant to exceed the cluster (#1081). Platform values only.
+- [v0.11.3](v0.11.3.md) — 2026-10-30. A patch: kube-prometheus-stack's `KubeCPUOvercommit` and `KubeMemoryOvercommit` are off
+  on every cluster, which autoscale instead of holding a spare node (#1077). Platform values only; no code or CRD changes.
+- [v0.11.2](v0.11.2.md) — 2026-10-30. A patch: observability agents write their alert routing before Pixie's release
+  exists; leaf clients know Orama's kinds, and the agent creates the hub's `plc` namespace (#1070). No CRD changes.
+- [v0.11.1](v0.11.1.md) — 2026-10-29. A patch: production's observability hub runs on the management cluster (a hub with
+  no `clusterRef`), and the `prod-support` cluster purpose is removed (#1064, #1059). No Lake or Cloud v1 workload changes on the roll.
+- [v0.11.0](v0.11.0.md) — 2026-10-29. A minor release: five observability kinds and a self-hosted Pixie (#1044), zone-level
+  authenticated origin pulls with one CA per zone (#727), and four Cloud v1 fixes (#1036, #1052, #1053, #1057). Every
+  combined-image Cloud v1 stack's readers restart once.
+- [v0.10.6](v0.10.6.md) — 2026-10-27. A patch: an App or environment is Ready only when its rollout is complete
+  (#1050).
+- [v0.10.5](v0.10.5.md) — 2026-10-27. A patch: App hosts stop flapping to Cloudflare 526; the App's Secret pass
+  keeps its Ingress's certificate copy and edge client CA (#1046).
+- [v0.10.4](v0.10.4.md) — 2026-10-26. A patch: agents default to `gpt-6.1-sol` (#1030), and a Lake restart replaces
+  the App's pods through `LakeApp.spec.sync.restartGeneration` (#1033, lake#1228). `LakeApp` gains one optional field;
+  no App restarts on the roll.
+- [v0.10.3](v0.10.3.md) — 2026-10-25. A patch: the Cloud v1 writer embeds 64 texts per batch, not 50,000, so a
+  CPU writer's memory stays bounded during a copy (#1023, orama-bridge#257). Each Cloud v1 stack's writer and readers
+  roll once.
+- [v0.10.2](v0.10.2.md) — 2026-10-25. A patch: an app's Zetta binding is the JSON document app-runtime reads
+  (#1001, lake#1205), and Cloud v1 stacks generate their DISCO and pgAdmin credentials and replace the placeholder
+  RabbitMQ admin password (#1017, #570). Each bound app and the affected Cloud v1 consumers roll once.
+- [v0.10.1](v0.10.1.md) — 2026-10-25. A patch: versions as columns on `LakeSet` (`Versions`) and `Lake`
+  (`Image`, `Version`, `Revision`), for `kubectl get` and Lens (#984). No workload restarts.
+- [v0.10.0](v0.10.0.md) — 2026-10-24. The operator side of lake v0.7.0: a lake version is only its
+  image (`lake manifest`, `lake migrate`), a Lake on a customer-owned domain, a status page for
+  lake.live, store restore rehearsals, the Stripe auto top-up permission check, and generated Cloud v1
+  stack-internal credentials. New kind `StatusPage`. **Roll it before lake v0.7.0; rehearse #949 on
+  `v1-dev` before `v1-eu`.**
 - [v0.9.5](v0.9.5.md) — 2026-10-24. A patch for lake v0.6.0: its schema through `0099` and the
   prepaid balance's Stripe events. **Roll it before the lake v0.6.0 image.**
 - [v0.9.4](v0.9.4.md) — 2026-10-24. A patch: a Cloud v1 docs host gets its DNS record (#928).

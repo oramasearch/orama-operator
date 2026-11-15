@@ -138,7 +138,7 @@ func (r *LakeWorkspacesReconciler) Reconcile(ctx context.Context, request ctrl.R
 		return ctrl.Result{}, nil
 	}
 	parent := &LakeReconciler{Client: r.Client, Scheme: r.Scheme}
-	_, _, schema := parent.lakeSchemaStatus(ctx, &lake, lakeNamespace(&lake))
+	_, _, schema := parent.lakeSchemaStatus(ctx, &lake, lakeNamespace(&lake), lakeDesiredSchemaVersion(&lake, lake.Status.ImageManifest))
 	if schema.phase != "Ready" {
 		return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil
 	}

@@ -36,8 +36,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
@@ -45,6 +48,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 	"github.com/oramasearch/orama-operator/internal/crdrollout"
 )
 
@@ -99,6 +103,8 @@ type helmReleaseRequest struct {
 	// CRDURLs are manifests of CRDs a chart ships apart from itself. They are applied before the
 	// chart, on every install and upgrade.
 	CRDURLs []string
+	// PullSecret, when set, is written into the namespace before the chart.
+	PullSecret *corev1.Secret
 }
 
 // helmReleaseState is what the cluster has.
@@ -335,6 +341,16 @@ func (g *kubeconfigGetter) ToRESTMapper() (meta.RESTMapper, error) {
 
 func (g *kubeconfigGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig { return g.config }
 
+// leafScheme is the kinds a leaf client knows: Kubernetes' own and Orama's. client.New's default
+// knows only Kubernetes', and a typed read of an Orama kind on a leaf (the observability agent
+// reading the hub's PixieCloud) failed with "no kind is registered".
+var leafScheme = func() *runtime.Scheme {
+	s := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(oramav1alpha1.AddToScheme(s))
+	return s
+}()
+
 func leafClients(kubeconfig []byte, namespace string) (*kubeconfigGetter, client.Client, error) {
 	raw, err := clientcmd.Load(kubeconfig)
 	if err != nil {
@@ -350,7 +366,7 @@ func leafClients(kubeconfig []byte, namespace string) (*kubeconfigGetter, client
 	if err != nil {
 		return nil, nil, fmt.Errorf("the cluster's kubeconfig cannot be used: %w", err)
 	}
-	c, err := client.New(restConfig, client.Options{})
+	c, err := client.New(restConfig, client.Options{Scheme: leafScheme})
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot reach the cluster: %w", err)
 	}
@@ -713,6 +729,12 @@ func (h *helmLeafInstaller) EnsureRelease(ctx context.Context, kubeconfig []byte
 	getter, c, err := leafClients(kubeconfig, req.Namespace)
 	if err != nil {
 		return helmReleaseState{}, err
+	}
+	if req.PullSecret != nil {
+		// Written on every pass, so a rotated pull secret reaches the cluster.
+		if err := applyNamespaceAndPullSecret(ctx, c, req.Namespace, req.PullSecret); err != nil {
+			return helmReleaseState{}, err
+		}
 	}
 	return h.ensureRelease(ctx, getter, c, req, false)
 }

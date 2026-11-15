@@ -142,14 +142,14 @@ func expandEnv(t *testing.T, env []corev1.EnvVar, secrets map[string]*corev1.Sec
 
 var hex48 = regexp.MustCompile(`^[0-9a-f]{48}$`)
 
-// The broker password literal is gone from the operator's source: only tests may name it.
-func TestNoBrokerPasswordLiteralOutsideTests(t *testing.T) {
+// The former password is recognized only by the upgrade; no consumer or seed carries it.
+func TestNoBrokerPasswordLiteralOutsideMigration(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
+		if strings.HasSuffix(f, "_test.go") || f == "legacy_credentials.go" {
 			continue
 		}
 		b, err := os.ReadFile(f)
@@ -157,7 +157,7 @@ func TestNoBrokerPasswordLiteralOutsideTests(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(b), "dev-rabbitmq-"+"password") {
-			t.Errorf("%s holds the old broker password literal", f)
+			t.Errorf("%s holds the old broker password literal outside the upgrade", f)
 		}
 	}
 }
@@ -773,13 +773,9 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			rolled("a HARVEST notification key change", []string{"harvest-master"})
 			h.setSecret(testMasterSecret, "MASTER_API_KEY", "rotated-master-0123")
 			rolled("a master key change", masterReaders)
-			// Only the reader-only config reads the analytics key; the writer never does.
-			analyticsReaders := []string{"analytics-processor"}
-			if mode == "side-only" {
-				analyticsReaders = append(analyticsReaders, "reader")
-			}
+			// Every reader config reads the analytics key (#1051); the writer never does.
 			h.setSecret("v1-analytics-api-key", "ANALYTICS_API_KEY", "rotatedanalytics0123")
-			rolled("an analytics key change", analyticsReaders)
+			rolled("an analytics key change", []string{"analytics-processor", "reader"})
 			steady("a second unchanged reconcile")
 
 			// Pointing the reference at another Secret rolls the master key readers onto it.

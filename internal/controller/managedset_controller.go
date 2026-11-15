@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -65,6 +66,9 @@ type setKind struct {
 	prepare func(template map[string]any, members []resolvedMember) (any, error)
 	// finish sets what a member's spec takes from where it runs and from prepare, after the merge.
 	finish func(spec map[string]any, namespace string, cluster *oramav1alpha1.KubernetesCluster, shared any) error
+	// secrets adds what the set copies on its own to a member, after the Secrets the set names (a
+	// Lake's zone origin-pull Secret, managedset_origin_pull.go). Nil for a kind that needs none.
+	secrets func(ctx context.Context, r *managedSetReconciler, spec map[string]any, copied []*corev1.Secret, resolved resolvedMember) ([]*corev1.Secret, error)
 	// observe reads an instance as its cluster reports it.
 	observe func(obj *unstructured.Unstructured) (ready bool, version, message string)
 }
@@ -74,6 +78,7 @@ var lakeSetKind = setKind{
 	instance:    oramav1alpha1.GroupVersion.WithKind("Lake"),
 	crd:         "lakes.orama.cloud", namespacePrefix: "lake-",
 	prepare: prepareLakeRegions,
+	secrets: lakeOriginPullSecrets,
 	finish: func(spec map[string]any, namespace string, cluster *oramav1alpha1.KubernetesCluster, shared any) error {
 		// A Lake names its own namespace, and every member has its own.
 		if set, ok := spec["namespace"].(string); ok && set != "" && set != namespace {
@@ -217,6 +222,9 @@ type memberState struct {
 	MissingCRD bool
 	// Object is the instance as read back after the apply.
 	Object *unstructured.Unstructured
+	// Changed is true when an immutable object (a LakeRestoreRehearsal) exists with another spec.
+	// Nothing was applied; Object is what the cluster has.
+	Changed bool
 }
 
 // leafMemberApplier applies, reads and deletes one instance, one OramaCloudV1Set migration, or one
@@ -238,6 +246,13 @@ type leafMemberApplier interface {
 	// DeleteE2ETest deletes one this set applied; its Job goes with it. One that is gone, or not
 	// this set's, is left alone.
 	DeleteE2ETest(ctx context.Context, kubeconfig []byte, req memberRequest) error
+	// ApplyRehearsal applies a LakeSet's LakeRestoreRehearsal (cluster-scoped, no Secrets) as
+	// ApplyMember applies an instance. One this set applied with another spec is not changed (its
+	// spec is immutable): the state says Changed and carries it.
+	ApplyRehearsal(ctx context.Context, kubeconfig []byte, req memberRequest) (memberState, error)
+	// DeleteRehearsal deletes one this set applied. One that is gone, or not this set's, is left
+	// alone.
+	DeleteRehearsal(ctx context.Context, kubeconfig []byte, req memberRequest) error
 }
 
 type clientMemberApplier struct{}
@@ -356,8 +371,14 @@ type managedSetReconciler struct {
 	// e2eTests runs lake's end-to-end suite against a LakeSet's members; nil for an
 	// OramaCloudV1Set.
 	e2eTests *setE2ETests
+	// rehearsals runs restore rehearsals against a LakeSet's members; nil for an OramaCloudV1Set.
+	rehearsals *setRehearsals
 	// productionSources is what every production set copies, read once per pass (managedset_secret_scope.go).
 	productionSources map[string]string
+	// operatorNamespace holds the zone origin-pull Secrets a LakeSet distributes (POD_NAMESPACE).
+	operatorNamespace string
+	// now is the clock for their certificate lifetimes; nil uses time.Now.
+	now func() time.Time
 }
 
 // resolvedMember is a member with everything worked out from the set and its cluster.
@@ -545,6 +566,9 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 	if r.e2eTests != nil {
 		r.e2eTests.removeUndeclared(ctx, r)
 	}
+	if r.rehearsals != nil {
+		r.rehearsals.removeUndeclared(ctx, r)
+	}
 	// Members that were in the set and no longer are.
 	held, err := r.release(ctx, set, members, observed, migrationsAt)
 	if err != nil {
@@ -584,6 +608,7 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		statuses = append(statuses, entry)
 	}
 	status.MemberStatuses = append(statuses, held...)
+	status.Versions = memberVersions(status.MemberStatuses)
 	status.Members, status.ReadyMembers = int32(len(members)), ready
 	status.ObservedGeneration = set.GetGeneration()
 
@@ -623,6 +648,20 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 			firstErr = r.e2eTests.err
 		}
 	}
+	if r.rehearsals != nil {
+		// After the members, since a rehearsal needs its Lake. Like e2e runs, they do not change
+		// the set's phase; what the set could not do with one is added to its message, and returned.
+		r.rehearsals.apply(ctx, r, members, statuses)
+		if problems := r.rehearsals.problems; len(problems) > 0 {
+			message = strings.TrimPrefix(message+"; "+strings.Join(problems, "; "), "; ")
+		}
+		if r.rehearsals.busy {
+			requeue = leafOperatorPollInterval
+		}
+		if firstErr == nil {
+			firstErr = r.rehearsals.err
+		}
+	}
 	setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), phase, reason, message)
 	if err := r.writeStatus(ctx, set, observed); err != nil {
 		return settle(ctrl.Result{}, err)
@@ -659,6 +698,11 @@ func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, 
 	req.Spec = merged
 	if req.Secrets, err = r.secretsFor(ctx, set.SetSpec(), resolved); err != nil {
 		return fail(err)
+	}
+	if r.kind.secrets != nil {
+		if req.Secrets, err = r.kind.secrets(ctx, r, merged, req.Secrets, resolved); err != nil {
+			return fail(err)
+		}
 	}
 	state, err := r.applier.ApplyMember(ctx, kubeconfig, req)
 	if err != nil {
@@ -773,6 +817,20 @@ func (r *managedSetReconciler) finalize(ctx context.Context, set managedSet, obs
 			return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.e2eTests.err)
 		}
 	}
+	// Rehearsals too: one left behind would wait for a Lake that is gone.
+	if r.rehearsals != nil {
+		if waiting := r.rehearsals.removeAll(ctx, r); waiting != "" || r.rehearsals.err != nil {
+			reason, message := "RemovingRestoreRehearsals", "waiting for its restore rehearsals to be removed: "+waiting
+			if r.rehearsals.err != nil {
+				reason, message = "DeleteFailed", r.rehearsals.err.Error()
+			}
+			setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseDeleting, reason, message)
+			if statusErr := r.writeStatus(ctx, set, observed); statusErr != nil {
+				return settle(ctrl.Result{}, statusErr)
+			}
+			return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.rehearsals.err)
+		}
+	}
 	if set.SetSpec().DeletionPolicy == oramav1alpha1.SetDeletionDelete {
 		for _, member := range observed.MemberStatuses {
 			if err := r.deleteMember(ctx, set, member); err != nil {
@@ -801,6 +859,9 @@ func (r *managedSetReconciler) writeStatus(ctx context.Context, set managedSet, 
 	if r.e2eTests != nil {
 		r.e2eTests.restore(base)
 	}
+	if r.rehearsals != nil {
+		r.rehearsals.restore(base)
+	}
 	if reflect.DeepEqual(base, set) {
 		return nil
 	}
@@ -814,6 +875,11 @@ type LakeSetReconciler struct {
 	Scheme *runtime.Scheme
 	// Applier reaches a member's cluster. Nil means the real one; tests inject a fake.
 	Applier leafMemberApplier
+	// OperatorNamespace holds each zone's origin-pull CA Secret (orama-edge-origin-pull-<zone ID>),
+	// created once here and copied to every member that serves the zone (operator#633).
+	OperatorNamespace string
+	// Now is the clock for those certificates; nil uses time.Now.
+	Now func() time.Time
 }
 
 // OramaCloudV1SetReconciler installs OramaCloudV1 instances onto managed clusters (operator#391),
@@ -843,7 +909,9 @@ func (r *LakeSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	return (&managedSetReconciler{Client: r.Client, kind: lakeSetKind, applier: applierOr(r.Applier),
-		e2eTests: &setE2ETests{set: &set, observed: set.Status.DeepCopy()}}).reconcile(ctx, &set)
+		operatorNamespace: r.OperatorNamespace, now: r.Now,
+		e2eTests:   &setE2ETests{set: &set, observed: set.Status.DeepCopy()},
+		rehearsals: &setRehearsals{set: &set, observed: set.Status.DeepCopy()}}).reconcile(ctx, &set)
 }
 
 func (r *OramaCloudV1SetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -900,4 +968,30 @@ func (r *OramaCloudV1SetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		})
 	return ctrl.NewControllerManagedBy(mgr).For(&oramav1alpha1.OramaCloudV1Set{}).
 		Watches(&oramav1alpha1.KubernetesCluster{}, forCluster).Complete(r)
+}
+
+// memberVersions is the set's Versions column: each member and what it runs, shortened to the image
+// tag where the version is an image reference ("oramasearch/lake:v0.7.0" is "v0.7.0"; a digest
+// reference keeps its digest). Members with no version yet are left out.
+func memberVersions(members []oramav1alpha1.SetMemberStatus) string {
+	parts := make([]string, 0, len(members))
+	for _, m := range members {
+		if m.Version == "" {
+			continue
+		}
+		parts = append(parts, m.Name+"="+imageTag(m.Version))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// imageTag is the tag of an image reference, or the digest of one named by digest, or the value
+// unchanged when it is not an image reference.
+func imageTag(ref string) string {
+	if i := strings.LastIndex(ref, "@"); i >= 0 {
+		return ref[i+1:]
+	}
+	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i+1:], "/") {
+		return ref[i+1:]
+	}
+	return ref
 }

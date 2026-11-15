@@ -1,0 +1,49 @@
+# Production's observability hub, on the managing cluster (no clusterRef; #1059, DESIGN decision 105).
+# docs/infrastructure/observability.md, rollout step 5. Named after the managing cluster, because the
+# hub's own metrics carry the hub's name as their `cluster` label. Production agents report to it:
+# <cluster>/observability.yaml. Until Pixie's release (#455) exists it stays Pending and creates
+# nothing, storage included.
+#
+# Secrets on the managing cluster, in orama-system, made outside git:
+#   production-alerts-slack  key `url`: the Slack incoming webhook to #monitoring (app "Orama Alerts")
+#   oramasearch-dockerhub    production's registry pull Secret
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityHub
+metadata:
+  name: orama-production-cluster-01
+spec:
+  providerRef: pixie
+  domain: pixie.production.orama.internal   # the UI's host, reached by port-forward; no DNS record is made
+  organization: orama
+  adminEmail: juan@orama.com
+  users:
+    - steve@orama.com
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system
+  storage:
+    postgres: 50Gi
+    search: 50Gi
+    messaging: 20Gi
+    metrics: 200Gi        # the hub Prometheus: every production cluster's federated metrics
+  metricsRetention: 90d
+  alerting:
+    receivers:
+      - name: production-alerts
+        severities: [critical, warning]
+        slack:
+          urlSecretRef: {name: production-alerts-slack, namespace: orama-system, key: url}
+---
+# The managing cluster's own agent (no clusterRef: the managing cluster, which is production). It
+# runs beside the hub and reports to it without a link, so the hub's cluster, its databases and the
+# operator that manages every leaf are traced like any production cluster. Registered under the
+# hub's name, orama-production-cluster-01.
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityAgent
+metadata:
+  name: orama-production-cluster-01
+spec:
+  hubRef: orama-production-cluster-01
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system

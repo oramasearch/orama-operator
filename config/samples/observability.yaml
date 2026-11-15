@@ -1,0 +1,133 @@
+# Observability (operator#15, #456, #1059): the resources the managing cluster gets, in rollout order
+# (docs/infrastructure/observability.md, "Rolling it out"). A sample, not configuration: nothing
+# here is applied, and the committed resources go under config/clusters/ when each step is approved.
+#
+# 1. The release. Every digest comes from #455's build of oramasearch/pixie at the commit below;
+#    until each placeholder is replaced, the provider is refused by its CRD.
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityProvider
+metadata:
+  name: pixie
+spec:
+  type: pixie
+  pixie:
+    commit: 4b445e0b7907c79d034bcb4a227bbaede94d370a
+    vizierVersion: REPLACE-with-the-version-455-tags   # e.g. 0.14.16-pre-orama.1
+    cliVersion: REPLACE-with-the-version-455-tags
+    images:
+      vizier-pem: docker.io/oramasearch/pixie-vizier-pem_image@sha256:REPLACE
+      vizier-kelvin: docker.io/oramasearch/pixie-vizier-kelvin_image@sha256:REPLACE
+      vizier-metadata: docker.io/oramasearch/pixie-vizier-metadata_server_image@sha256:REPLACE
+      vizier-query-broker: docker.io/oramasearch/pixie-vizier-query_broker_server_image@sha256:REPLACE
+      vizier-cloud-connector: docker.io/oramasearch/pixie-vizier-cloud_connector_server_image@sha256:REPLACE
+      cloud-api: docker.io/oramasearch/pixie-cloud-api_server_image@sha256:REPLACE
+      cloud-artifact-tracker: docker.io/oramasearch/pixie-cloud-artifact_tracker_server_image@sha256:REPLACE
+      cloud-auth: docker.io/oramasearch/pixie-cloud-auth_server_image@sha256:REPLACE
+      cloud-config-manager: docker.io/oramasearch/pixie-cloud-config_manager_server_image@sha256:REPLACE
+      cloud-cron-script: docker.io/oramasearch/pixie-cloud-cron_script_server_image@sha256:REPLACE
+      cloud-indexer: docker.io/oramasearch/pixie-cloud-indexer_server_image@sha256:REPLACE
+      cloud-plugin: docker.io/oramasearch/pixie-cloud-plugin_server_image@sha256:REPLACE
+      cloud-profile: docker.io/oramasearch/pixie-cloud-profile_server_image@sha256:REPLACE
+      cloud-project-manager: docker.io/oramasearch/pixie-cloud-project_manager_server_image@sha256:REPLACE
+      cloud-proxy: docker.io/oramasearch/pixie-cloud-proxy_server_image@sha256:REPLACE
+      cloud-scriptmgr: docker.io/oramasearch/pixie-cloud-scriptmgr_server_image@sha256:REPLACE
+      cloud-vzconn: docker.io/oramasearch/pixie-cloud-vzconn_server_image@sha256:REPLACE
+      cloud-vzmgr: docker.io/oramasearch/pixie-cloud-vzmgr_server_image@sha256:REPLACE
+      script-bundle: docker.io/oramasearch/pixie-script-bundle@sha256:REPLACE
+      nats: docker.io/oramasearch/pixie-nats@sha256:REPLACE              # mirror of ghcr.io/pixie-io/nats:2.9.25-scratch-pl1
+      curl: docker.io/oramasearch/pixie-curl@sha256:REPLACE              # mirror of ghcr.io/pixie-io/pixie-oss-pixie-dev-public-curl:8.15.0
+      postgres: docker.io/oramasearch/pixie-postgres@sha256:REPLACE      # a CloudNativePG operand image (PostgreSQL 16)
+      envoy: docker.io/oramasearch/pixie-envoy@sha256:REPLACE            # mirror of envoyproxy/envoy:v1.34.2
+      hydra: docker.io/oramasearch/pixie-hydra@sha256:REPLACE            # mirror of oryd/hydra:v1.9.2-sqlite
+      hydra-cli: docker.io/oramasearch/pixie-hydra-cli@sha256:REPLACE    # mirror of oryd/hydra:v1.9.2-alpine
+      kratos: docker.io/oramasearch/pixie-kratos@sha256:REPLACE          # mirror of oryd/kratos:v0.10.1
+      opensearch: docker.io/oramasearch/pixie-opensearch@sha256:REPLACE  # mirror of opensearchproject/opensearch 2.19.x
+---
+# 2. The nonprod hub, on the nonprod cluster, and its agent on the same cluster (no link needed).
+#    Each cluster gets its own pull Secret; a production one is refused here.
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityHub
+metadata:
+  name: nonprod
+spec:
+  providerRef: pixie
+  clusterRef: orama-nonprod-cluster-01
+  domain: pixie.nonprod.example.internal   # the UI's host; no DNS record or public exposure is made
+  organization: orama
+  adminEmail: ops@orama.example
+  imagePullSecretRef:
+    name: nonprod-pixie-pull
+    namespace: orama-system
+  alerting:
+    receivers:
+      - name: nonprod-alerts
+        severities: [critical, warning]
+        slack:
+          urlSecretRef: {name: nonprod-alerts-slack, namespace: orama-system, key: url}
+---
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityAgent
+metadata:
+  name: orama-nonprod-cluster-01
+spec:
+  clusterRef: orama-nonprod-cluster-01
+  hubRef: nonprod
+  imagePullSecretRef:
+    name: nonprod-pixie-pull
+    namespace: orama-system
+---
+# 3. Production's hub on the managing cluster (no clusterRef; #1059), and one agent per production
+#    cluster, each reporting over its own peer link with its own deploy key and pull Secret. The
+#    hub's own metrics carry the hub's name as their cluster label, so it is named after the
+#    managing cluster.
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityHub
+metadata:
+  name: orama-production-cluster-01
+spec:
+  providerRef: pixie
+  domain: pixie.production.example.internal
+  organization: orama
+  adminEmail: ops@orama.example
+  imagePullSecretRef:
+    name: management-pixie-pull
+    namespace: orama-system
+  storage:
+    postgres: 50Gi
+    search: 50Gi
+    messaging: 20Gi
+    metrics: 200Gi        # the hub Prometheus: every production cluster's federated metrics
+  metricsRetention: 90d
+  alerting:
+    receivers:
+      - name: production-oncall
+        severities: [critical]
+        slack:
+          urlSecretRef: {name: production-alerts-slack, namespace: orama-system, key: url}
+      - name: production-warnings
+        severities: [warning]
+        slack:
+          urlSecretRef: {name: production-alerts-slack, namespace: orama-system, key: url}
+          channel: "#prod-warnings"
+---
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityAgent
+metadata:
+  name: orama-production-cluster-02
+spec:
+  clusterRef: orama-production-cluster-02
+  hubRef: orama-production-cluster-01
+  imagePullSecretRef:
+    name: prod2-pixie-pull
+    namespace: orama-system
+---
+apiVersion: orama.cloud/v1alpha1
+kind: ObservabilityAgent
+metadata:
+  name: orama-production-cluster-03
+spec:
+  clusterRef: orama-production-cluster-03
+  hubRef: orama-production-cluster-01
+  imagePullSecretRef:
+    name: prod3-pixie-pull
+    namespace: orama-system

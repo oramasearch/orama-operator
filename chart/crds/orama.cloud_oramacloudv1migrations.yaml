@@ -136,14 +136,22 @@ spec:
                   RunVolume holds the tool's run directory (manifest and payloads), kept across steps so the
                   tool resumes from it. It contains customer data. Default 20Gi, the cluster's default class.
                 properties:
+                  approveDataDeletion:
+                    description: |-
+                      ApproveDataDeletion allows the operator to replace this volume when it cannot reach the
+                      declared class or size in place (another class, or a smaller size): it deletes the volume,
+                      erasing its data, and the component starts again on a new one. False, the default, leaves
+                      the volume as it is and reports the difference in status.conditions[StorageApplied].
+                      Copying the data to the new volume is not supported yet.
+                    type: boolean
                   size:
                     anyOf:
                     - type: integer
                     - type: string
                     description: |-
                       Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                      component's default (10Gi) even without API defaulting. Shrinking
-                      existing storage is unsupported.
+                      component's default (10Gi) even without API defaulting. An existing volume grows in place;
+                      a size smaller than an existing volume's replaces it only with approveDataDeletion.
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
                     x-kubernetes-validations:
@@ -151,8 +159,9 @@ spec:
                       rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
                   storageClassName:
                     description: |-
-                      StorageClassName selects a class at creation. Omission uses the cluster default
-                      for new volumes and retains the existing class. Existing classes cannot change.
+                      StorageClassName is the volume's class. Omission uses the cluster default for new volumes
+                      and retains the existing class. An existing volume on another class is replaced only with
+                      approveDataDeletion.
                     minLength: 1
                     type: string
                 type: object

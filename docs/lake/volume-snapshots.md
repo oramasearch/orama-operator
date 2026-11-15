@@ -99,7 +99,9 @@ Or ask lake: `volume_snapshots` with `target`.
 
 ## Restore runbook (manual)
 
-Nothing here is automated. On a real production cluster, ask before step 4 of B: it deletes a
+Restoring the **store** into a scratch claim and reading it (A below) is automated by a
+`LakeRestoreRehearsal` with `service: store`, which leaves the live claim, snapshots and contents
+untouched; see [restore rehearsals](restore-rehearsals.md). The rest is not automated. On a real production cluster, ask before step 4 of B: it deletes a
 claim. **Never delete or replace `lake-prod-store`**; restore the store only into a scratch claim.
 
 ### A. Restore into a scratch claim and read it

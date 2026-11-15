@@ -60,7 +60,7 @@ writer_side:
 ` + v1HooksFixture + `  master_api_key: '__MASTER_API_KEY__'
   config:
     data_dir: /app/.data/writer
-    embedding_queue_limit: 50000
+    embedding_queue_limit: 64
     insert_batch_commit_size: 50000000
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
@@ -114,8 +114,9 @@ ai_server:
 `
 
 // combinedReaderConfigFixture is combined-reader.yaml for the same CR (#795, LSR-133): the combined
-// config with the writer's master key replaced by a key render-config generates, and both sections
-// signed in as oramacore-reader, the writer section producing to oramacore-reader-local.
+// config with the writer's master key replaced by a key render-config generates, both sections
+// signed in as oramacore-reader, the writer section producing to oramacore-reader-local, and the
+// reader section recording analytics (#1051).
 const combinedReaderConfigFixture = `http:
   host: 0.0.0.0
   port: 8080
@@ -136,7 +137,7 @@ writer_side:
 ` + v1HooksFixture + `  master_api_key: '__LOCAL_WRITER_KEY__'
   config:
     data_dir: /app/.data/writer
-    embedding_queue_limit: 50000
+    embedding_queue_limit: 64
     insert_batch_commit_size: 50000000
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
@@ -156,6 +157,23 @@ reader_side:
     data_dir: /app/.data/reader
     insert_batch_commit_size: 50000000
     commit_interval: 1m
+  analytics:
+    api_key: '__ANALYTICS_API_KEY__'
+    metadata_from_headers:
+      - header: user-agent
+        metadata_key: ua
+      - header: CF-Connecting-IP
+        metadata_key: ip
+      - header: CF-IPCountry
+        metadata_key: country
+      - header: continent
+        metadata_key: continent
+      - header: colo
+        metadata_key: colo
+      - header: latitude
+        metadata_key: latitude
+      - header: longitude
+        metadata_key: longitude
 ai_server:
   scheme: http
   host: v1-embeddings
@@ -201,11 +219,12 @@ const combinedRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e '
 	` /tmpl/config.yaml > /etc/oramacore/config.yaml`
 
 // combinedReaderRenderCommand is the readers' render-config script without side-only images and with
-// the default providers: it generates the local writer key and fills no master key.
+// the default providers: it generates the local writer key and fills no master key, but the analytics key.
 const combinedReaderRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e 's/[\\&#]/\\&/g'; }; ` +
 	`LOCAL_WRITER_KEY=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'); sed` +
 	` -e "s#__LOCAL_WRITER_KEY__#$(esc "${LOCAL_WRITER_KEY}")#g"` +
 	` -e "s#__BROKER_PASSWORD__#$(esc "${BROKER_PASSWORD}")#g"` +
+	` -e "s#__ANALYTICS_API_KEY__#$(esc "${ANALYTICS_API_KEY}")#g"` +
 	` -e "s#__OPENAI_API_KEY__#$(esc "${OPENAI_API_KEY}")#g"` +
 	` -e "s#__GOOGLE_API_KEY__#$(esc "${GOOGLE_API_KEY}")#g"` +
 	` -e "s#__GROQ_API_KEY__#$(esc "${GROQ_API_KEY}")#g"` +

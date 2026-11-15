@@ -6,6 +6,63 @@ is foreground-deleted and recreated with the same guarded script; replacement wa
 Job and pods to disappear. This is a metadata upgrade, not a schema version change. See
 [`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md).
 
+## A lake release is only its image (orama-operator#936)
+
+From the lake release that carries `lake manifest` and `lake migrate`
+([lake#1147](https://github.com/oramasearch/lake/pull/1147), the first lake after v0.6.1), the image
+brings its own schema. The contract is lake's `docs/deployment/operator-interface.md`. For such an
+image the operator:
+
+1. **Reads the manifest once per image.** Job `lake-<name>-manifest` runs the Lake's `spec.image`
+   with arguments `["manifest"]`: one attempt, no environment, no network, no service account token,
+   the Lake's pull secret, uid/gid 10001. The operator reads the pod's exit code, its log (the JSON)
+   and its `imageID` (the image by digest), and caches the result in the Lake's
+   `status.imageManifest`. A Lake whose cached manifest names the same `spec.image` runs nothing.
+   The Job is deleted an hour after it finishes (`ttlSecondsAfterFinished`).
+2. **Migrates from the image before it serves.** `PostgresSchema` `lake-<name>-controldb-schema`
+   gets `spec.migrate`: its Job runs the same image, **by digest** (`status.imageManifest.imageRef`),
+   with arguments `migrate --wait-seconds 600` and `LAKE_CONTROL_DB_URI` from Secret
+   `lake-<name>-controldb-app` key `uri`. Its version is `image:<digest>`, so the migration runs
+   once per image digest. Exit 1 (a statement failed, nothing changed) and 2 (bad arguments) fail the
+   Job at once through its pod failure policy; exit 3 (database unreachable) is retried. The vendored
+   ConfigMap `lake-<name>-controldb-migrations` is deleted. The gate is the same as before: the
+   Deployment is created or updated only once the PostgresSchema is `Applied` at that version.
+3. **Takes the Stripe events and products from the manifest** (`stripe.webhook_events`,
+   `stripe.products`; see [payments.md](payments.md#the-webhook-events)).
+4. **Counts the manifest's guard tables and migrations** in restore and failover rehearsals
+   (`schema.guard_tables`, `schema.migrations`), in place of `postgresGuardCountQuery` and the
+   vendored list.
+
+While a new image's manifest is being read, nothing moves: the PostgresSchema keeps its spec, the
+Deployment keeps the old image, and the Lake reports `Progressing`. A manifest Job that cannot run (a
+pull failure, the deadline) makes the Lake `Degraded` with reason `ImageManifestFailed`; output the
+operator cannot trust (exit 0 without a manifest, exit 2 with one, `manifest_version` other than 1,
+an entry that is not a table, migration, event, product or variable name) gives
+`ImageManifestInvalid`. Either way the image stays held, and the Job is replaced and tried again two
+minutes after it finished. Every value from the manifest that reaches a Job, a SQL query or Stripe
+is checked against a pattern first.
+
+**An image that predates the commands** answers `lake manifest` with "unknown argument", its usage
+text and exit status 2, never JSON. The operator records `status.imageManifest.supported: false` and
+keeps the vendored path below: the psql Job applying `assets/lake-schema.sql`, the Go Stripe lists,
+the hard-coded guard query. Moving such a Lake to a newer image, or back, switches the PostgresSchema
+between the two forms; the new version runs the migration again, which is a no-op on a current
+database.
+
+**Roll order.** Roll the operator release carrying this first, then lake images built from
+lake#1147 onward. An older operator would apply its vendored schema to a newer image and miss the
+image's migrations.
+
+**When the vendored path can be deleted.** Once every Lake on every cluster runs an image whose
+manifest is supported (`kubectl get lakes -A -o jsonpath='{..status.imageManifest.supported}'` is
+`true` everywhere, and no set file pins `oramasearch/lake:v0.6.1` or older), the next operator
+release can delete `assets/lake-schema.sql`, `lake-schema.source.json`, `TestLakeSchemaPinnedBytes`,
+`hack/check-lake-schema.py`, `lakeStripeWebhookEvents`, `lakePaymentProducts`,
+`postgresGuardCountQuery` and the psql branch for Lakes. Until then they stay, and the steps below
+still apply to every lake release that a Lake on an older image could need.
+
+## The vendored schema (images that predate `lake manifest`)
+
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
 `oramasearch/lake` `dev` at `58356286` (lake v0.6.0's schema), through `0099_account_balances`. Its SHA-256 is
@@ -198,6 +255,13 @@ The guard check stays. A database with the guard but no `schema_migrations` tabl
 that records no migrations (the v1 dashboard schema), keep the guard-only behavior. The Job extracts
 versions with `sed`; `schemaMigrationVersions` in Go uses the same pattern, and
 `TestSchemaMigrationSedMatchesGo` checks both find the same versions in the vendored file.
+
+Both patterns accept optional whitespace before `(version)`
+([#948](https://github.com/oramasearch/orama-operator/issues/948)). Lake writes
+`0098_authentication_attempts` as `INSERT INTO schema_migrations(version) …`, with no space. Before
+the fix neither pattern saw it, so a database with the guard and every other row, but not 0098, was
+reported applied and left without it. The restore rehearsal's missing-migration query is built from
+the same list, so it now asks for 0098 too.
 `LakeRestoreRehearsal` uses the Go list to fail a restore, upgrade or failover rehearsal whose
 database lacks any of them ([Postgres data-service rehearsals](data-services/postgres.md)).
 
@@ -225,7 +289,7 @@ When lake adds a migration:
 2. Record that commit and SHA-256 in `internal/controller/assets/lake-schema.source.json`.
    Set `lakeSchemaGuardTable` in `lake_controller.go` to the newest migration's completion table.
    Each migration must record itself with `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`
-   on a line of its own: the Job and the rehearsal both read those lines to decide what is applied.
+   (a space before `(version)` is optional) on a line of its own: the Job and the rehearsal both read those lines to decide what is applied.
    The hash includes the guard. Confirm the entire combined SQL remains safe to reapply and that
    the guard becomes visible only after the migration commits. Add the guard to the Postgres
    rehearsal verification query and extend the schema proof for the migration's actual effects.

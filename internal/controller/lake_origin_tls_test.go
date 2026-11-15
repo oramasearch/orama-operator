@@ -373,6 +373,17 @@ func TestLakeAppIngressGetsOriginTLS(t *testing.T) {
 		t.Error("the app's Lake auth annotations were lost")
 	}
 
+	// The app's Secret pass keeps the Ingress's certificate copy and edge client CA. Deleting them
+	// there made each pass delete and recreate them, and the edge answered 526 in between.
+	if err := r.deleteStaleLakeAppSecrets(ctx, app, ns, map[string]bool{}); err != nil {
+		t.Fatalf("delete stale app secrets: %v", err)
+	}
+	for _, name := range []string{copyName, workload + "-edge-client-ca"} {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &corev1.Secret{}); err != nil {
+			t.Errorf("the app's Secret pass deleted %s: %v", name, err)
+		}
+	}
+
 	// Its own host: a Certificate in the Lake namespace, owned by the app; the wildcard copy goes.
 	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.example.com"); err != nil {
 		t.Fatalf("reconcile app ingress: %v", err)
@@ -518,8 +529,11 @@ func certManagerTestCRDs() []*apiextensionsv1.CustomResourceDefinition {
 				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
 					Name: "v1", Served: true, Storage: true,
 					Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-						Type:       "object",
-						Properties: map[string]apiextensionsv1.JSONSchemaProps{"spec": {Type: "object", XPreserveUnknownFields: &preserve}},
+						Type: "object",
+						Properties: map[string]apiextensionsv1.JSONSchemaProps{
+							"spec":   {Type: "object", XPreserveUnknownFields: &preserve},
+							"status": {Type: "object", XPreserveUnknownFields: &preserve},
+						},
 					}},
 				}},
 			},
@@ -528,5 +542,34 @@ func certManagerTestCRDs() []*apiextensionsv1.CustomResourceDefinition {
 	return []*apiextensionsv1.CustomResourceDefinition{
 		crd("issuers", "issuer", "Issuer"),
 		crd("certificates", "certificate", "Certificate"),
+	}
+}
+
+// A Lake a set manages points its zone policy at the zone's distributed origin-pull Secret, which
+// the set copies before it applies the Lake; a Lake no set manages leaves it unset, so its
+// cluster's operator keeps its own (operator#633).
+func TestASetManagedLakeUsesTheDistributedOriginPullSecret(t *testing.T) {
+	s := newLakeScheme(t)
+	ctx := context.Background()
+	for _, managed := range []bool{false, true} {
+		lake, secret := originTLSLake()
+		if managed {
+			lake.Labels = map[string]string{managedBySetLabel: "LakeSet.lake-prod"}
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, secret).Build()
+		if err := reconcileLakeEdgePolicy(ctx, c, s, lake, nil); err != nil {
+			t.Fatal(err)
+		}
+		var policy oramav1alpha1.EdgeZonePolicy
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); err != nil {
+			t.Fatal(err)
+		}
+		ref := policy.Spec.OriginPullSecretRef
+		switch {
+		case managed && (ref == nil || ref.Name != originPullSecretName("zone-lake-live")):
+			t.Errorf("a set-managed Lake: ref = %+v", ref)
+		case !managed && ref != nil:
+			t.Errorf("a Lake no set manages: ref = %+v", ref)
+		}
 	}
 }

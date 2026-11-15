@@ -91,6 +91,55 @@ and check its CEL rule and field validation in the API server: the issue's examp
 changing the target, team, projects, run or source is refused, and step, apply, attempt and the
 order of `projectIDs` may change.
 
+The same assets run `TestObservabilityCRDsRefuseMalformedResources` (operator#15): the observability
+CRDs install on a real API server (a CEL rule over the provider's image map exceeded the API
+server's cost budget and was replaced by a bounded value pattern), refuse an image by tag, a
+receiver that is both Slack and a webhook, a hub moved to another cluster, onto or off the managing cluster, and a `PixieCloud` for a purpose
+it does not take, and default `storage` and `nodeMemory`. The setup-envtest of controller-runtime
+0.18 fetches from a bucket that now answers 401; `setup-envtest@release-0.21 use 1.30.0` fetches
+the same binaries from GitHub.
+
+### The hub's metrics in real Prometheus
+
+`TestHubMetricsRulesInPrometheus` and `TestHubMetricsRulesIgnoreRestartsAndRemovedClusters` (promtool
+`check config` and `test rules`) and `TestHubFederatesEachLeafLive` (a hub and two leaf Prometheus
+servers, really federating, with a forging leaf, a lost leaf, a hub restart and a removal) run the
+hub's rendered configuration and rules in Prometheus 3.15, the version of the platform mirror. They
+need the release tarball's `prometheus` and `promtool`, checked against its `sha256sums.txt`:
+
+```sh
+curl -LO https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.<os>-<arch>.tar.gz
+export PROMETHEUS_BINARY_DIR=$PWD/prometheus-3.15.0.<os>-<arch>
+go test ./internal/controller -run 'HubMetrics|HubFederates'
+```
+
+Without it they are skipped, as the envtests are without `KUBEBUILDER_ASSETS`.
+
+### Re-vendoring Pixie
+
+The operator embeds the kustomize output of one commit of `oramasearch/pixie`
+(`internal/controller/assets/pixie/`). To move it, check that commit out (the umbrella bridge's
+`modules/pixie`), then:
+
+```sh
+PIXIE_COMMIT=<sha> ./hack/fetch-pixie-manifests.sh   # refuses another HEAD or local changes
+# update pixieManifestCommit in internal/controller/pixie_render.go
+go test ./internal/controller -run 'Pixie|RenderVizier'
+```
+
+The tests name every new object, image or unbudgeted container. The provider's images must then be
+built from the same commit (#455); [`observability.md`](infrastructure/observability.md#upgrading-pixie).
+
+### The observability platform charts
+
+`hack/charts/` holds the exact tarballs of kube-prometheus-stack and Perses that `helmfile.yaml` and
+every `platform.yaml` install, with their sha256 in `hack/observability-images.yaml`.
+`TestPlatformChartsRenderOfflineWithOnlyMirroredImages` renders them with the Helm SDK, offline,
+with the helmfile's values, and fails on any image that is not one of the inventory's private
+mirrors or on a pod without the pull Secret. Moving a chart's version means replacing its tarball
+(from the repository index's URL, checking the index's digest), updating the inventory's version,
+sha256 and mirrors, and mirroring the new images.
+
 The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgainstAPIServer`
 (operator#268) checks that every workspace NetworkPolicy passes API validation, that the
 Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and

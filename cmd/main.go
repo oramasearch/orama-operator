@@ -170,6 +170,46 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "PeerLink")
 		os.Exit(1)
 	}
+	// Observability (operator#15, #456): the managing cluster's abstract kinds and the pixie
+	// provider's concrete kinds run on every cluster; which do anything depends on the resources.
+	if err = (&controller.ObservabilityProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityProvider")
+		os.Exit(1)
+	}
+	if err = (&controller.ObservabilityHubReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityHub")
+		os.Exit(1)
+	}
+	if err = (&controller.ObservabilityAgentReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityAgent")
+		os.Exit(1)
+	}
+	if err = (&controller.PixieCloudReconciler{
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PixieCloud")
+		os.Exit(1)
+	}
+	if err = (&controller.PixieVizierReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PixieVizier")
+		os.Exit(1)
+	}
 	if err = (&controller.CloudflareTunnelReconciler{
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
@@ -254,8 +294,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.CloudflareZonePolicyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareZonePolicy")
 		os.Exit(1)
@@ -287,6 +328,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareR2Bucket")
+		os.Exit(1)
+	}
+	if err = (&controller.StatusPageReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "StatusPage")
 		os.Exit(1)
 	}
 	if err = (&controller.BackupScheduleReconciler{
@@ -464,8 +512,9 @@ func main() {
 	// Sets (operator#391): Lake and OramaCloudV1 instances installed onto managed clusters from
 	// one template, with their versions and settings kept as described.
 	if err = (&controller.LakeSetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSet")
 		os.Exit(1)
