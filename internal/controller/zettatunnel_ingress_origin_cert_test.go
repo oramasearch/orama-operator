@@ -44,7 +44,7 @@ func TestIngressGatewayNeverServesAHostThatRequiresOriginClientCertificates(t *t
 	companion := testOperatorIngress("lake-system", "lake-prod-extra", "Lake", "zetta-tunnel", "lake.example.com", "lake-tls", "lake-prod", 80, nil)
 	companion.Spec.Rules[0].HTTP.Paths[0].Path = "/extra"
 	// A host without the requirement is still served.
-	open := testOperatorIngress("v1", "v1-dashboard", "OramaCloudV1", "zetta-tunnel", "app.example.com", "app-tls", "v1-dashboard", 3000, nil)
+	open := testOperatorIngress("v1", "v1-dashboard", "OramaZettaCluster", "zetta-tunnel", "app.example.com", "app-tls", "v1-dashboard", 3000, nil)
 
 	objects := []client.Object{
 		lake, cutOver, optional, companion, open,

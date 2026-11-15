@@ -165,8 +165,11 @@ a reference row fails the seed. Empty seeds every plan without Stripe prices and
 Every control DB also declares the CNPG managed role `migration`, which signs in only while an
 [`OramaCloudV1Migration`](#oramacloudv1migration-separate-crd-namespaced--one-prod-1-team-copied-into-a-stack)
 targets the stack; it has no field ([`cloud-v1-migration.md`](cloud-v1-migration.md#what-the-stack-provides)).
-`spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
-serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
+`spec.components.ingressClassName` is accepted (`nginx` or `zetta-tunnel`) but ignored: a Cloud v1
+stack's Ingresses are always class `nginx`. The shared zetta-tunnel gateway refuses Cloud v1
+Ingresses and no Cloud v1 pod admits it ([#575](https://github.com/oramasearch/orama-operator/issues/575),
+LSR-210 [#805](https://github.com/oramasearch/orama-operator/issues/805);
+[`infrastructure/ingress.md`](infrastructure/ingress.md)).
 Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`, and each one's
 `extraHosts`, [below](#extra-hosts-extrahosts)) gets origin TLS: the stack owns cert-manager `Issuer`
 `<cr>-letsencrypt` (Let's Encrypt, DNS-01 with `cloudflare.apiTokenSecretRef` key `token`), and each

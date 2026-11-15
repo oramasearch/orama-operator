@@ -103,9 +103,10 @@ It refuses, and reports, rather than serve something differently:
 | Refused | Why |
 |---|---|
 | A host with no TLS Secret, or a Secret with no certificate yet | The gateway serves HTTPS only, with the host's own certificate. Certificates come from cert-manager ([#457](https://github.com/oramasearch/orama-operator/issues/457)); until it fills an Ingress's TLS Secret, that host is not served here. |
+| Cloud v1 Ingresses (controlled by an `OramaCloudV1`), of any class | Each Cloud v1 stack is served only by ingress-nginx, never by the shared gateway that serves Lake (bridge decision 5b of 2026-10-16; [#575](https://github.com/oramasearch/orama-operator/issues/575), LSR-210 [#805](https://github.com/oramasearch/orama-operator/issues/805)). No Cloud v1 pod admits the gateway either, and `spec.components.ingressClassName` is ignored for Cloud v1: its Ingresses are always class `nginx`. A stack's own ingress-nginx, with its own IngressClass and LoadBalancer, is [#573](https://github.com/oramasearch/orama-operator/issues/573). |
 | Lake app Ingresses | An app's authentication is nginx's `auth-url` subrequest to Lake, and app transfer is metered from nginx's per-Ingress byte counters (`lake_app_transfer.go`). The gateway does neither. Apps stay on ingress-nginx (`spec.apps.ingressClass` stays `nginx`) until zetta-tunnel can, so ingress-nginx cannot be removed before then. |
 | `auth-url`, `auth-signin`, rewrites, snippets, a non-HTTP backend protocol | Not implemented by the gateway; serving without them would change behaviour. |
-| Every host of an Ingress with `denylist-source-range`, on every Ingress that serves it | The gateway cannot refuse a source. Orama Cloud v1's `/metrics` deny companions ([#410](https://github.com/oramasearch/orama-operator/pull/410)) cover its public writer and reader hosts, and the main Ingress's Prefix `/` would forward `/metrics` too, so those hosts stay on ingress-nginx. An interim guard until [#575](https://github.com/oramasearch/orama-operator/issues/575) keeps the gateway from serving Cloud v1 at all; for the engine hosts, whose sandbox rules admit ingress-nginx only (bridge decision 19 of 2026-10-17), it is a second safeguard. |
+| Every host of an Ingress with `denylist-source-range`, on every Ingress that serves it | The gateway cannot refuse a source. Orama Cloud v1's `/metrics` deny companions ([#410](https://github.com/oramasearch/orama-operator/pull/410)) cover its public writer and reader hosts, and the main Ingress's Prefix `/` would forward `/metrics` too, so those hosts stay on ingress-nginx. Cloud v1 Ingresses are now refused outright (row above); this rule still protects any other operator Ingress that uses a source deny. |
 | Every host of an Ingress that requires a client certificate (`auth-tls-secret`, or `auth-tls-verify-client` other than `off`), on every Ingress that names it, of any class and owner | ingress-nginx refuses a caller without the edge's client certificate on that whole host; the Lake controller sets it when the zone has authenticated origin pulls ([`lake/origin-tls.md`](../lake/origin-tls.md)). The gateway verifies no client certificate, so serving the host would let anyone who finds its address skip the edge, its WAF and rate limits, and set the edge's attribution headers (`CF-Connecting-IP`) itself ([#798](https://github.com/oramasearch/orama-operator/issues/798), LSR-136). Such a host stays on ingress-nginx until zetta-tunnel verifies the same CA. |
 | Wildcard hosts, a host already served with another certificate, a path already routed, a missing backend Service or port | The projection would be invalid or ambiguous. |
 
@@ -123,7 +124,7 @@ that runs on that cluster:
 | Resource | Field |
 |---|---|
 | `Lake` | `spec.ingressClassName` (its Ingress and its environments') |
-| `OramaCloudV1` | `spec.components.ingressClassName` |
+| `OramaCloudV1` | none: `spec.components.ingressClassName` is ignored and Cloud v1 stays on `nginx` (#575) |
 | `OramaZettaCluster` | `spec.ingressClassName` |
 
 Each is `nginx` (the default) or `zetta-tunnel`. No operator flag or chart value changes, so no
@@ -144,8 +145,7 @@ done by hand ([operations](operations.md)).
    `curl --resolve <host>:443:<gateway address> https://<host>/` must answer as the host does through
    nginx, with its certificate.
 3. **Move the cluster's hosts**: in `config/clusters/sets/*.yaml`, set the member for that cluster to
-   `ingressClassName: zetta-tunnel` (Lake, Zetta) or `components.ingressClassName: zetta-tunnel`
-   (Cloud v1), and apply. The Ingress gets the gateway's address and its DNS record follows. The
+   `ingressClassName: zetta-tunnel` (Lake, Zetta; Cloud v1 never moves, #575), and apply. The Ingress gets the gateway's address and its DNS record follows. The
    edge must use **Full (strict)** for these hosts, declared per host by an `EdgeHostPolicy`
    (`originTLS: strict`) or zone-wide by a Lake's `EdgeZonePolicy`, never set by hand: the gateway has
    no plain HTTP listener. Rollback is the same change back to `nginx`.

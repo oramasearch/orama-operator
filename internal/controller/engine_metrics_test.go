@@ -344,9 +344,12 @@ func TestMetricsCompanionWithoutEnvoy(t *testing.T) {
 
 // zetta-tunnel's gateway cannot refuse a source, so it serves no host that a deny companion covers,
 // on any Ingress: its Prefix / would forward /metrics. Other Cloud v1 hosts stay served.
+// A source deny keeps every host it names off the gateway, whatever owns the Ingress. The owner here
+// is not OramaCloudV1, because the gateway refuses Cloud v1 Ingresses outright
+// (TestIngressGatewayNeverServesCloudV1).
 func TestIngressGatewaySkipsSourceDeniedHosts(t *testing.T) {
 	ctx := context.Background()
-	writer := testOperatorIngress("v1", "v1-writer", "OramaCloudV1", "nginx", "writer.example.com", "writer.example.com-tls", "v1-writer", 8080, nil)
+	writer := testOperatorIngress("v1", "v1-writer", "OramaZettaCluster", "nginx", "writer.example.com", "writer.example.com-tls", "v1-writer", 8080, nil)
 	companion := writer.DeepCopy()
 	companion.Name = "v1-writer-metrics"
 	companion.Annotations = map[string]string{annotationNginxDenylistSourceRange: denyAllSources}
@@ -355,7 +358,7 @@ func TestIngressGatewaySkipsSourceDeniedHosts(t *testing.T) {
 		writer, companion,
 		testTLSSecret(t, "v1", "writer.example.com-tls", "writer.example.com"),
 		testBackend("v1", "v1-writer", 8080, 8080),
-		testOperatorIngress("v1", "v1-dashboard", "OramaCloudV1", "nginx", "app.example.com", "app-tls", "v1-dashboard", 3000, nil),
+		testOperatorIngress("v1", "v1-dashboard", "OramaZettaCluster", "nginx", "app.example.com", "app-tls", "v1-dashboard", 3000, nil),
 		testTLSSecret(t, "v1", "app-tls", "app.example.com"),
 		testBackend("v1", "v1-dashboard", 3000, 3000),
 	).Build()
@@ -383,5 +386,41 @@ func TestIngressGatewaySkipsSourceDeniedHosts(t *testing.T) {
 	}
 	if !projection.Served["v1/v1-dashboard"] {
 		t.Error("the dashboard is no longer served")
+	}
+}
+
+// The shared zetta-tunnel gateway never serves a Cloud v1 Ingress, of either class and with a valid
+// certificate, and reports why (#575, LSR-210 #805). A Lake Ingress beside it is still served.
+func TestIngressGatewayNeverServesCloudV1(t *testing.T) {
+	ctx := context.Background()
+	kube := fake.NewClientBuilder().WithScheme(ocv1TestScheme(t)).WithObjects(
+		testOperatorIngress("v1", "v1-dashboard", "OramaCloudV1", "nginx", "app.example.com", "app-tls", "v1-dashboard", 3000, nil),
+		testOperatorIngress("v1", "v1-docs", "OramaCloudV1", "zetta-tunnel", "docs.example.com", "docs-tls", "v1-docs", 3000, nil),
+		testTLSSecret(t, "v1", "app-tls", "app.example.com"),
+		testTLSSecret(t, "v1", "docs-tls", "docs.example.com"),
+		testBackend("v1", "v1-dashboard", 3000, 3000),
+		testBackend("v1", "v1-docs", 3000, 3000),
+		testOperatorIngress("lake-system", "lake-prod", "Lake", "zetta-tunnel", "lake.example.com", "lake-tls", "lake-prod", 80, nil),
+		testTLSSecret(t, "lake-system", "lake-tls", "lake.example.com"),
+		testBackend("lake-system", "lake-prod", 80, 8080),
+	).Build()
+	projection, err := projectIngresses(ctx, kube)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hosts []string
+	for _, host := range projection.Document.Hosts {
+		hosts = append(hosts, host.Name)
+	}
+	if !slices.Equal(hosts, []string{"lake.example.com"}) {
+		t.Fatalf("served hosts = %v, want only Lake's", hosts)
+	}
+	for _, key := range []string{"v1/v1-dashboard", "v1/v1-docs"} {
+		if projection.Served[key] {
+			t.Errorf("%s is served by the gateway", key)
+		}
+		if !slices.Contains(projection.Skipped, key+" *: "+cloudV1GatewayRefusal) {
+			t.Errorf("skipped = %v, want %s refused as Cloud v1", projection.Skipped, key)
+		}
 	}
 }

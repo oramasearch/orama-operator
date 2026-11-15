@@ -114,10 +114,22 @@ func operatorIngress(ingress *networkingv1.Ingress) bool {
 	return owner != nil && owner.APIVersion == oramav1alpha1.GroupVersion.String()
 }
 
+// oramaCloudV1IngressOwnerKind controls every Ingress of a Cloud v1 stack (app.go, engine_metrics.go).
+const oramaCloudV1IngressOwnerKind = "OramaCloudV1"
+
+// cloudV1GatewayRefusal is the gateway's reason for never serving a Cloud v1 Ingress (#575, LSR-210
+// #805): each Cloud v1 stack is served only by ingress-nginx, never by the shared gateway that
+// serves Lake (bridge decision 5b of 2026-10-16), and the gateway cannot refuse a source, so it
+// would also serve the engine's /metrics on any host a deny companion missed.
+const cloudV1GatewayRefusal = "Cloud v1 is served only by ingress-nginx, never by the shared zetta-tunnel gateway (decision 5b, #575)"
+
 // ingressRefusal is why the gateway cannot serve an Ingress at all, or empty.
 func ingressRefusal(ingress *networkingv1.Ingress) string {
 	if owner := metav1.GetControllerOf(ingress); owner != nil && owner.Kind == "LakeApp" {
 		return "Lake apps stay on ingress-nginx: their authentication is an nginx subrequest to Lake and their transfer is metered from nginx's per-Ingress counters"
+	}
+	if owner := metav1.GetControllerOf(ingress); owner != nil && owner.Kind == oramaCloudV1IngressOwnerKind {
+		return cloudV1GatewayRefusal
 	}
 	for key := range ingress.Annotations {
 		switch key {
