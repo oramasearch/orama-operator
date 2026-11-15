@@ -465,6 +465,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if apimeta.SetStatusCondition(&desiredConditions, backupsCondition) {
 		conditionsChanged = true
 	}
+	// The instance key's sealed copy off the cluster (operator#739).
+	keyEscrow, keyEscrowCondition := r.reconcileLakeKeyEscrow(ctx, &lake, ns)
+	if apimeta.SetStatusCondition(&desiredConditions, keyEscrowCondition) {
+		conditionsChanged = true
+	}
 	// ClerkReady exists only on a Lake with spec.clerk.
 	if clerk.Condition != nil {
 		if apimeta.SetStatusCondition(&desiredConditions, *clerk.Condition) {
@@ -495,6 +500,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.SchemaPhase != schemaPhase || lake.Status.SchemaVersion != schemaVersion ||
 		!apiequality.Semantic.DeepEqual(lake.Status.ImageManifest, manifest.Status) ||
 		lake.Status.BackupReady != backupReady || !lakeBackupTimesEqual(lake.Status.LastBackupTime, lastBackupTime) ||
+		!apiequality.Semantic.DeepEqual(lake.Status.KeyEscrow, keyEscrow) ||
 		!apiequality.Semantic.DeepEqual(lake.Status.DataServices, dataServices) ||
 		lake.Status.DataServicesSummary != dataServicesSummary ||
 		!apiequality.Semantic.DeepEqual(lake.Status.Store, storeStatus) ||
@@ -511,6 +517,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.ImageManifest = manifest.Status
 		lake.Status.BackupReady = backupReady
 		lake.Status.LastBackupTime = lastBackupTime
+		lake.Status.KeyEscrow = keyEscrow
 		lake.Status.DataServices = dataServices
 		lake.Status.DataServicesSummary = dataServicesSummary
 		lake.Status.Store = storeStatus

@@ -323,6 +323,6 @@ Filed from [#453](https://github.com/oramasearch/orama-operator/issues/453), eac
 | [#736](https://github.com/oramasearch/orama-operator/issues/736) | Valkey RDB snapshots. Built. |
 | [#737](https://github.com/oramasearch/orama-operator/issues/737) | SQLite, DuckDB and Polars. Built, through the volume copy. |
 | [#738](https://github.com/oramasearch/orama-operator/issues/738) | The Lake store volume to a bucket. Built (`Volume`). |
-| [#739](https://github.com/oramasearch/orama-operator/issues/739) | Escrow of the Lake instance key. Waits on Steve. |
+| [#739](https://github.com/oramasearch/orama-operator/issues/739) | Escrow of the Lake instance key. Mechanism built ([`lake/key-escrow.md`](lake/key-escrow.md)); who holds the recovery keys is Steve's (human action). |
 | [#740](https://github.com/oramasearch/orama-operator/issues/740) | Owners create schedules and show a late or failed backup on themselves; the datastore's egress to the bucket. |
 | [#741](https://github.com/oramasearch/orama-operator/issues/741) | Restore and the scheduled restore rehearsal. |

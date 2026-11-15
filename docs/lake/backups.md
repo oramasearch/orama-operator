@@ -152,3 +152,7 @@ spec:
 Nothing of this is applied to any cluster: `spec.backups` is set in a set file, with Steve's consent
 for the apply, and the account token is Steve's to issue.
 
+The instance key is not a datastore: with `spec.backups.escrowRecipients` it is sealed to recovery
+keys held off the cluster and written to the same bucket ([`key-escrow.md`](key-escrow.md), human
+action).
+

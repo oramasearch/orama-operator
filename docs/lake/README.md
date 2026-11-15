@@ -27,7 +27,8 @@ and a store restore from the store's CSI snapshots
 ([data-services/README.md](data-services/README.md),
 [data-services/postgres.md](data-services/postgres.md)). A `LakeSet` declares rehearsals of its
 members in `spec.restoreRehearsals`; the lake-prod runbook, with what backups exist per region, is
-[restore-rehearsals.md](restore-rehearsals.md).
+[restore-rehearsals.md](restore-rehearsals.md). The instance key's sealed copy off the cluster, and
+the human steps it needs, are in [key-escrow.md](key-escrow.md).
 
 Desired deployment events in the operator's Zetta control plane become Lake-owned
 `LakeEnvironment` CRs: one restricted, quota-bound `untrusted` runtime namespace per named or
