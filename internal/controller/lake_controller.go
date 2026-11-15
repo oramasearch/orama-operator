@@ -137,6 +137,9 @@ func lakeControlDB(name string) string { return "lake-" + name + "-controldb" }
 
 func lakeControlDBScheduledBackup(name string) string { return lakeControlDB(name) + "-backup" }
 
+// lakeControlDBArchive is the Barman Cloud Plugin ObjectStore the control DB archives to.
+func lakeControlDBArchive(name string) string { return lakeControlDB(name) + "-archive" }
+
 // lakeAdminSecret holds the Lake's admin bearer token (key `token`), minted once by the operator and
 // injected as LAKE_ADMIN_TOKEN — the same pattern as OramaZettaCluster's `<name>-zetta-admin`.
 func lakeAdminSecret(name string) string { return "lake-" + name + "-admin" }
@@ -1511,19 +1514,11 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 		if lake.Spec.Postgres.Image != "" {
 			spec["imageName"] = lake.Spec.Postgres.Image
 		}
+		// The control DB archives through the Barman Cloud Plugin (CNPG-I) since operator#731:
+		// CloudNativePG removes the in-tree spec.backup.barmanObjectStore in 1.31.0. The ObjectStore
+		// has the same destination, so every backup taken the old way stays readable.
 		if backup.Enabled && backup.Valid {
-			spec["backup"] = map[string]interface{}{
-				"barmanObjectStore": map[string]interface{}{
-					"destinationPath": fmt.Sprintf("s3://%s/%s", strings.Trim(backup.Bucket, "/"), strings.Trim(backup.Path, "/")),
-					"endpointURL":     backup.Endpoint,
-					"s3Credentials": map[string]interface{}{
-						"accessKeyId":     map[string]interface{}{"name": backup.SecretName, "key": "accessKeyId"},
-						"secretAccessKey": map[string]interface{}{"name": backup.SecretName, "key": "secretAccessKey"},
-					},
-					"wal": map[string]interface{}{"compression": "gzip"},
-				},
-				"retentionPolicy": backup.Retention,
-			}
+			spec["plugins"] = barmanArchivePlugins(lakeControlDBArchive(lake.Name))
 		}
 		cluster.Object["spec"] = spec
 		// CNPG propagates inherited metadata to instances and bootstrap Jobs. Do not copy Lake's
@@ -1536,8 +1531,24 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 	if err != nil {
 		return err
 	}
+	archive := newBarmanObjectStore(ns, lakeControlDBArchive(lake.Name), "", "", "", "")
 	if !backup.Enabled || !backup.Valid {
-		return deleteIfExists(ctx, r.Client, scheduledBackup)
+		if err := deleteIfExists(ctx, r.Client, scheduledBackup); err != nil {
+			return err
+		}
+		if !barmanArchivePluginInstalled(r.Client) {
+			return nil
+		}
+		return deleteIfExists(ctx, r.Client, archive)
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, archive, func() error {
+		archive.SetLabels(lbls)
+		archive.Object["spec"] = barmanObjectStoreSpec(
+			fmt.Sprintf("s3://%s/%s", strings.Trim(backup.Bucket, "/"), strings.Trim(backup.Path, "/")),
+			backup.Endpoint, backup.SecretName, backup.Retention)
+		return controllerutil.SetControllerReference(lake, archive, r.Scheme)
+	}); err != nil {
+		return err
 	}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, scheduledBackup, func() error {
 		scheduledBackup.SetLabels(lbls)
@@ -1546,6 +1557,8 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 			"backupOwnerReference": "self",
 			"cluster":              map[string]interface{}{"name": lakeControlDB(lake.Name)},
 			"immediate":            true,
+			"method":               "plugin",
+			"pluginConfiguration":  map[string]interface{}{"name": barmanCloudPlugin},
 		}
 		return controllerutil.SetControllerReference(lake, scheduledBackup, r.Scheme)
 	})
@@ -1596,6 +1609,12 @@ func (r *LakeReconciler) resolveLakeBackupConfig(ctx context.Context, lake *oram
 			config.Message = fmt.Sprintf("backup Secret %q must contain a non-empty %s key", backup.SecretRef.Name, key)
 			return config, nil
 		}
+	}
+
+	if !barmanArchivePluginInstalled(r.Client) {
+		config.Reason = "ArchivePluginNotInstalled"
+		config.Message = "control-plane backups go through the Barman Cloud Plugin (operator#731), which is not installed on this cluster"
+		return config, nil
 	}
 
 	config.Valid = true

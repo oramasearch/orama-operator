@@ -1059,6 +1059,9 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, secret).WithStatusSubresource(lake).Build()
 	r := &LakeReconciler{Client: c, Scheme: s}
+	installed := barmanArchivePluginInstalled
+	barmanArchivePluginInstalled = func(client.Client) bool { return true }
+	t.Cleanup(func() { barmanArchivePluginInstalled = installed })
 	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}})
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -1076,14 +1079,26 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: lakeControlDB("hello")}, cluster); err != nil {
 		t.Fatalf("CNPG cluster not created: %v", err)
 	}
-	destination, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "barmanObjectStore", "destinationPath")
-	endpoint, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "barmanObjectStore", "endpointURL")
-	retention, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "retentionPolicy")
-	compression, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "barmanObjectStore", "wal", "compression")
-	accessKeySecret, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "barmanObjectStore", "s3Credentials", "accessKeyId", "name")
+	// The control DB archives through the Barman Cloud Plugin (operator#731), never the in-tree
+	// barmanObjectStore CloudNativePG 1.31 removes.
+	if _, found, _ := unstructured.NestedMap(cluster.Object, "spec", "backup"); found {
+		t.Errorf("cluster still has spec.backup: %+v", cluster.Object["spec"])
+	}
+	if archive := clusterArchive(cluster); archive != lakeControlDBArchive("hello") {
+		t.Errorf("cluster archives to %q, want %q", archive, lakeControlDBArchive("hello"))
+	}
+	store := newBarmanObjectStore("lake-dev", lakeControlDBArchive("hello"), "", "", "", "")
+	if err := c.Get(ctx, client.ObjectKeyFromObject(store), store); err != nil {
+		t.Fatalf("ObjectStore not created: %v", err)
+	}
+	destination, _, _ := unstructured.NestedString(store.Object, "spec", "configuration", "destinationPath")
+	endpoint, _, _ := unstructured.NestedString(store.Object, "spec", "configuration", "endpointURL")
+	retention, _, _ := unstructured.NestedString(store.Object, "spec", "retentionPolicy")
+	compression, _, _ := unstructured.NestedString(store.Object, "spec", "configuration", "wal", "compression")
+	accessKeySecret, _, _ := unstructured.NestedString(store.Object, "spec", "configuration", "s3Credentials", "accessKeyId", "name")
 	if destination != "s3://lake-backups/lake-hello/controldb" || endpoint != "https://account.r2.cloudflarestorage.com" ||
 		retention != "30d" || compression != "gzip" || accessKeySecret != "r2" {
-		t.Errorf("cluster backup spec = %+v", cluster.Object["spec"])
+		t.Errorf("ObjectStore spec = %+v", store.Object["spec"])
 	}
 
 	scheduledBackup := newCNPGScheduledBackup(lake, "lake-dev")
@@ -1094,7 +1109,8 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	owner, _, _ := unstructured.NestedString(scheduledBackup.Object, "spec", "backupOwnerReference")
 	clusterName, _, _ := unstructured.NestedString(scheduledBackup.Object, "spec", "cluster", "name")
 	immediate, _, _ := unstructured.NestedBool(scheduledBackup.Object, "spec", "immediate")
-	if schedule != "0 0 3 * * *" || owner != "self" || clusterName != lakeControlDB("hello") || !immediate {
+	method, _, _ := unstructured.NestedString(scheduledBackup.Object, "spec", "method")
+	if schedule != "0 0 3 * * *" || owner != "self" || clusterName != lakeControlDB("hello") || !immediate || method != "plugin" {
 		t.Errorf("ScheduledBackup spec = %+v", scheduledBackup.Object["spec"])
 	}
 	if refs := scheduledBackup.GetOwnerReferences(); len(refs) != 1 || refs[0].Name != "hello" {

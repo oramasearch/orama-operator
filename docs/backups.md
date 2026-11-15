@@ -19,8 +19,8 @@ What backs up today, per datastore, and the research behind each mechanism, are 
 | `CloudflareR2Bucket.spec.deletionPolicy` (`Retain` keeps the bucket) | **Implemented.** Required, no default. |
 | `CloudflareR2Bucket.spec.credentials` (a token scoped to the bucket, its S3 keys in a Secret) | **Implemented.** Needs an account token that may create API tokens (below). |
 | **ClickHouse** mechanism (`BACKUP ... TO S3`) | **Implemented.** The first datastore with a mechanism. |
-| **Postgres** mechanism (Lake's control plane, Cloud v1's control DB, Lake `postgres` services) | **Not built: waiting on Steve's choice** of tool ([research](research/backups/README.md#postgres-the-decision-that-is-open)). A Postgres `BackupSchedule` reports `Ready=False`, `MechanismNotAvailable`. |
-| Zetta, Kafka, Cassandra, TiDB, Valkey, SQLite, DuckDB, Polars | Not built; each is filed (see [Follow-ups](#follow-ups)). Refused the same way. |
+| **Postgres** mechanism (Lake's control plane, Cloud v1's control DB, Lake `postgres` services) through CloudNativePG's plugin interface and the **Barman Cloud Plugin** ([#731](https://github.com/oramasearch/orama-operator/issues/731), [Postgres](#postgres)) | **Implemented.** Needs the plugin's chart on every cluster (not installed: [Platform](#platform)). Lake's control plane is off `barmanObjectStore`. |
+| Zetta, Kafka, Cassandra, TiDB, Valkey, SQLite, DuckDB, Polars | See the [Mechanisms](#mechanisms) table. |
 | Owners creating schedules (a Lake for its services, an `OramaCloudV1` for its datastores) and showing a late or failed backup on themselves | **Implemented** ([#740](https://github.com/oramasearch/orama-operator/issues/740), [Owners](#owners)). Not yet applied to any cluster. |
 | The datastore's own network access during a run (accepting the run's pod; egress to the bucket for a server that writes it itself) | **Implemented** ([#740](https://github.com/oramasearch/orama-operator/issues/740), [How one backup runs](#how-one-backup-runs)). |
 | `BackupRestore` and `RestoreRehearsal` kinds, `/manager restore`, the backup manifest and verification against it | **Implemented** ([#741](https://github.com/oramasearch/orama-operator/issues/741), [Restore](#restore)). Not yet applied to any cluster. |
@@ -96,6 +96,45 @@ When the Backup has succeeded or failed, the credentials copy and both network p
 
 Status is written only when it changes; a steady schedule causes no writes. The schedule wakes for
 its next tick and for the moment it would turn late.
+
+## Postgres
+
+[#731](https://github.com/oramasearch/orama-operator/issues/731). **Decided under Steve's 2026-11-14
+delegation: the Barman Cloud Plugin** (`cloudnative-pg/plugin-barman-cloud`), because it is
+CloudNativePG's own maintained replacement for the in-tree `barmanObjectStore` that 1.31.0 removes,
+it reads every backup taken the old way (the same Barman layout), and our own CNPG-I plugin on
+pgBackRest or WAL-G would be a new repository, image and maintenance burden for the same result. The
+plugin is Apache-2.0; it runs Barman (GPL-3.0) in its own sidecar image, which we ship unmodified. A
+distribution to self-hosting customers carries Barman's licence text, notices and a pointer to its
+corresponding source; nothing of ours links to it.
+
+- **The schedule owns the archive.** A Postgres `BackupSchedule` writes, owned by it: a copy of the
+  bucket's scoped keys `<schedule>-archive-s3`, an `ObjectStore` `<schedule>-archive` pointing at
+  `s3://<bucket>/<path>/` (gzip WAL and data, `retentionPolicy` = `keep` ticks of its cron in whole
+  days), and a `NetworkPolicy` `<schedule>-archive-egress` letting the Cluster's pods (`cnpg.io/cluster`)
+  reach public HTTPS, because the sidecar ships each WAL segment as it is written. Without the
+  plugin on the cluster the schedule is `Ready=False`, `ArchivePluginNotInstalled`.
+- **The owner names the archive in its Cluster**, in `spec.plugins` (`barman-cloud.cloudnative-pg.io`,
+  `isWALArchiver: true`, `barmanObjectName: <schedule>-archive`), once the plugin is installed: a
+  Lake's `postgres` services (with `spec.backups`), an `OramaCloudV1`'s control DB (with its backup
+  bucket). Any other plugin entry is left alone. Adding the plugin restarts the instances once,
+  which is how CloudNativePG adds a sidecar.
+- **A `Backup` is a CloudNativePG `Backup`** (`method: plugin`), owned by it. The Backup succeeds
+  when CloudNativePG says `completed`, records the backup id, the archive and the server name in
+  annotations (`orama.cloud/postgres-*`), and its location is
+  `s3://<bucket>/<path>/<cluster>/base/<id>/`. It waits while the Cluster does not archive through the
+  plugin. Deleting it deletes the CNPG `Backup`, never Barman's files: Barman's retention owns them.
+- **A `BackupRestore` creates `target.name`**, a new one-instance Cluster bootstrapped by
+  `recovery` from that backup id (`targetImmediate`) through an external cluster that reads the same
+  archive, with no `spec.plugins`, so it never writes into the source's archive. It refuses an
+  existing Cluster. It is verified when CloudNativePG has read back and replayed the base backup and
+  every WAL segment to its end and the instance is ready; there is no row-level comparison for
+  Postgres (a server that keeps writing has no count to compare with). A scratch one is deleted
+  afterwards.
+- **Lake's control plane** keeps `spec.postgres.backup`: the Lake writes `lake-<name>-controldb-archive`
+  from it, names it in the Cluster, and its `ScheduledBackup` uses `method: plugin`
+  ([`lake/backups.md`](lake/backups.md)). `LakeRestoreRehearsal` reads the archive through an
+  `ObjectStore` in its scratch namespace.
 
 ## Restore
 
@@ -178,7 +217,7 @@ kind named by `spec.bucket.kind`; only `CloudflareR2Bucket` exists.
 | Datastore kind | Mechanism | Tool in the operator image | State |
 |---|---|---|---|
 | `ClickHouse` | The server's own `BACKUP ALL EXCEPT DATABASES system, information_schema, INFORMATION_SCHEMA TO S3(...)` (or `BACKUP DATABASE <database>` when the connection names one), sent over the HTTP interface (default port 8123) as the request body, never the URL. The server writes a consistent per-table snapshot straight to the bucket; `RESTORE ... FROM S3(...)` reads it back. Size from `system.backups`. The bucket secret is redacted from any reported error. | None (SQL over HTTP from Go). ClickHouse is Apache-2.0. | Implemented. The ClickHouse server needs egress to the bucket endpoint, which its own workspace policy must allow (filed). |
-| `Postgres` | Open: see the research. | — | Not built. |
+| `Postgres` | Continuous WAL archiving by the Barman Cloud Plugin's sidecar beside every instance, to the `ObjectStore` the schedule owns, plus a CloudNativePG base backup (`Backup`, `method: plugin`) per tick. Restore bootstraps a **new** Cluster from the base backup and the WAL up to its consistent point. | None in the operator image: the plugin's own sidecar (Barman, GPL-3.0, unmodified). | Implemented ([#731](https://github.com/oramasearch/orama-operator/issues/731)). |
 | Every other kind | See the research. | — | Not built. |
 
 ## An example
@@ -237,9 +276,18 @@ says what is late or failed, without changing the stack's phase.
 
 ## Platform
 
-Nothing new is installed: no chart, no CRD from another project. The two new CRDs are in
-`chart/crds` with every other kind, every controller runs on every cluster (principle 11), and
-`helmfile.yaml` and `config/clusters/*/platform.yaml` are unchanged.
+The operator's own CRDs are in `chart/crds` with every other kind and every controller runs on every
+cluster (principle 11). **What the backup system needs from the platform layer is not in this change**
+(cluster files are moving to `orama-infra`, operator#1149), and must be made in `helmfile.yaml` and
+every `config/clusters/*/platform.yaml` together, in one pull request, before an operator with this
+code is relied on for these kinds:
+
+| Release | Chart | Namespace | For | Notes |
+|---|---|---|---|---|
+| `plugin-barman-cloud` | `cnpg/plugin-barman-cloud` (the `cnpg` repository already in the helmfile, `https://cloudnative-pg.github.io/charts`), pinned to the release that supports the CNPG pin (0.29.0, operator 1.30.0) | `cnpg-system`, with the CNPG operator | Postgres (#731) | Needs cert-manager (installed) for its TLS with CNPG. Its images (`plugin-barman-cloud`, `barman-cloud` sidecar) are mirrored and pinned by digest like every platform image. `needs: [cnpg-system/cnpg, cert-manager/cert-manager]`. |
+
+Until it is installed, a Postgres schedule reports `ArchivePluginNotInstalled` and owners leave their
+Clusters unchanged, so rolling the operator first changes nothing on a running database.
 
 ## Follow-ups
 
@@ -247,7 +295,7 @@ Filed from [#453](https://github.com/oramasearch/orama-operator/issues/453), eac
 
 | Issue | What |
 |---|---|
-| [#731](https://github.com/oramasearch/orama-operator/issues/731) | **Postgres** through CNPG-I, and Lake and Cloud v1 off `barmanObjectStore` before CloudNativePG 1.31. Waits on Steve's tool choice. |
+| [#731](https://github.com/oramasearch/orama-operator/issues/731) | **Postgres** through CNPG-I, and Lake and Cloud v1 off `barmanObjectStore` before CloudNativePG 1.31. Built: the Barman Cloud Plugin. |
 | [#732](https://github.com/oramasearch/orama-operator/issues/732) | Zetta, built into the engine. |
 | [#733](https://github.com/oramasearch/orama-operator/issues/733) | Kafka: mirroring or no backup, stated on the kind. Waits on Steve. |
 | [#734](https://github.com/oramasearch/orama-operator/issues/734) | Cassandra through Medusa. |

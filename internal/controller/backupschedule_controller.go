@@ -92,6 +92,16 @@ func (r *BackupScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	case s.Spec.Suspend:
 		ready.Reason, ready.Message = "Suspended", "spec.suspend is true: no new backups"
 	}
+	// A Postgres schedule owns the archive the Cluster's WAL goes to continuously (operator#731).
+	if ready.Status == metav1.ConditionTrue && s.Spec.Datastore.Kind == oramav1alpha1.BackupDatastorePostgres {
+		reason, message, err := r.ensurePostgresArchive(ctx, &s, cronText)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if reason != "" {
+			ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, reason, message
+		}
+	}
 	canRun := ready.Status == metav1.ConditionTrue && !s.Spec.Suspend
 
 	// The newest tick is taken from the Backups themselves.

@@ -104,14 +104,14 @@ func reconcileBackup(t *testing.T, r *BackupReconciler, b *oramav1alpha1.Backup)
 }
 
 func TestBackupRefusesADatastoreKindWithNoMechanism(t *testing.T) {
-	b := testBackup(oramav1alpha1.BackupDatastorePostgres)
+	b := testBackup(oramav1alpha1.BackupDatastoreKafka)
 	r, kube, _ := newBackupReconciler(t, append(readyBackupBucket(), b)...)
 	reconcileBackup(t, r, b)
 	if b.Status.Phase != oramav1alpha1.BackupFailed {
 		t.Fatalf("phase = %q, want Failed", b.Status.Phase)
 	}
 	condition := apimeta.FindStatusCondition(b.Status.Conditions, "Complete")
-	if condition == nil || condition.Reason != "MechanismNotAvailable" || !strings.Contains(condition.Message, "Postgres") {
+	if condition == nil || condition.Reason != "MechanismNotAvailable" || !strings.Contains(condition.Message, "Kafka") {
 		t.Fatalf("condition = %+v", condition)
 	}
 	var jobs batchv1.JobList

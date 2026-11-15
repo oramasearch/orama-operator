@@ -78,7 +78,11 @@ var mechanisms = map[string]Mechanism{
 
 // resourceKinds are the kinds the controllers back up by writing their own operator's resources
 // (a CloudNativePG Backup, a MedusaBackupJob, a TiDB Operator Backup) instead of running a Job.
-var resourceKinds = map[string]bool{}
+var resourceKinds = map[string]bool{
+	// A CloudNativePG Backup through the Barman Cloud Plugin, which archives WAL continuously
+	// (operator#731).
+	"Postgres": true,
+}
 
 // RunsInJob reports whether a kind's backup and restore run as a Job of the operator's image.
 func RunsInJob(kind string) bool {

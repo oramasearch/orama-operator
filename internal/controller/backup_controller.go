@@ -125,6 +125,9 @@ func (r *BackupReconciler) run(ctx context.Context, b *oramav1alpha1.Backup, des
 		return ctrl.Result{}, nil
 	}
 	prefix := backupPrefix(b.Namespace, b.Spec.Datastore, b.Spec.Path) + "/" + b.Name
+	if driver, ok := backupDrivers[b.Spec.Datastore.Kind]; ok {
+		return r.runDriver(ctx, b, desired, driver, prefix)
+	}
 
 	job := &batchv1.Job{}
 	jobName := backupJobName(b.Name)
@@ -182,6 +185,52 @@ func (r *BackupReconciler) run(ctx context.Context, b *oramav1alpha1.Backup, des
 	default:
 		r.finish(b, desired, false, "JobFailed", fmt.Sprintf("Job %s failed: %s", jobName, jobMessage), 0)
 	}
+	return ctrl.Result{}, nil
+}
+
+// runDriver advances a Backup its kind's own operator takes.
+func (r *BackupReconciler) runDriver(ctx context.Context, b *oramav1alpha1.Backup, desired *oramav1alpha1.BackupStatus, driver backupDriver, prefix string) (ctrl.Result, error) {
+	bucket, reason, message, err := r.resolveBucket(ctx, b)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if reason != "" {
+		r.wait(b, desired, reason, message)
+		return ctrl.Result{RequeueAfter: backupWaitPoll}, nil
+	}
+	if desired.StartTime == nil {
+		now := metav1.NewTime(r.now())
+		desired.StartTime = &now
+	}
+	outcome, err := driver.backup(ctx, r, b, bucket, prefix)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !outcome.done {
+		desired.Phase, desired.Message = oramav1alpha1.BackupRunning, outcome.message
+		apimeta.SetStatusCondition(&desired.Conditions, metav1.Condition{Type: backupConditionComplete, Status: metav1.ConditionFalse, Reason: "Running", Message: outcome.message, ObservedGeneration: b.Generation})
+		return ctrl.Result{RequeueAfter: outcome.requeue}, nil
+	}
+	if outcome.succeeded && len(outcome.annotations) > 0 {
+		annotations := b.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		changed := false
+		for key, value := range outcome.annotations {
+			if annotations[key] != value {
+				annotations[key], changed = value, true
+			}
+		}
+		if changed {
+			b.SetAnnotations(annotations)
+			if err := r.Update(ctx, b); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+	desired.Location = outcome.location
+	r.finish(b, desired, outcome.succeeded, outcome.reason, outcome.message, outcome.size)
 	return ctrl.Result{}, nil
 }
 
@@ -475,7 +524,8 @@ func (r *BackupReconciler) finalize(ctx context.Context, b *oramav1alpha1.Backup
 	if !controllerutil.ContainsFinalizer(b, backupFinalizer) {
 		return nil
 	}
-	if b.Status.Location != "" {
+	_, viaDriver := backupDrivers[b.Spec.Datastore.Kind]
+	if b.Status.Location != "" && !viaDriver {
 		secret, reason, message, err := resolveBackupBucket(ctx, r.Client, b.Namespace, b.Spec.Bucket)
 		if err != nil {
 			return err
