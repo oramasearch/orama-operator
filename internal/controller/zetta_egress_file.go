@@ -98,6 +98,10 @@ type zettaEgressRender struct {
 	allow string
 	// file is true when the image re-reads the file: ZETTA_EGRESS_ALLOW is then empty.
 	file bool
+	// gateway is the ConfigMap's gateway and routes (operator#1179), set as ZETTA_EGRESS_GATEWAY and
+	// ZETTA_EGRESS_GATEWAY_ROUTES when gatewayEnv says the image reads them.
+	gateway    zettaEgressGateway
+	gatewayEnv bool
 }
 
 // zettaEgressState is what one reconcile knows about the cluster's egress allowlist file.
@@ -146,10 +150,21 @@ func (r *OramaZettaClusterReconciler) reconcileZettaEgressFileWith(
 			configMap: name,
 			allow:     configMap.Data[zettaEgressConfigMapKey],
 			file:      zettaImageReadsEgressFile(z, features),
+			gateway: zettaEgressGateway{
+				address: configMap.Data[zettaEgressGatewayKey],
+				routes:  configMap.Data[zettaEgressGatewayRoutesKey],
+			},
+			gatewayEnv: zettaImageRoutesThroughGateway(z, features),
 		},
 		features: features,
 		requeue:  requeue,
 	}, nil
+}
+
+// zettaImageRoutesThroughGateway reports whether the answer is for spec.image and says the image
+// reads ZETTA_EGRESS_GATEWAY and ZETTA_EGRESS_GATEWAY_ROUTES (zetta#1331).
+func zettaImageRoutesThroughGateway(z *oramav1alpha1.OramaZettaCluster, features *oramav1alpha1.ZettaImageFeatures) bool {
+	return features != nil && features.Image == zettaImage(z) && features.EgressGateway
 }
 
 // zettaImageReadsEgressFile reports whether the answer is for spec.image and says the image re-reads
@@ -209,6 +224,8 @@ func parseZettaImageFeatures(image, log string, exitCode int32) *oramav1alpha1.Z
 		IdentityRootRotation: clean && zettaUsageListsEnv(log, zettaIdentityMinEpochEnv),
 		ClusterCA:            clean && zettaUsageListsEnv(log, zettaClusterCAEnv),
 		ClusterCASeedFile:    clean && zettaUsageListsEnv(log, zettaClusterCASeedFileEnv),
+		EgressGateway: clean && zettaUsageListsEnv(log, zettaEgressGatewayEnv) &&
+			zettaUsageListsEnv(log, zettaEgressGatewayRoutesEnv),
 	}
 }
 
@@ -368,6 +385,14 @@ func applyZettaEgressRender(pod *corev1.PodSpec, render zettaEgressRender, specE
 	container.VolumeMounts = append(container.VolumeMounts,
 		corev1.VolumeMount{Name: zettaEgressVolume, MountPath: zettaEgressMountPath, ReadOnly: true})
 	container.Env = append(container.Env, corev1.EnvVar{Name: zettaEgressAllowFileEnv, Value: zettaEgressAllowFilePath})
+	// Named egress through the workspace gateway (operator#1179): only for an image that reads both
+	// variables, and only while the namespace has a name rule for this Zetta. Zetta reads the routes
+	// from its environment, so a change rolls the nodes.
+	if render.gatewayEnv && render.gateway.routes != "" && render.gateway.address != "" {
+		container.Env = append(container.Env,
+			corev1.EnvVar{Name: zettaEgressGatewayEnv, Value: render.gateway.address},
+			corev1.EnvVar{Name: zettaEgressGatewayRoutesEnv, Value: render.gateway.routes})
+	}
 	if findEnvVar(specEnv, zettaEgressAllowEnv) != nil {
 		return
 	}
@@ -409,6 +434,12 @@ func currentZettaEgressAllow(ctx context.Context, reader client.Reader, cluster 
 // so it goes with it and a change requeues it. A cluster with no spec.egressAllowConfigMap gets none,
 // and a ConfigMap left from before is deleted.
 func reconcileZettaEgressConfigMap(ctx context.Context, c client.Client, scheme *runtime.Scheme, cluster *oramav1alpha1.OramaZettaCluster, allow string) error {
+	return reconcileZettaEgressConfigMapWithGateway(ctx, c, scheme, cluster, allow, zettaEgressGateway{})
+}
+
+// reconcileZettaEgressConfigMapWithGateway also writes the namespace's egress gateway and the routes
+// through it (keys gateway and gatewayRoutes, operator#1179), or neither when there are no routes.
+func reconcileZettaEgressConfigMapWithGateway(ctx context.Context, c client.Client, scheme *runtime.Scheme, cluster *oramav1alpha1.OramaZettaCluster, allow string, gateway zettaEgressGateway) error {
 	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: zettaEgressConfigMapName(cluster.Name), Namespace: cluster.Namespace}}
 	if cluster.Spec.EgressAllowConfigMap == "" {
 		if err := c.Get(ctx, client.ObjectKeyFromObject(configMap), configMap); err != nil {
@@ -425,6 +456,10 @@ func reconcileZettaEgressConfigMap(ctx context.Context, c client.Client, scheme 
 		}
 		configMap.Labels = zettaLabels(cluster)
 		configMap.Data = map[string]string{zettaEgressConfigMapKey: allow}
+		if gateway.routes != "" && gateway.address != "" {
+			configMap.Data[zettaEgressGatewayKey] = gateway.address
+			configMap.Data[zettaEgressGatewayRoutesKey] = gateway.routes
+		}
 		return controllerutil.SetControllerReference(cluster, configMap, scheme)
 	})
 	if err != nil {

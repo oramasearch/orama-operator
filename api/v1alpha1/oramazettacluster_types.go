@@ -476,6 +476,11 @@ type ZettaImageFeatures struct {
 	// given the enrollment CA's seed holds the CA and signs enrollments (zetta#1513).
 	// +optional
 	ClusterCASeedFile bool `json:"clusterCASeedFile,omitempty"`
+	// EgressGateway is true when the image's usage lists ZETTA_EGRESS_GATEWAY and
+	// ZETTA_EGRESS_GATEWAY_ROUTES: it sends the routed names through the workspace egress gateway
+	// (zetta#1331, operator#1179).
+	// +optional
+	EgressGateway bool `json:"egressGateway,omitempty"`
 }
 
 // ZettaIdentitySpec asks for an identity root rotation.

@@ -81,6 +81,9 @@ var zettaManagedEnvNames = map[string]struct{}{
 	// The enrollment CA (operator#1174, zetta_identity.go): its key and seed are the operator's.
 	zettaClusterCAEnv:         {},
 	zettaClusterCASeedFileEnv: {},
+	// Named egress through the workspace gateway (operator#1179, lake_zetta_egress_gateway.go).
+	zettaEgressGatewayEnv:       {},
+	zettaEgressGatewayRoutesEnv: {},
 }
 
 // zettaCustomEnv returns accepted spec.env entries in authored order and a stable list of names the

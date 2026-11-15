@@ -164,6 +164,25 @@ what its image says, never a flag: Job **`<cluster>-zetta-features`** runs `zett
 `status.imageFeatures`. The same Job runs for every cluster, because the identity settings follow it
 too ([zetta-cluster-mtls.md](../zetta-cluster-mtls.md#identity-root-and-enrollment-ca-operator1174)).
 
+**Named egress through the workspace gateway**
+([operator#1179](https://github.com/oramasearch/orama-operator/issues/1179),
+[zetta#1331](https://github.com/oramasearch/zetta/issues/1331), zetta PR #1516,
+`internal/controller/lake_zetta_egress_gateway.go`). A DNS-name rule is served by the namespace's
+egress gateway, `zetta-tunnel-egress` on 7445: the network policy opens the gateway, never the
+destination. The Lake reconcilers write the gateway and its routes into the same ConfigMap:
+
+- key `gateway`: `zetta-tunnel-egress.<namespace>.svc.cluster.local:7445`;
+- key `gatewayRoutes`: `<dnsName>:<port>` for every name rule that applies to the Zetta (no source,
+  or source the Zetta's service), is present, and has its allowance in the sandbox, sorted.
+
+A namespace with no such rule gets neither key. The routes are a separate list from the allowlist:
+the allowlist also lists in-cluster Connection names, which must stay direct, and the names stay in
+the allowlist as well, because the engine checks it first. The node gets `ZETTA_EGRESS_GATEWAY` and
+`ZETTA_EGRESS_GATEWAY_ROUTES` only when its image's usage lists both
+(`status.imageFeatures.egressGateway`). zetta reads the routes from its environment only, so adding or
+removing a name rule rolls the Zetta's nodes. Both variables are operator-owned: `spec.env` cannot set
+them. A failed read of the namespace keeps the routes the ConfigMap already has.
+
 | The image | `ZETTA_EGRESS_ALLOW` | A rule or Connection change |
 |---|---|---|
 | Its usage lists `ZETTA_EGRESS_ALLOW_FILE` (`status.imageFeatures.egressAllowFile`) | empty: the file is the whole list | reaches the running node within seconds (it re-reads the file every 2 s, and kubelet updates a mounted ConfigMap within about a minute); **no restart** |

@@ -742,6 +742,12 @@ spec:
                       EgressAllowFile is true when the image's usage lists ZETTA_EGRESS_ALLOW_FILE: it re-reads its
                       egress allowlist from that file while it runs (zetta#1332).
                     type: boolean
+                  egressGateway:
+                    description: |-
+                      EgressGateway is true when the image's usage lists ZETTA_EGRESS_GATEWAY and
+                      ZETTA_EGRESS_GATEWAY_ROUTES: it sends the routed names through the workspace egress gateway
+                      (zetta#1331, operator#1179).
+                    type: boolean
                   identityRootRotation:
                     description: |-
                       IdentityRootRotation is true when the image's usage lists ZETTA_IDENTITY_MIN_EPOCH, which

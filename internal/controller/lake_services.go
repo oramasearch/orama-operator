@@ -873,6 +873,7 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 
 	operatorSchema := false
 	var egressAllow string
+	var egressGateway zettaEgressGateway
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		setServiceMetadata(cluster, lake, svc)
 		// Only the fields the service contract owns are written, so server-side defaults on the
@@ -892,6 +893,12 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		current, known := currentZettaEgressAllow(ctx, r.Client, cluster)
 		var egressErr error
 		egressAllow, egressErr = workspaceZettaEgressAllow(ctx, r.Client, namespace, svc.ID, current, known)
+		// The name rules' routes through the workspace egress gateway (operator#1179).
+		var gatewayErr error
+		egressGateway, gatewayErr = workspaceZettaEgressGateway(ctx, r.Client, cluster, namespace, svc.ID)
+		if gatewayErr != nil {
+			logf.FromContext(ctx).Error(gatewayErr, "Zetta egress gateway routes kept or emptied", "cluster", cluster.Name)
+		}
 		if egressErr != nil {
 			logf.FromContext(ctx).Error(egressErr, "Zetta egress allowlist kept or denied", "service", svc.ID)
 		}
@@ -911,7 +918,7 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 	}
 	// The egress allowlist file (operator#724): written once the cluster exists, which owns it. The
 	// cluster's StatefulSet waits for it.
-	if err := reconcileZettaEgressConfigMap(ctx, r.Client, r.Scheme, cluster, egressAllow); err != nil {
+	if err := reconcileZettaEgressConfigMapWithGateway(ctx, r.Client, r.Scheme, cluster, egressAllow, egressGateway); err != nil {
 		return serviceResult{}, err
 	}
 
