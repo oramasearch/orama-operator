@@ -215,6 +215,12 @@ func lakeServicesEnabled(lake *oramav1alpha1.Lake) bool {
 // lakeServicesSecret holds one <slug>.json connection per Ready service.
 func lakeServicesSecret(name string) string { return "lake-" + name + "-services" }
 
+// serviceWorkspaceAnnotation names, on lake-<lake>-services, the workspace of the service whose
+// connection is under its id (lake#945).
+const serviceWorkspaceAnnotationPrefix = "service-workspace.orama.cloud/"
+
+func serviceWorkspaceAnnotation(id string) string { return serviceWorkspaceAnnotationPrefix + id }
+
 // lakeWorkspacesSecret is the decision-45 credential Secret the services Secret replaces.
 func lakeWorkspacesSecret(name string) string { return "lake-" + name + "-workspaces" }
 
@@ -659,10 +665,12 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	}
 
 	aliases := preservedAliases
+	serviceWorkspaces := map[string]string{}
 	for _, svc := range present {
 		aliases[svc.ID] = svc.Slug
+		serviceWorkspaces[svc.ID] = svc.WorkspaceID
 	}
-	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, credentials, aliases)
+	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, credentials, aliases, serviceWorkspaces)
 	if err != nil {
 		log.Error(err, "service credentials deferred")
 	}
@@ -1202,7 +1210,7 @@ func (r *LakeReconciler) removeServiceCredential(ctx context.Context, lake *oram
 // never collide). A present one keeps its key while its connection cannot be read (a transient
 // read never removes a file lake depends on); a key keep refuses (absent, or no longer listed) is
 // dropped. It returns the slugs whose fresh credential is now in the Secret.
-func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, keep func(slug string) bool, credentials map[string][]byte, aliases map[string]string) (map[string]bool, error) {
+func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, keep func(slug string) bool, credentials map[string][]byte, aliases map[string]string, serviceWorkspaces map[string]string) (map[string]bool, error) {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: namespace}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(secret), secret); err == nil && !metav1.IsControlledBy(secret, lake) {
 		return nil, fmt.Errorf("secret %s/%s exists and is not controlled by Lake %s", namespace, secret.Name, lake.Name)
@@ -1227,6 +1235,20 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 			}
 		}
 		secret.Data = data
+		// Each present service's workspace, so an app is handed only a connection of its own
+		// workspace (lake#945). A service not listed has no annotation and binds to no app.
+		annotations := map[string]string{}
+		for key, value := range secret.Annotations {
+			if !strings.HasPrefix(key, serviceWorkspaceAnnotationPrefix) {
+				annotations[key] = value
+			}
+		}
+		for id, workspace := range serviceWorkspaces {
+			if workspace != "" && len(data[id]) > 0 {
+				annotations[serviceWorkspaceAnnotation(id)] = workspace
+			}
+		}
+		secret.Annotations = annotations
 		return controllerutil.SetControllerReference(lake, secret, r.Scheme)
 	})
 	if err != nil {
