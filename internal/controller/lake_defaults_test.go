@@ -82,8 +82,8 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 
 	env := lakeEnvMap(lake)
 	for name, want := range map[string]string{
-		"LAKE_APPS_RUNTIME_IMAGE":        "oramasearch/app-runtime:976e6a8",
-		"LAKE_METHODOLOGY_RUNTIME_IMAGE": "oramasearch/methodology-runtime:ac58062",
+		"LAKE_APPS_RUNTIME_IMAGE":        "oramasearch/app-runtime:976e6a8@sha256:ee7222fbbccdcd9dc4ec88c7ee6856b81aa876366a4abeae2bc6d13fda2146b3",
+		"LAKE_METHODOLOGY_RUNTIME_IMAGE": "oramasearch/methodology-runtime:ac58062@sha256:ee64b81a97a46917cfb278e3db3bf4692794ff3dba47ff9e05c3e436af97d1ed",
 		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892",
 		"LAKE_APPS_WILDCARD":             "lake-dev.oramadev.net",
 		"LAKE_AGENT_MODEL":               "gpt-6.1-sol",
@@ -107,12 +107,12 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 		t.Fatalf("library = %v", library)
 	}
 	for _, image := range [][2]string{
-		{lakeAgentRuntimeImage(lake), "oramasearch/agent-runtime:v0.1.0"},
-		{lakeBuilderImage(lake), "oramasearch/lake-builder:31a48d9"},
+		{lakeAgentRuntimeImage(lake), "oramasearch/agent-runtime:v0.1.0@sha256:f14cbc7b7f82d3a9bb54635011d9b5daf019cd89c41e38dce7b00185e297e73f"},
+		{lakeBuilderImage(lake), "oramasearch/lake-builder:31a48d9@sha256:35cc44ca93a191a2832d0e03e4c7c83946eb44ae917215cd7d52b8711f9d09c0"},
 		{serviceZettaImage(lake), "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"},
 		{lakeDataPlaneZettaImage(lake), "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"},
-		{lakeAppsRuntimeImage(lake), "oramasearch/app-runtime:976e6a8"},
-		{lakeMethodologyRuntimeImage(lake), "oramasearch/methodology-runtime:ac58062"},
+		{lakeAppsRuntimeImage(lake), "oramasearch/app-runtime:976e6a8@sha256:ee7222fbbccdcd9dc4ec88c7ee6856b81aa876366a4abeae2bc6d13fda2146b3"},
+		{lakeMethodologyRuntimeImage(lake), "oramasearch/methodology-runtime:ac58062@sha256:ee64b81a97a46917cfb278e3db3bf4692794ff3dba47ff9e05c3e436af97d1ed"},
 	} {
 		if image[0] != image[1] {
 			t.Errorf("image %q, want %q", image[0], image[1])
@@ -405,5 +405,21 @@ func TestTheDefaultMCPRunnerImageIsPinnedByDigestSoItsAppsCanRun(t *testing.T) {
 	// The LakeApp CRD's spec.image pattern (api/v1alpha1/lakeapp_types.go).
 	if !regexp.MustCompile(`^.+@sha256:[a-fA-F0-9]{64}$`).MatchString(runner.Value) {
 		t.Errorf("the default runner image %q does not match the LakeApp image pattern", runner.Value)
+	}
+}
+
+// orama-operator#765: every default image that runs tenant code is pinned by digest.
+func TestTenantRuntimeDefaultsArePinnedByDigest(t *testing.T) {
+	for name, image := range map[string]string{
+		"apps runtime":        lakeDefaultAppsRuntimeImage,
+		"builder":             lakeDefaultBuilderImage,
+		"methodology runtime": lakeDefaultMethodologyRuntimeImage,
+		"agent runtime":       lakeDefaultAgentRuntimeImage,
+		"MCP runner":          lakeDefaultMCPRunnerImage,
+	} {
+		at := strings.Index(image, "@sha256:")
+		if at < 0 || len(image)-at-len("@sha256:") != 64 {
+			t.Errorf("%s default %q is not pinned by a sha256 digest", name, image)
+		}
 	}
 }
