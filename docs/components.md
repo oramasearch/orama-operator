@@ -284,7 +284,8 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, `RabbitMQTopology` (`adminSecretRef`); no other workload ([#796](https://github.com/oramasearch/orama-operator/issues/796)) |
 | `<cr>-broker-users` | `writer-password`, `reader-password` | the bootstrap step, where the broker runs locally | the writer's and readers' render-config, `RabbitMQTopology` users `oramacore-writer` / `oramacore-reader` |
 | `<cr>-broker-harvest` | `password` | the bootstrap step, where the broker runs locally | harvest-master `AMQP_HOST`, `RabbitMQTopology` user `harvest` ([#824](https://github.com/oramasearch/orama-operator/issues/824)) |
-| `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL`, redis-http `SRH_CONNECTION_STRING` |
+| `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis's operator-only `admin` ACL user, never a client ([#825](https://github.com/oramasearch/orama-operator/issues/825)). Where the cache is external or central, the supplied Secret's password for every client |
+| `<cr>-cache-index-builder`, `<cr>-cache-harvest-master`, `<cr>-cache-redis-http` | `password` | the bootstrap step, where the cache runs locally | each client's own Redis ACL user ([#825](https://github.com/oramasearch/orama-operator/issues/825), [below](#redis-acl-users-cache_usersgo-825)): index-builder `REDIS_URL`, harvest-master `REDIS_HOST`, redis-http `SRH_CONNECTION_STRING` |
 | `<cr>-redis-http` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where the cache runs locally | redis-http `SRH_TOKEN`, dashboard `REDIS_CACHE_TOKEN` ([below](#the-upstash-rest-shim-redis_httpgo-562)) |
 | `<cr>-hpes` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | HPES `API_KEY`, index-builder `ORAMA_EMBEDDINGS_BEARER` ([below](#hpes-index-builders-embeddings-hpesgo-574)) |
 | `<cr>-harvest-sign` | `HARVEST_SIGN` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion or the dashboard runs | index-builder `HARVEST_SIGN`, dashboard `SCRAPER_SIGNATURE` (sent as `?signature=`), harvest-master `HARVEST_SIGNATURE` (checked): one control key under three names ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
@@ -336,11 +337,28 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 - **Wiring.** harvest-master gets `BROKER_USERNAME` (the literal `harvest`), `BROKER_PASSWORD` (from
   `<cr>-broker-harvest`) and `REDIS_PASSWORD` as entries placed before the URLs that reference them
   (`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`,
-  `redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`), and Redis runs
-  `redis-server --appendonly yes --requirepass $(REDIS_PASSWORD)`. Config files hold
+  `redis://harvest-master:$(REDIS_PASSWORD)@<cr>-cache:6379`, its own Redis user, #825), and Redis
+  runs `redis-server --appendonly yes --aclfile /etc/redis/users.acl`. Config files hold
   `__BROKER_PASSWORD__`, `__MASTER_API_KEY__` and `__ANALYTICS_API_KEY__` placeholders that a
   `render-config` init container fills into an `emptyDir`; the broker's own files also hold
   `__BROKER_USERNAME__`.
+- **Redis ACL users** <a id="redis-acl-users-cache_usersgo-825"></a>([#825](https://github.com/oramasearch/orama-operator/issues/825),
+  `cache_users.go`). Where the cache runs in this cluster, Redis loads `users.acl`, rendered by its
+  `render-config` init container into an `emptyDir` and mounted read-only by `subPath`, so no
+  password sits in the ConfigMap, the args or the Redis container's env. `default` is defined and
+  off (an ACL file that omits it would leave it on, passwordless, with every permission). `admin`
+  holds `<cr>-cache-auth`'s password with every permission, for recovery; no client reads it. Each
+  client has its own user, password `<cr>-cache-<client>`, starting from no commands
+  (`-@all +@connection -@admin -@dangerous`, so AUTH, HELLO, PING, SELECT and the harmless CLIENT
+  subcommands its library sends on connect) plus exactly what its source runs:
+  `index-builder` MGET and MSET on `v1:*`; `harvest-master` GET, SET, DEL and KEYS on `job:*` and
+  `heartbeat:*` (KEYS lists every key name, never a value: Redis applies no key pattern to it);
+  `redis-http` GET and SET on `project:*`, the dashboard's two analytics caches (the shim forwards
+  whatever the dashboard sends, so the user bounds it). FLUSHALL, CONFIG, ACL, MODULE, DEBUG, EVAL
+  and another client's keys are refused. An external or central cache is not the operator's Redis:
+  its clients keep the supplied `<cr>-cache-auth` with no user name.
+  `TestCacheACLAgainstRedis` (opt-in, `CACHE_ACL_TEST_REDIS_SERVER=<redis-server>`) loads the
+  rendered file into a real Redis and checks each user's allowed and refused commands.
 - **Every broker client has its own user** ([#99](https://github.com/oramasearch/orama-operator/issues/99),
   [#795](https://github.com/oramasearch/orama-operator/issues/795),
   [#796](https://github.com/oramasearch/orama-operator/issues/796),
@@ -391,8 +409,8 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker; `<cr>-broker-users` the writer and readers; `<cr>-broker-harvest`
-  harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master, index-builder and the dashboard; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers
+  harvest-master; `<cr>-cache-auth` the cache alone (its admin user); each `<cr>-cache-<client>` the
+  cache and that client (#825); `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master, index-builder and the dashboard; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers
   and analytics-processor, never the writer; the master key the writer, index-builder, workers and
   dashboard, never a reader. `<cr>-disco-auth` rolls DISCO, workers and index-builder;
   `<cr>-pgadmin-auth` rolls pgAdmin, whose emptyDir config DB is initialized with the retained
@@ -404,7 +422,8 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 - **Declared rotation (#594).** `spec.credentialRotation: {broker: N, cache: N}` rotates a generated
   password through the committed CR, never by replacing a Secret on the cluster. When a generation is
   above the one the Secret records (annotation `orama.cloud/credential-rotation`), the operator writes
-  a new 48-character hex password into `<cr>-broker-admin` or `<cr>-cache-auth` and records the
+  a new 48-character hex password into `<cr>-broker-admin`, or into `<cr>-cache-auth` and each
+  client's `<cr>-cache-<client>` (#825), and records the
   generation; the automatic rolls above restart the store and its clients, and the broker re-imports
   its admin user from the boot definitions, so the running broker takes the new password. The same
   generation rotates nothing again, a lower one never rotates back, and only a Secret this stack
@@ -1170,7 +1189,7 @@ and reference the primary's endpoint). Images are overridable via
 
 | Store | Component | Image | Ports |
 |---|---|---|---|
-| Redis (`--requirepass` from `<cr>-cache-auth`) | `cache` | `redis:7-alpine` | 6379 |
+| Redis (`--aclfile`, one ACL user per client, #825) | `cache` | `redis:7-alpine` | 6379 |
 | RabbitMQ (admin from `<cr>-broker-admin`) | `broker` | `rabbitmq:3.13-management` | 5672, 15672, 5552 |
 | ClickHouse | `analytics` | `clickhouse/clickhouse-server:24.8` | 8123, 9000 |
 | Typesense | `search` | `typesense/typesense:0.25.2` | 8108 |
@@ -1537,8 +1556,8 @@ protocol, in front of the stack's own Redis (bridge decisions of 2026-10-17, 7).
   never rotated by the reconcile and never removed by a teardown.
 - **Deployment and Service** `<cr>-redis-http`, port 80, one replica, `64Mi`/`50m` requested and a
   `256Mi` limit, with `NET_BIND_SERVICE` for port 80. Env, in order: `REDIS_PASSWORD` from
-  `<cr>-cache-auth`, `SRH_MODE=env`, `SRH_TOKEN` from `<cr>-redis-http`, and
-  `SRH_CONNECTION_STRING=redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`. Probes are TCP on 80 (the shim
+  `<cr>-cache-redis-http` (its own Redis user, #825), `SRH_MODE=env`, `SRH_TOKEN` from
+  `<cr>-redis-http`, and `SRH_CONNECTION_STRING=redis://redis-http:$(REDIS_PASSWORD)@<cr>-cache:6379`. Probes are TCP on 80 (the shim
   answers `GET /` but has no health route). A changed token or Redis password rolls it.
 - **Image.** `oramasearch/serverless-redis-http@sha256:65128347949bca511e448fd7238780d624573d74c22b79155a7563db19e9b678`:
   upstream `hiett/serverless-redis-http:0.0.10` (that index digest; `linux/amd64` and `linux/arm64`),

@@ -110,7 +110,8 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 		return []string{brokerUserPasswordKey(brokerWriterUser), brokerUserPasswordKey(brokerReaderUser)}
 	case brokerHarvestSecretName(oc):
 		return []string{"password"}
-	case cacheAuthSecretName(oc):
+	case cacheAuthSecretName(oc), cacheClientSecretName(oc, cacheClientIndexBuilder),
+		cacheClientSecretName(oc, cacheClientHarvestMaster), cacheClientSecretName(oc, cacheClientRedisHTTP):
 		return []string{"password"}
 	case redisHTTPSecretName(oc):
 		return []string{redisHTTPTokenKey}
@@ -257,6 +258,17 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 			return map[string][]byte{"username": []byte(brokerAdminUser), "password": []byte(p)}
 		}, rotate: rotation.Broker, legacy: &legacyCredential{key: "password", placeholder: legacyBrokerPassword}},
 		{local: storeLocal(oc, c.Cache), name: cacheAuthSecretName(oc), rotate: rotation.Cache, values: func(p string) map[string][]byte {
+			return map[string][]byte{"password": []byte(p)}
+		}},
+		// One Redis ACL user per client where the cache runs here (#825, cache_users.go); the
+		// cache rotation rotates them with the admin password.
+		{local: cacheUsersLocal(oc), name: cacheClientSecretName(oc, cacheClientIndexBuilder), rotate: rotation.Cache, values: func(p string) map[string][]byte {
+			return map[string][]byte{"password": []byte(p)}
+		}},
+		{local: cacheUsersLocal(oc), name: cacheClientSecretName(oc, cacheClientHarvestMaster), rotate: rotation.Cache, values: func(p string) map[string][]byte {
+			return map[string][]byte{"password": []byte(p)}
+		}},
+		{local: cacheUsersLocal(oc), name: cacheClientSecretName(oc, cacheClientRedisHTTP), rotate: rotation.Cache, values: func(p string) map[string][]byte {
 			return map[string][]byte{"password": []byte(p)}
 		}},
 		// The shim runs wherever the cache does (redisHTTPRuns), so its token follows the cache.

@@ -232,7 +232,9 @@ func TestSuppliedCredentialSecretIsNeverChanged(t *testing.T) {
 	if !reflect.DeepEqual(got.Data, supplied.Data) || len(got.OwnerReferences) != 0 || got.Labels != nil {
 		t.Errorf("the supplied Secret was changed: %+v", got.ObjectMeta)
 	}
-	if want := secretDataHash(got); h.templates()["cache"].Annotations[credentialsHashKey] != want {
+	// The cache's ACL file also reads each client user's generated password (#825).
+	if want := secretDataHash(got, h.secret("v1-cache-index-builder"), h.secret("v1-cache-harvest-master"),
+		h.secret("v1-cache-redis-http")); h.templates()["cache"].Annotations[credentialsHashKey] != want {
 		t.Error("the cache does not carry the supplied Secret's hash")
 	}
 }
@@ -306,7 +308,15 @@ func TestCredentialSecretCreateRace(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "orama-system", Name: "v1-cache"}, sts); err != nil {
 		t.Fatal(err)
 	}
-	if sts.Spec.Template.Annotations[credentialsHashKey] != secretDataHash(got) {
+	clients := []*corev1.Secret{got}
+	for _, user := range []string{cacheClientIndexBuilder, cacheClientHarvestMaster, cacheClientRedisHTTP} {
+		sec := &corev1.Secret{}
+		if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "orama-system", Name: cacheClientSecretName(oc, user)}, sec); err != nil {
+			t.Fatal(err)
+		}
+		clients = append(clients, sec)
+	}
+	if sts.Spec.Template.Annotations[credentialsHashKey] != secretDataHash(clients...) {
 		t.Error("the cache's hash is not the winning Secret's")
 	}
 }
@@ -314,12 +324,16 @@ func TestCredentialSecretCreateRace(t *testing.T) {
 // The broker renders rabbitmq.conf and its boot definitions from <cr>-broker-admin into a private
 // emptyDir, mounts them read-only beside the unchanged enabled_plugins, and the engine and
 // nothing else reads that Secret: the engine signs in as its own users and harvest-master as harvest.
-// Redis and its clients share <cr>-cache-auth.
+// Redis loads one ACL user per client (#825), and each client signs in as its own.
 func TestBrokerAndCacheCredentialWiring(t *testing.T) {
 	h := newEngineHarness(t, stackOC(nil), engineSecret())
 	h.mustRun()
 	broker, cache, harvest := h.secret("v1-broker-admin"), h.secret("v1-cache-auth"), h.secret("v1-broker-harvest")
 	secrets := map[string]*corev1.Secret{broker.Name: broker, cache.Name: cache, harvest.Name: harvest, testMasterSecret: h.secret(testMasterSecret)}
+	for _, user := range []string{cacheClientIndexBuilder, cacheClientHarvestMaster, cacheClientRedisHTTP} {
+		sec := h.secret("v1-cache-" + user)
+		secrets[sec.Name] = sec
+	}
 	tmpls := h.templates()
 	brokerAdminEnv := []corev1.EnvVar{secretKeyEnv("BROKER_USERNAME", "v1-broker-admin", "username"), secretKeyEnv("BROKER_PASSWORD", "v1-broker-admin", "password")}
 	// The writer signs in as oramacore-writer and the readers as oramacore-reader (#99, #795;
@@ -405,21 +419,68 @@ func TestBrokerAndCacheCredentialWiring(t *testing.T) {
 		}
 	}
 
-	// Redis: --requirepass from the cache Secret; clients' URLs expand from the entries before them.
+	// Redis: --aclfile, rendered at pod start from the admin and client Secrets; no password in its
+	// args or env. Clients' URLs name their own user and expand from the entries before them.
 	redis := containerIn(t, tmpls["cache"].Spec, "cache")
-	env := expandEnv(t, redis.Env, secrets)
-	args := strings.Join(redis.Args, " ")
-	if args != "redis-server --appendonly yes --requirepass $(REDIS_PASSWORD)" || env["REDIS_PASSWORD"] != string(cache.Data["password"]) {
-		t.Errorf("redis args %q, REDIS_PASSWORD from the cache Secret: %v", args, env["REDIS_PASSWORD"] == string(cache.Data["password"]))
+	if args := strings.Join(redis.Args, " "); args != "redis-server --appendonly yes --aclfile /etc/redis/users.acl" {
+		t.Errorf("redis args %q", args)
 	}
-	redisURL := "redis://:" + string(cache.Data["password"]) + "@v1-cache:6379"
+	for _, e := range redis.Env {
+		if e.Name == redisPasswordEnv {
+			t.Error("the Redis container carries a password variable; only its render-config does")
+		}
+	}
+	cacheCM := &corev1.ConfigMap{}
+	h.get("v1-cache-config", cacheCM)
+	acl := renderedCacheACL(t, cacheCM.Data[cacheACLFile], containerIn(t, tmpls["cache"].Spec, "render-config").Env, secrets)
+	for _, line := range []string{
+		"user default off resetkeys resetchannels -@all",
+		"user admin on >" + string(cache.Data["password"]) + " ~* &* +@all",
+		"user index-builder on >" + string(secrets["v1-cache-index-builder"].Data["password"]) + " resetchannels ~v1:* -@all +@connection -@admin -@dangerous +mget +mset",
+		"user harvest-master on >" + string(secrets["v1-cache-harvest-master"].Data["password"]) + " resetchannels ~job:* ~heartbeat:* -@all +@connection -@admin -@dangerous +get +set +del +keys",
+		"user redis-http on >" + string(secrets["v1-cache-redis-http"].Data["password"]) + " resetchannels ~project:* -@all +@connection -@admin -@dangerous +get +set",
+	} {
+		if !slices.Contains(strings.Split(acl, "\n"), line) {
+			t.Errorf("rendered users.acl lacks %q:\n%s", line, acl)
+		}
+	}
+	url := func(user string) string {
+		return "redis://" + user + ":" + string(secrets["v1-cache-"+user].Data["password"]) + "@v1-cache:6379"
+	}
 	hm := expandEnv(t, containerIn(t, tmpls["harvest-master"].Spec, "harvest-master").Env, secrets)
-	if hm["AMQP_HOST"] != "amqp://harvest:"+string(harvest.Data["password"])+"@v1-broker:5672" || hm["REDIS_HOST"] != redisURL {
-		t.Error("harvest-master's AMQP_HOST or REDIS_HOST does not expand to the generated credentials")
+	if hm["AMQP_HOST"] != "amqp://harvest:"+string(harvest.Data["password"])+"@v1-broker:5672" || hm["REDIS_HOST"] != url(cacheClientHarvestMaster) {
+		t.Error("harvest-master's AMQP_HOST or REDIS_HOST does not expand to its own credentials")
 	}
-	if ib := expandEnv(t, containerIn(t, tmpls["index-builder"].Spec, "index-builder").Env, secrets); ib["REDIS_URL"] != redisURL {
-		t.Error("index-builder's REDIS_URL does not expand to the cache password")
+	if ib := expandEnv(t, containerIn(t, tmpls["index-builder"].Spec, "index-builder").Env, secrets); ib["REDIS_URL"] != url(cacheClientIndexBuilder) {
+		t.Error("index-builder's REDIS_URL does not expand to its own Redis user")
 	}
+	// No client reads the admin password.
+	for _, component := range []string{"harvest-master", "index-builder", "redis-http"} {
+		for _, c := range tmpls[component].Spec.Containers {
+			for _, e := range c.Env {
+				if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == "v1-cache-auth" {
+					t.Errorf("%s reads the Redis admin password (%s)", component, e.Name)
+				}
+			}
+		}
+	}
+}
+
+// renderedCacheACL runs the cache's render-config substitution on the ACL template in Go: each
+// __VAR__ becomes the value its env entry expands to.
+func renderedCacheACL(t *testing.T, tmpl string, env []corev1.EnvVar, secrets map[string]*corev1.Secret) string {
+	t.Helper()
+	if tmpl == "" {
+		t.Fatal("v1-cache-config has no users.acl")
+	}
+	values := expandEnv(t, env, secrets)
+	for name, value := range values {
+		tmpl = strings.ReplaceAll(tmpl, keyPlaceholder(name), value)
+	}
+	if strings.Contains(tmpl, "__") {
+		t.Fatalf("users.acl has an unfilled placeholder:\n%s", tmpl)
+	}
+	return tmpl
 }
 
 // Every master key consumer takes MASTER_API_KEY from the reference, with a custom key, as an
@@ -733,7 +794,7 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			steady("an unchanged reconcile")
 			h.setSecret("unrelated", "X", "2")
 			steady("an unrelated Secret change")
-			for _, name := range []string{"v1-cache-auth", "v1-redis-http", "v1-broker-admin", "v1-broker-users", "v1-broker-harvest", "v1-harvest-sign", "v1-harvest-notification", "v1-analytics-api-key", testMasterSecret} {
+			for _, name := range []string{"v1-cache-auth", "v1-cache-index-builder", "v1-cache-harvest-master", "v1-cache-redis-http", "v1-redis-http", "v1-broker-admin", "v1-broker-users", "v1-broker-harvest", "v1-harvest-sign", "v1-harvest-notification", "v1-analytics-api-key", testMasterSecret} {
 				sec := h.secret(name)
 				sec.Labels = map[string]string{"touched": "yes"}
 				data := map[string][]byte{}
@@ -751,8 +812,16 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			}
 			steady("metadata edits and rewritten data")
 
+			// Each client signs in as its own Redis user (#825): the admin password rolls only the
+			// cache, and a client's password rolls the cache and that client.
 			h.setSecret("v1-cache-auth", "password", "rotatedcache0123")
-			rolled("a cache password change", []string{"cache", "harvest-master", "index-builder", "redis-http"})
+			rolled("a cache admin password change", []string{"cache"})
+			h.setSecret("v1-cache-index-builder", "password", "rotatedcacheib0123")
+			rolled("an index-builder Redis password change", []string{"cache", "index-builder"})
+			h.setSecret("v1-cache-harvest-master", "password", "rotatedcachehm0123")
+			rolled("a harvest-master Redis password change", []string{"cache", "harvest-master"})
+			h.setSecret("v1-cache-redis-http", "password", "rotatedcacherh0123")
+			rolled("a redis-http Redis password change", []string{"cache", "redis-http"})
 			// The shim requires the token and the dashboard sends it (#562).
 			h.setSecret("v1-redis-http", "token", "rotatedredishttp0123")
 			rolled("a redis-http token change", []string{"dashboard", "redis-http"})

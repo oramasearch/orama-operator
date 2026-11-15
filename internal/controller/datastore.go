@@ -259,18 +259,22 @@ func storeImage(oc *oramav1alpha1.OramaCloudV1, component, def string) string {
 
 // ---- per-store reconcilers (wired into the reconcile step-list) ----
 
-// reconcileCache runs Redis with a password (#307): --requirepass takes $(REDIS_PASSWORD), which the
-// kubelet expands from <cr>-cache-auth, so the pod spec names the variable, not the value. Every
-// in-cluster client gets the same variable and a URL that references it (redisURL).
+// reconcileCache runs Redis with one ACL user per client (#825, cache_users.go): --aclfile loads the
+// file the render init container fills from <cr>-cache-auth (the operator-only admin) and each
+// client's <cr>-cache-<client>, so neither the ConfigMap nor the pod spec holds a password. The
+// default user is off. Each client gets its own password variable and a URL naming its user
+// (redisClientURL).
 func (r *OramaCloudV1Reconciler) reconcileCache(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Cache, dataStoreDef{
 		component:         "cache",
 		image:             "redis:7-alpine@sha256:892022f9f18c26c92c30e15194d132f90044af87b94a491a75429bbc3982eab1",
 		ports:             []corev1.ContainerPort{{Name: "redis", ContainerPort: 6379}},
 		dataPath:          "/data",
-		env:               []corev1.EnvVar{redisPasswordEnvVar(oc)},
-		args:              []string{"redis-server", "--appendonly", "yes", "--requirepass", "$(" + redisPasswordEnv + ")"},
-		credentialSecrets: []string{cacheAuthSecretName(oc)},
+		args:              []string{"redis-server", "--appendonly", "yes", "--aclfile", cacheACLMount + "/" + cacheACLFile},
+		configMount:       cacheACLMount,
+		configTemplates:   map[string]string{cacheACLFile: cacheACLTemplate()},
+		templateEnv:       cacheACLTemplateEnv(oc),
+		credentialSecrets: cacheServerSecrets(oc),
 		// Right-size (#18): a GENEROUS memory limit — the binary-side cap (Redis `maxmemory` +
 		// eviction policy, derived from this number) is #42; until then keep headroom so the cache
 		// isn't OOM-killed. Override via spec.components.cache.resources.
