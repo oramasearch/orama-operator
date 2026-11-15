@@ -127,6 +127,11 @@ func (r *LakeReconciler) syncLakeTunnel(ctx context.Context, lake *oramav1alpha1
 	if message := validateTunnelGrant(grant); message != "" {
 		return LakeTunnelGrantStatus{GrantID: grant.ID, Phase: oramav1alpha1.TunnelPhaseFailed, Message: message, ObservedGeneration: grant.Generation}, nil
 	}
+	if refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, grant.WorkspaceNamespace, grant.WorkspaceID, grant.CustomerID); err != nil {
+		return LakeTunnelGrantStatus{}, err
+	} else if refusal != "" {
+		return LakeTunnelGrantStatus{GrantID: grant.ID, Phase: oramav1alpha1.TunnelPhaseFailed, Message: refusal, ObservedGeneration: grant.Generation}, nil
+	}
 	tunnel := &oramav1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: lakeTunnelName(grant.ID), Namespace: grant.WorkspaceNamespace}}
 	err := r.Get(ctx, client.ObjectKeyFromObject(tunnel), tunnel)
 	exists := err == nil

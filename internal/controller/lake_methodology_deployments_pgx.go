@@ -25,8 +25,8 @@ const listMethodologyDeploymentsSQL = `SELECT d.id::text, d.customer_id::text, d
        COALESCE(ds.credential_sha256, ''), COALESCE(ds.endpoint, ''), COALESCE(ds.observed_generation, 0),
        ds.ready_at, ds.stopped_at
   FROM methodology_deployments d
-  LEFT JOIN workspaces w ON w.id = d.workspace_id
-  LEFT JOIN builds b ON b.id = d.build_id
+  LEFT JOIN workspaces w ON w.id = d.workspace_id AND w.customer_id = d.customer_id
+  LEFT JOIN builds b ON b.id = d.build_id AND b.customer_id = d.customer_id
   LEFT JOIN methodology_deployment_status ds ON ds.deployment_id = d.id
  WHERE d.desired = 'present'
     OR ds.deployment_id IS NULL

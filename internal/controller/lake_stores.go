@@ -213,6 +213,16 @@ func (r *LakeReconciler) reconcileLakeStores(ctx context.Context, lake *oramav1a
 			pass.present[st.Slug] = true
 			pass.stores = append(pass.stores, st)
 			workspaceLabels := withLabels(labels, map[string]string{workspaceLabel: st.WorkspaceID})
+			refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, st.WorkspaceNamespace, st.WorkspaceID, st.CustomerID)
+			if err != nil {
+				log.Error(err, "store reconcile deferred", "store", st.ID, "slug", st.Slug)
+				pass.changing = true
+				continue
+			}
+			if refusal != "" {
+				pass.results[st.ID] = serviceResult{phase: ServicePhaseFailed, message: refusal}
+				continue
+			}
 			result, err := r.reconcileCustomerStore(ctx, lake, st.WorkspaceNamespace, credentialNamespace, workspaceLabels, st)
 			if err != nil {
 				log.Error(err, "store reconcile deferred", "store", st.ID, "slug", st.Slug)

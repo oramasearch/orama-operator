@@ -61,6 +61,26 @@ joined workspace namespace and labelled with the full workspace UUID. App resour
 names include the first 12 app-ID hex characters so multiple apps can share the namespace without
 colliding. Standalone `LakeApp` resources retain their separately owned app namespace.
 
+## Workspace routing is checked by the operator (operator#781)
+
+Every row that places objects in a workspace namespace (services, stores, agent launches and
+schedules, connections, egress rules, tunnel grants, peers, apps, methodology runs and deployments)
+is routed by lake's `workspaces` table. The operator does not take that routing on trust:
+
+- **Each listing joins the workspace on the row's own customer**: `JOIN workspaces w ON w.id =
+  <row>.workspace_id AND w.customer_id = <row>.customer_id`, and a methodology row's build with
+  `b.customer_id = <row>.customer_id`. A row naming another customer's workspace reaches no
+  namespace.
+- **Before writing, the namespace is checked on the cluster** (`workspaceNamespaceRefusal`,
+  `internal/controller/lake_workspace_routing.go`): it must not be the Lake namespace, and it must
+  carry `orama.cloud/workspace=<workspace id>`, `orama.cloud/customer=<customer id>` and
+  `orama.cloud/lake=<lake>`, the labels this reconciler writes. Otherwise the row is `Failed` with
+  the reason, and nothing is written. A namespace that does not exist is not refused there: no
+  intake creates one, so the API server refuses the write and the row waits.
+
+Apps had the same check from #713 (`lakeapp_controller.go`); lake's routing triggers remain the first
+line.
+
 ## Workspace Zetta ownership
 
 The workspace reconciler creates `<lake>-ws-<first 12 workspace UUID hex>` in the reconciled

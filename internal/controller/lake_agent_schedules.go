@@ -302,6 +302,12 @@ func (r *LakeReconciler) reconcileLakeAgentSchedules(ctx context.Context, lake *
 			}
 			status, err = r.stopAgentSchedule(ctx, lake, schedule.WorkspaceNamespace, schedule)
 		case serviceDesiredPresent:
+			var refusal string
+			if refusal, err = workspaceNamespaceRefusal(ctx, r.Client, lake, schedule.WorkspaceNamespace, schedule.WorkspaceID, schedule.CustomerID); err != nil || refusal != "" {
+				status = LakeAgentScheduleStatus{ScheduleID: schedule.ID, Phase: AgentPhaseFailed,
+					Message: refusal, ObservedGeneration: schedule.Generation}
+				break
+			}
 			var still bool
 			status, still, err = r.reconcileAgentSchedule(ctx, lake, schedule.WorkspaceNamespace, workspaceLabels, store, schedule)
 			changing = changing || still

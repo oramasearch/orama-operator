@@ -22,7 +22,7 @@ const listNetworkConnectionsSQL = `SELECT c.id::text, c.customer_id::text, c.wor
        st.connection_id IS NOT NULL, COALESCE(st.phase, ''), COALESCE(st.message, ''),
        COALESCE(st.credential_secret, ''), COALESCE(st.observed_generation, 0)
   FROM network_connections c
-  JOIN workspaces w ON w.id = c.workspace_id
+  JOIN workspaces w ON w.id = c.workspace_id AND w.customer_id = c.customer_id
   LEFT JOIN network_connection_status st ON st.connection_id = c.id
  WHERE NOT (c.desired = 'absent' AND COALESCE(st.phase, '') = 'Deleted')
  ORDER BY c.created_at, c.id`

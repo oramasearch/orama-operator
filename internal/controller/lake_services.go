@@ -631,6 +631,15 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 			changing = true
 			continue
 		}
+		refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, svc.WorkspaceNamespace, svc.WorkspaceID, svc.CustomerID)
+		if err != nil {
+			log.Error(err, "service reconcile deferred", "service", svc.ID, "slug", svc.Slug)
+			continue
+		}
+		if refusal != "" {
+			results[svc.ID] = serviceResult{phase: ServicePhaseFailed, message: refusal}
+			continue
+		}
 		result, err := r.reconcileLakeService(ctx, lake, svc.WorkspaceNamespace, svc, &live)
 		if err != nil {
 			log.Error(err, "service reconcile deferred", "service", svc.ID, "slug", svc.Slug)

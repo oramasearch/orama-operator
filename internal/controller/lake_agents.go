@@ -820,6 +820,12 @@ func (r *LakeReconciler) reconcileLakeAgentLaunches(ctx context.Context, lake *o
 			}
 			status, err = r.stopAgentLaunch(ctx, lake, launch.WorkspaceNamespace, launch)
 		case serviceDesiredPresent:
+			var refusal string
+			if refusal, err = workspaceNamespaceRefusal(ctx, r.Client, lake, launch.WorkspaceNamespace, launch.WorkspaceID, launch.CustomerID); err != nil || refusal != "" {
+				status = LakeAgentLaunchStatus{LaunchID: launch.ID, Phase: AgentPhaseFailed, Result: "null",
+					Message: refusal, ObservedGeneration: launch.Generation}
+				break
+			}
 			var still bool
 			status, still, err = r.reconcileAgentLaunch(ctx, lake, launch.WorkspaceNamespace, workspaceLabels, launch)
 			changing = changing || still
