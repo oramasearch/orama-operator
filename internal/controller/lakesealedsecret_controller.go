@@ -423,8 +423,9 @@ func (r *LakeSealedSecretReconciler) secretContentMACValid(
 // service-account token authorizes cluster-wide Secret and workload access and must never leave the
 // operator (LSR-042, orama-operator#791). Lake authenticates the call with its admin bearer alone.
 type lakeMintRequest struct {
-	Recipient lakeMintRecipient                    `json:"recipient"`
-	Source    oramav1alpha1.LakeSealedSecretSource `json:"source"`
+	WorkspaceID string                               `json:"workspace_id"`
+	Recipient   lakeMintRecipient                    `json:"recipient"`
+	Source      oramav1alpha1.LakeSealedSecretSource `json:"source"`
 }
 
 type lakeMintRecipient struct {
@@ -469,7 +470,12 @@ func (r *LakeSealedSecretReconciler) mintSealedSecret(
 	lake *oramav1alpha1.Lake,
 	resource *oramav1alpha1.LakeSealedSecret,
 ) (lakeMintResult, error) {
+	// Lake checks the mount belongs to this workspace on every delivery (lake#950, lake#971).
+	if resource.Spec.WorkspaceID == "" {
+		return lakeMintResult{}, errors.New("spec.workspaceID is required for a lake or dynamic source")
+	}
 	requestBody := lakeMintRequest{
+		WorkspaceID: resource.Spec.WorkspaceID,
 		Recipient: lakeMintRecipient{
 			Cluster:   lake.Status.Sealing.Cluster,
 			Namespace: resource.Namespace,

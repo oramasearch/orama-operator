@@ -31,6 +31,14 @@ type LakeSealedSecretSpec struct {
 
 	// Source selects ciphertext, a lake reference, a dynamic lease, or an environment delivery.
 	Source LakeSealedSecretSource `json:"source"`
+
+	// WorkspaceID is the lake workspace the produced Secret is for: the workspace of the app,
+	// store or environment that mounts it, taken from that object's own row. It is required for a
+	// lake or dynamic source and sent with every delivery request, and lake refuses a mount of any
+	// other workspace (lake#950, lake#971). It cannot change once set.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="workspaceID is immutable"
+	WorkspaceID string `json:"workspaceID,omitempty"`
 }
 
 // LakeSealedSecretTemplate describes the produced Secret.
