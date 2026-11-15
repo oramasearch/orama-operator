@@ -209,9 +209,11 @@ its apps' and its environments'):
 `"false"` is written rather than left out because ingress-nginx redirects every host that has a
 certificate by default.
 
-A host that requires the client certificate is never served by the zetta-tunnel ingress gateway,
-which verifies no client certificate: the projection refuses it on every Ingress that names it
-([`infrastructure/ingress.md`](../infrastructure/ingress.md#what-it-serves),
+The zetta-tunnel ingress gateway serves a host that requires the client certificate with the same
+requirement: the projection gives the host zetta-tunnel's `client_ca`, the `ca.crt` of this Secret,
+on every Ingress that names it, so a caller without the edge's certificate fails the handshake there
+too ([`infrastructure/ingress.md`](../infrastructure/ingress.md#origin-hosts-both-gateways-protect-them-alike),
+[#1152](https://github.com/oramasearch/orama-operator/issues/1152); refused outright before,
 [#798](https://github.com/oramasearch/orama-operator/issues/798)). Without that, the gateway's public
 load balancer would be a second origin without the requirement.
 

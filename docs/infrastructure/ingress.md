@@ -30,7 +30,7 @@ Pod Security, its own `NetworkSandbox`):
 | `IngressClass/zetta-tunnel` | Controller `orama.cloud/zetta-tunnel-ingress`. Not the default class. |
 | Service `zetta-tunnel-ingress` | `LoadBalancer`, TCP 443 to the gateway's 8443, `externalTrafficPolicy: Local` (as ingress-nginx needs on AKS). Exists always, so its address is known before any host moves. |
 | Deployment `zetta-tunnel-ingress` | `zetta-tunnel ingress --configuration /etc/zetta-ingress/routes.json --listen 0.0.0.0:8443 --health-listen 0.0.0.0:8080 --audit -`, two replicas spread over nodes (zero while there is nothing to serve), restricted, non-root, read-only root, PodDisruptionBudget of one. Its pull secrets are copies of the manager pod's own. |
-| Secret `zetta-tunnel-ingress-routes` | `routes.json` (zetta-tunnel's exact projection) and, beside it, `<host>.crt` and `<host>.key` for every served host, copied from each Ingress's TLS Secret. One Secret, mounted without `subPath`, so a complete generation reaches the gateway at once; it re-reads every two seconds. |
+| Secret `zetta-tunnel-ingress-routes` | `routes.json` (zetta-tunnel's exact projection) and, beside it, `<host>.crt` and `<host>.key` for every served host, copied from each Ingress's TLS Secret, and `<host>.client-ca.pem` for a host that requires an origin client certificate (below). One Secret, mounted without `subPath`, so a complete generation reaches the gateway at once; it re-reads every two seconds. |
 | ConfigMap `zetta-tunnel-ingress-report` | `served` (hosts), `skipped` (`namespace/ingress host: reason`), `on-nginx` (operator Ingresses still on class `nginx`). |
 | NetworkSandbox | The public reaches only 8443; the gateway reaches only the served backends' pods on their target ports, and DNS. |
 
@@ -50,8 +50,10 @@ longer validates Ingresses through nginx's webhook.
 
 This reduces exposure while the retirement finding
 [operator#820](https://github.com/oramasearch/orama-operator/issues/820) remains open. The gateway
-still lacks apps' authentication subrequests and byte metering, origin client-certificate
-verification, and Cloud v1's protected-route behavior. Removing nginx before those paths have a
+still lacks apps' authentication subrequests and byte metering, and Cloud v1's protected-route
+behavior. Origin client-certificate verification is no longer a gap: the gateway verifies the same CA
+as nginx ([below](#origin-hosts-both-gateways-protect-them-alike)), once the operator pins a
+zetta-tunnel that has it. Removing nginx before those paths have a
 replacement would interrupt service or bypass their controls. The controller-replacement decision
 also needs to reconcile [operator#573](https://github.com/oramasearch/orama-operator/issues/573),
 which currently requires a dedicated ingress-nginx for each Cloud v1 stack. No cutover or live
@@ -106,8 +108,43 @@ It refuses, and reports, rather than serve something differently:
 | Lake app Ingresses | An app's authentication is nginx's `auth-url` subrequest to Lake, and app transfer is metered from nginx's per-Ingress byte counters (`lake_app_transfer.go`). The gateway does neither. Apps stay on ingress-nginx (`spec.apps.ingressClass` stays `nginx`) until zetta-tunnel can, so ingress-nginx cannot be removed before then. |
 | `auth-url`, `auth-signin`, rewrites, snippets, a non-HTTP backend protocol | Not implemented by the gateway; serving without them would change behaviour. |
 | Every host of an Ingress with `denylist-source-range`, on every Ingress that serves it | The gateway cannot refuse a source. Orama Cloud v1's `/metrics` deny companions ([#410](https://github.com/oramasearch/orama-operator/pull/410)) cover its public writer and reader hosts, and the main Ingress's Prefix `/` would forward `/metrics` too, so those hosts stay on ingress-nginx. An interim guard until [#575](https://github.com/oramasearch/orama-operator/issues/575) keeps the gateway from serving Cloud v1 at all; for the engine hosts, whose sandbox rules admit ingress-nginx only (bridge decision 19 of 2026-10-17), it is a second safeguard. |
-| Every host of an Ingress that requires a client certificate (`auth-tls-secret`, or `auth-tls-verify-client` other than `off`), on every Ingress that names it, of any class and owner | ingress-nginx refuses a caller without the edge's client certificate on that whole host; the Lake controller sets it when the zone has authenticated origin pulls ([`lake/origin-tls.md`](../lake/origin-tls.md)). The gateway verifies no client certificate, so serving the host would let anyone who finds its address skip the edge, its WAF and rate limits, and set the edge's attribution headers (`CF-Connecting-IP`) itself ([#798](https://github.com/oramasearch/orama-operator/issues/798), LSR-136). Such a host stays on ingress-nginx until zetta-tunnel verifies the same CA. |
+| A host that requires a client certificate the gateway cannot check exactly as nginx does: `auth-tls-verify-client` other than `on` (`optional`, `optional_no_ca`, `off` with a CA), no `auth-tls-secret`, a CA Secret that is missing or has no PEM `ca.crt`, or two Ingresses for the host naming different CAs | The gateway either requires a certificate from the host's CA or asks for none, so it never serves a protected host more loosely than nginx, nor guesses which CA applies. A host that requires the certificate the way the Lake controller sets it is served, with its CA (next section). |
 | Wildcard hosts, a host already served with another certificate, a path already routed, a missing backend Service or port | The projection would be invalid or ambiguous. |
+
+## Origin hosts: both gateways protect them alike
+
+A host whose zone has Cloudflare authenticated origin pulls requires the edge's client certificate:
+the Lake controller sets nginx's `auth-tls-secret` (a Secret `<ingress>-edge-client-ca` whose
+`ca.crt` is the zone's origin-pull CA, from `orama-edge-origin-pull-<zone ID>`'s `ca.crt` or
+Cloudflare's shared CA), `auth-tls-verify-client: "on"` and `auth-tls-verify-depth: "1"`
+([`lake/origin-tls.md`](../lake/origin-tls.md)). ingress-nginx applies it to the whole host.
+
+The gateway projects such a host with zetta-tunnel's per-host `client_ca`
+([zetta-tunnel#34](https://github.com/oramasearch/zetta-tunnel/issues/34)) instead of refusing it
+([#1152](https://github.com/oramasearch/orama-operator/issues/1152); it was refused before, #798,
+LSR-136). The operator reads the `ca.crt` of the Secret `auth-tls-secret` names (in the Ingress's own
+namespace when the value has no `namespace/`), so the gateway verifies exactly the CA nginx verifies,
+writes it as `<host>.client-ca.pem` into the routes Secret beside `routes.json`, and sets the host's
+`client_ca` to that file. The requirement covers every route of the host, from every Ingress that
+names it, whatever the class. So at either gateway:
+
+- a caller without a certificate from the edge's CA fails the TLS handshake for that host, so nobody
+  who finds the gateway's address can skip the edge, its WAF and its rate limits;
+- the edge's attribution headers (`CF-*`, `True-Client-IP`) reach the backend only from a caller that
+  presented a verified client certificate; zetta-tunnel removes them from anyone else, as the
+  Cloudflare-only `CF-Connecting-IP` trust does at ingress-nginx ([above](#the-client-address-ingress-nginx-passes-on-operator719)).
+
+A renewed CA reaches the gateway like a renewed certificate: the operator watches Secrets with a
+`ca.crt` and rewrites the routes Secret, and the gateway re-reads it. zetta-tunnel checks a chain up
+to depth 6 where nginx checks depth 1; the edge's CA signs its client certificate directly, so both
+accept the same certificates. When the zone's origin pulls go off, the annotations go, and the host
+is served without `client_ca`.
+
+**Version.** `client_ca` needs a zetta-tunnel that has
+[zetta-tunnel#50](https://github.com/oramasearch/zetta-tunnel/pull/50); an older gateway refuses a
+`routes.json` with the field. The operator's zetta-tunnel image (`networking.zettaTunnelImage`,
+`DefaultZettaTunnelImage`) must move to a release containing it in the same operator release as this
+projection, or before it.
 
 ## How a host moves: the Ingress class
 
@@ -175,10 +212,14 @@ the gateway Deployment, its copied pull secret and the IngressClass; the gateway
 the served backends; that only a served `zetta-tunnel` Ingress gets the address, and only after the
 gateway is available; and that losing a certificate takes the address away.
 `TestIngressGatewayIsScaledToZeroWithNothingToServe` covers an empty cluster.
-`TestIngressGatewayNeverServesAHostThatRequiresOriginClientCertificates` checks that a Lake host with
-the edge's client-certificate requirement, cut over or not, `on` or `optional`, and a second Ingress
-naming the same host without the annotations are all refused and reported, that none of their keys
-or backends reach the gateway, and that the host is served again once the requirement is off.
+`TestIngressGatewayProjectsTheOriginClientCAOfAuthTLSHosts` checks that a Lake host with the edge's
+client-certificate requirement, cut over or not, is served with `client_ca` naming
+`<host>.client-ca.pem`, whose contents are the CA Secret's `ca.crt`, in the Secret the gateway mounts
+beside `routes.json`; that a second Ingress naming the same host without the annotations is served
+under the same `client_ca`; that `optional` verification, a missing CA Secret and two different CAs
+for one host are refused and reported, with none of their files or backends reaching the gateway;
+that an unprotected host gets no `client_ca`; and that the host loses `client_ca` once the
+requirement is off.
 
 Live acceptance per cluster (the cutover steps above): every public host answers through the gateway
 with its certificate, and nothing reaches ingress-nginx.
