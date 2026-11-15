@@ -697,12 +697,17 @@ func (r *zettaTunnelMeshReconciler) reconcileDaemonSet(ctx context.Context, pull
 						"--output", zettaTunnelMeshProjectionDir,
 					},
 					Env: []corev1.EnvVar{{Name: "NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}}},
+					// The projector opens each enrolled pod's /proc/<pid>/ns/net to read the namespace's
+					// inode (orama-operator#869, zetta-tunnel LSR-264), and the kernel allows that only
+					// to a process with CAP_SYS_PTRACE over the target: root with that one capability,
+					// every other capability dropped, no escalation, a read-only root filesystem. It
+					// still has no credential and makes no API call.
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: boolPtr(false),
 						ReadOnlyRootFilesystem:   boolPtr(true),
-						RunAsNonRoot:             boolPtr(true),
-						RunAsUser:                int64Ptr(65532),
-						Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+						RunAsNonRoot:             boolPtr(false),
+						RunAsUser:                int64Ptr(0),
+						Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"SYS_PTRACE"}},
 						SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Resources: corev1.ResourceRequirements{
