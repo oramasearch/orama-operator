@@ -86,6 +86,8 @@ var resourceKinds = map[string]bool{
 	// A CloudNativePG Backup through the Barman Cloud Plugin, which archives WAL continuously
 	// (operator#731).
 	"Postgres": true,
+	// A MedusaBackupJob of the K8ssandra datacenter (operator#734).
+	"Cassandra": true,
 }
 
 // Refusals are the kinds that have no backup by decision, with the decision in words. Their

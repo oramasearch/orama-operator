@@ -60,6 +60,8 @@ func datastorePodSelector(store oramav1alpha1.BackupDatastoreRef) map[string]str
 		return map[string]string{"app.kubernetes.io/instance": store.Name}
 	case oramav1alpha1.BackupDatastoreValkey:
 		return map[string]string{valkeyClusterLabel: store.Name}
+	case oramav1alpha1.BackupDatastoreCassandra:
+		return map[string]string{"app.kubernetes.io/managed-by": "cass-operator", "cassandra.datastax.com/cluster": store.Name}
 	case oramav1alpha1.BackupDatastoreZetta:
 		return map[string]string{"app.kubernetes.io/name": "orama-zetta", "app.kubernetes.io/instance": store.Name}
 	}

@@ -95,9 +95,16 @@ func (r *BackupScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	case s.Spec.Suspend:
 		ready.Reason, ready.Message = "Suspended", "spec.suspend is true: no new backups"
 	}
-	// A Postgres schedule owns the archive the Cluster's WAL goes to continuously (operator#731).
-	if ready.Status == metav1.ConditionTrue && s.Spec.Datastore.Kind == oramav1alpha1.BackupDatastorePostgres {
-		reason, message, err := r.ensurePostgresArchive(ctx, &s, cronText)
+	// A Postgres schedule owns the archive the Cluster's WAL goes to continuously (operator#731); a
+	// Cassandra schedule owns Medusa's storage (operator#734).
+	if ready.Status == metav1.ConditionTrue && (s.Spec.Datastore.Kind == oramav1alpha1.BackupDatastorePostgres || s.Spec.Datastore.Kind == oramav1alpha1.BackupDatastoreCassandra) {
+		ensure := r.ensurePostgresArchive
+		if s.Spec.Datastore.Kind == oramav1alpha1.BackupDatastoreCassandra {
+			ensure = func(ctx context.Context, s *oramav1alpha1.BackupSchedule, _ string) (string, string, error) {
+				return r.ensureMedusaStorage(ctx, s)
+			}
+		}
+		reason, message, err := ensure(ctx, &s, cronText)
 		if err != nil {
 			return ctrl.Result{}, err
 		}

@@ -252,6 +252,10 @@ rules:
   - apiGroups: ["k8ssandra.io"]
     resources: ["k8ssandraclusters"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Cassandra backups through Medusa (operator#734).
+  - apiGroups: ["medusa.k8ssandra.io"]
+    resources: ["medusabackupjobs", "medusarestorejobs", "medusabackups"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["valkey.io"]
     resources: ["valkeyclusters"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
