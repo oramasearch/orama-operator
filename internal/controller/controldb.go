@@ -215,6 +215,11 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 				"initdb": map[string]interface{}{"database": controlDBName, "owner": controlDBName},
 			}
 		}
+		// WAL archiving to the control DB's backup schedule's archive (operator#731,
+		// oramacloudv1_backups.go), once the Barman Cloud Plugin is installed.
+		if v1BackupsEnabled(oc) && barmanArchivePluginInstalled(r.Client) {
+			spec["plugins"] = barmanArchivePlugins(postgresArchiveName(oc.Name + "-controldb-backup"))
+		}
 		cluster.Object["spec"] = spec
 		// Cluster metadata alone is not inherited by CNPG instance and bootstrap Job pods.
 		if err := unstructured.SetNestedStringMap(cluster.Object, labelsFor(oc, "controldb"), "spec", "inheritedMetadata", "labels"); err != nil {

@@ -196,6 +196,9 @@ type rehearsalFixture struct {
 
 func newRehearsalFixture(t *testing.T, operation string, instances int32) *rehearsalFixture {
 	t.Helper()
+	installed := barmanArchivePluginInstalled
+	barmanArchivePluginInstalled = func(client.Client) bool { return true }
+	t.Cleanup(func() { barmanArchivePluginInstalled = installed })
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, batchv1.AddToScheme, oramav1alpha1.AddToScheme} {
 		if err := add(scheme); err != nil {
@@ -402,9 +405,10 @@ func assertRecoveryCluster(t *testing.T, cluster *unstructured.Unstructured, bac
 		t.Fatalf("scratch recovery spec = %+v, selected Backup = %s", cluster.Object["spec"], backup)
 	}
 	external, _, _ := unstructured.NestedSlice(cluster.Object, "spec", "externalClusters")
-	barman := external[0].(map[string]interface{})["barmanObjectStore"].(map[string]interface{})
-	if barman["serverName"] != "lake-test-controldb" {
-		t.Fatalf("barman object store = %+v", barman)
+	plugin := external[0].(map[string]interface{})["plugin"].(map[string]interface{})
+	parameters := plugin["parameters"].(map[string]interface{})
+	if plugin["name"] != barmanCloudPlugin || parameters["serverName"] != "lake-test-controldb" || parameters["barmanObjectName"] != scratchArchiveName {
+		t.Fatalf("recovery source = %+v", plugin)
 	}
 }
 

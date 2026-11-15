@@ -58,7 +58,7 @@ func TestClickHouseRestoresIntoAnEmptyServerOnly(t *testing.T) {
 	if _, err := Verify(manifest, restored.Observed); err != nil {
 		t.Fatal(err)
 	}
-	if err := (ClickHouse{}).Cleanup(context.Background(), clickHouseStore(t, server2), manifest); err != nil {
+	if err := (ClickHouse{}).Cleanup(context.Background(), clickHouseStore(t, server2), manifest, Restored{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(empty.dropped) != 1 || !strings.Contains(empty.dropped[0], "`events`") {

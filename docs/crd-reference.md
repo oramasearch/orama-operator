@@ -1021,7 +1021,7 @@ leaves a stale Operational page.
 
 | Field | Meaning |
 |---|---|
-| `spec.datastore.kind` | `Postgres`, `ClickHouse`, `Zetta`, `Kafka`, `Cassandra`, `TiDB`, `Valkey`, `SQLite`, `DuckDB` or `Polars`. Selects the mechanism; a kind with none yet makes the schedule `Ready=False`, `MechanismNotAvailable`, and it creates nothing. Today only `ClickHouse` has one. |
+| `spec.datastore.kind` | `Postgres`, `ClickHouse`, `Zetta`, `Kafka`, `Cassandra`, `TiDB`, `Valkey`, `SQLite`, `DuckDB` or `Polars`. Selects the mechanism; a kind with none yet makes the schedule `Ready=False`, `MechanismNotAvailable`, and it creates nothing. `Kafka` has no backup by decision: `Ready=False`, `NoBackupByDecision`, with the decision ([operator#733](https://github.com/oramasearch/orama-operator/issues/733)). |
 | `spec.datastore.name` | The datastore's name in the namespace; part of the default path and the `orama.cloud/backup-datastore` label. |
 | `spec.datastore.connectionSecretRef.name` | Secret with `host`, `username`, `password`, optional `port` and `database`, read by the backup Job as environment variables. Required for `ClickHouse`, `Zetta` and `Valkey` (CEL); the kinds whose own operator takes the backup need none. |
 | `spec.datastore.podSelector` | The datastore's pods. While a run is going the operator lets them accept the run's pod and, for `ClickHouse`, `TiDB` and `Cassandra` (whose server writes to the bucket), reach public HTTPS on 443, through a `NetworkPolicy` `<job>-ds` owned by the run ([operator#740](https://github.com/oramasearch/orama-operator/issues/740)). Empty: the kind's default (`cnpg.io/cluster`, `clickhouse.altinity.com/chi`, `app.kubernetes.io/instance`, `valkey.io/cluster`, or the Zetta node labels, set to the datastore's name). |
@@ -1048,7 +1048,7 @@ Deleting the schedule keeps its Backups.
 | `status.location` | `s3://<bucket>/<path>/<name>/`. |
 | `status.jobName`, `status.startTime`, `status.completionTime` | The Job (`<name>-backup`, shortened with a hash past 56 characters) and when it ran. |
 | `status.sizeBytes`, `status.message` | What the mechanism reported. |
-| `status.conditions[Complete]` | `True`/`BackupSucceeded`, or `False` with `BucketNotFound`, `BucketHasNoCredentials`, `BucketNotAllowed`, `BucketNotReady`, `OperatorImageUnknown`, `Running`, `MechanismNotAvailable`, `BackupFailed`, `JobFailed`, `NoReport` or `JobLost`. |
+| `status.conditions[Complete]` | `True`/`BackupSucceeded`, or `False` with `NoBackupByDecision`, `BucketNotFound`, `BucketHasNoCredentials`, `BucketNotAllowed`, `BucketNotReady`, `OperatorImageUnknown`, `Running`, `MechanismNotAvailable`, `BackupFailed`, `JobFailed`, `NoReport` or `JobLost`. |
 
 The Job runs the operator's own image as `/manager backup --datastore <kind> --backup <name>
 --prefix <path>/<name>`, restricted, with no service account token, next to an owned

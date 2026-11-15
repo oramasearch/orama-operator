@@ -86,11 +86,31 @@ func (r *BackupScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	switch {
 	case cronErr != nil:
 		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, "InvalidSchedule", fmt.Sprintf("spec.schedule %q: %v", cronText, cronErr)
+	case isRefused(s.Spec.Datastore.Kind):
+		refusal, _ := backup.Refusal(string(s.Spec.Datastore.Kind))
+		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, backupReasonNoBackupByDecision, refusal
 	case !backup.Supported(string(s.Spec.Datastore.Kind)):
 		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, "MechanismNotAvailable",
 			fmt.Sprintf("no backup mechanism for datastore kind %s yet; supported: %s (operator#453)", s.Spec.Datastore.Kind, strings.Join(backup.SupportedKinds(), ", "))
 	case s.Spec.Suspend:
 		ready.Reason, ready.Message = "Suspended", "spec.suspend is true: no new backups"
+	}
+	// A Postgres schedule owns the archive the Cluster's WAL goes to continuously (operator#731); a
+	// Cassandra schedule owns Medusa's storage (operator#734).
+	if ready.Status == metav1.ConditionTrue && (s.Spec.Datastore.Kind == oramav1alpha1.BackupDatastorePostgres || s.Spec.Datastore.Kind == oramav1alpha1.BackupDatastoreCassandra) {
+		ensure := r.ensurePostgresArchive
+		if s.Spec.Datastore.Kind == oramav1alpha1.BackupDatastoreCassandra {
+			ensure = func(ctx context.Context, s *oramav1alpha1.BackupSchedule, _ string) (string, string, error) {
+				return r.ensureMedusaStorage(ctx, s)
+			}
+		}
+		reason, message, err := ensure(ctx, &s, cronText)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if reason != "" {
+			ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, reason, message
+		}
 	}
 	canRun := ready.Status == metav1.ConditionTrue && !s.Spec.Suspend
 
@@ -219,6 +239,11 @@ func (r *BackupScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: wake.Sub(now) + time.Second}, nil
+}
+
+func isRefused(kind oramav1alpha1.BackupDatastoreKind) bool {
+	_, refused := backup.Refusal(string(kind))
+	return refused
 }
 
 func backupConditionReason(b *oramav1alpha1.Backup, fallback string) string {

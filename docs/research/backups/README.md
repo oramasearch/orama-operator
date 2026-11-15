@@ -60,7 +60,10 @@ not do; a CNPG-I plugin runs beside Postgres and does. So whichever plugin is ch
 the `BackupSchedule` would own the plugin's archive configuration. Lake's existing
 `spec.postgres.backup` moves to it before the operator's CloudNativePG pin reaches 1.31.
 
-**Needed from Steve:** which of the four ([#731](https://github.com/oramasearch/orama-operator/issues/731)).
+**Decided under Steve's 2026-11-14 delegation: the Barman Cloud Plugin**
+([#731](https://github.com/oramasearch/orama-operator/issues/731)): upstream-maintained, reads the
+existing backups, no new repository or image of ours. Built as described in
+[`../../backups.md`](../../backups.md#postgres).
 
 ## Sources
 

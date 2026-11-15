@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,7 +181,8 @@ func TestBackupScheduleRefusesAKindWithNoMechanismAndABadSchedule(t *testing.T) 
 	f := newScheduleFixture(t, testBackupSchedule(oramav1alpha1.BackupDatastoreKafka))
 	_, s, backups := f.reconcile(time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC))
 	ready := apimeta.FindStatusCondition(s.Status.Conditions, "Ready")
-	if len(backups) != 0 || ready.Status != metav1.ConditionFalse || ready.Reason != "MechanismNotAvailable" {
+	// Kafka has no backup by decision (operator#733): refused with the decision, never run.
+	if len(backups) != 0 || ready.Status != metav1.ConditionFalse || ready.Reason != backupReasonNoBackupByDecision || !strings.Contains(ready.Message, "operator#733") {
 		t.Fatalf("backups %d, Ready %+v", len(backups), ready)
 	}
 

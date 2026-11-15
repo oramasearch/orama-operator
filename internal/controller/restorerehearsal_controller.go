@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -55,6 +56,7 @@ type RestoreRehearsalReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=backuprestores,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=backupschedules,verbs=get;list;watch
 // +kubebuilder:rbac:groups=orama.cloud,resources=backups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;update;patch
 
 func (r *RestoreRehearsalReconciler) now() time.Time {
 	if r.Now != nil {
@@ -126,7 +128,16 @@ func (r *RestoreRehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Req
 				}
 				tick = following
 			}
-			if source == nil {
+			waiting = ""
+			if rh.Spec.Target.Kind == oramav1alpha1.BackupDatastoreZetta {
+				var err error
+				if waiting, err = r.ensureZettaRestoreTarget(ctx, &rh); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+			if waiting != "" {
+				next = now.Add(restoreRehearsalWaitForFirst)
+			} else if source == nil {
 				// No backup to rehearse yet: look again soon rather than at the next tick.
 				waiting = "no succeeded Backup of " + rh.Spec.BackupScheduleName + " yet"
 				next = now.Add(restoreRehearsalWaitForFirst)
@@ -223,6 +234,42 @@ func (r *RestoreRehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: wake.Sub(now) + time.Second}, nil
+}
+
+// zettaRestoreTargetEnv marks a Zetta as a scratch restore target: the engine empties a restored
+// node with restore_snapshot:discard only when it was started with it (zetta#1521).
+const zettaRestoreTargetEnv = "ZETTA_RESTORE_TARGET"
+
+// ensureZettaRestoreTarget sets ZETTA_RESTORE_TARGET=1 on the scratch OramaZettaCluster, so the
+// rehearsal can empty it afterwards. It returns what it waits for: the cluster to exist, or its
+// nodes to restart with the variable.
+func (r *RestoreRehearsalReconciler) ensureZettaRestoreTarget(ctx context.Context, rh *oramav1alpha1.RestoreRehearsal) (string, error) {
+	var cluster oramav1alpha1.OramaZettaCluster
+	if err := r.Get(ctx, client.ObjectKey{Namespace: rh.Namespace, Name: rh.Spec.Target.Name}, &cluster); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Sprintf("the scratch OramaZettaCluster %s does not exist", rh.Spec.Target.Name), nil
+		}
+		return "", err
+	}
+	for _, variable := range cluster.Spec.Env {
+		if variable.Name == zettaRestoreTargetEnv && variable.Value == "1" {
+			if cluster.Status.Phase != "Ready" {
+				return fmt.Sprintf("the scratch OramaZettaCluster %s is %s", cluster.Name, cluster.Status.Phase), nil
+			}
+			return "", nil
+		}
+	}
+	env := cluster.Spec.Env[:0:0]
+	for _, variable := range cluster.Spec.Env {
+		if variable.Name != zettaRestoreTargetEnv {
+			env = append(env, variable)
+		}
+	}
+	cluster.Spec.Env = append(env, corev1.EnvVar{Name: zettaRestoreTargetEnv, Value: "1"})
+	if err := r.Update(ctx, &cluster); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("setting %s=1 on the scratch OramaZettaCluster %s", zettaRestoreTargetEnv, cluster.Name), nil
 }
 
 // source is the newest succeeded Backup of the rehearsal's schedule, or why the rehearsal is refused.

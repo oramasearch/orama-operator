@@ -54,6 +54,8 @@ type Manifest struct {
 type Restored struct {
 	Observed map[string]int64
 	Message  string
+	// Details is what the mechanism's own Cleanup needs from its restore.
+	Details map[string]string
 }
 
 func writeManifest(ctx context.Context, target Target, manifest Manifest) error {
@@ -192,7 +194,7 @@ func restore(kind, name, prefix string, verify, cleanup bool, timeout time.Durat
 		cleaner, ok := mechanism.(Cleaner)
 		if !ok {
 			report.Message += "; the scratch target is left as restored (this kind cannot empty it)"
-		} else if err := cleaner.Cleanup(ctx, store, manifest); err != nil {
+		} else if err := cleaner.Cleanup(ctx, store, manifest, restored); err != nil {
 			report.Message += "; emptying the scratch target failed: " + err.Error()
 		} else {
 			report.Message += "; the scratch target was emptied"

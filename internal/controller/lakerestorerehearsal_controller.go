@@ -445,32 +445,36 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchCluster(
 				},
 			},
 		},
+		// The archive is read through the Barman Cloud Plugin (operator#731): an ObjectStore in the
+		// scratch namespace with the control DB's destination and the copied credentials.
 		"externalClusters": []interface{}{
 			map[string]interface{}{
 				"name": sourceName,
-				"barmanObjectStore": map[string]interface{}{
-					"destinationPath": fmt.Sprintf("s3://%s/%s", strings.Trim(backupConfig.Bucket, "/"), strings.Trim(backupConfig.Path, "/")),
-					"endpointURL":     backupConfig.Endpoint,
-					"serverName":      sourceName,
-					"s3Credentials": map[string]interface{}{
-						"accessKeyId": map[string]interface{}{
-							"name": "object-store",
-							"key":  "accessKeyId",
-						},
-						"secretAccessKey": map[string]interface{}{
-							"name": "object-store",
-							"key":  "secretAccessKey",
-						},
-					},
+				"plugin": map[string]interface{}{
+					"name":       barmanCloudPlugin,
+					"parameters": map[string]interface{}{"barmanObjectName": scratchArchiveName, "serverName": sourceName},
 				},
 			},
 		},
+	}
+	archive := newBarmanObjectStore(rehearsal.Status.ScratchNamespace, scratchArchiveName,
+		fmt.Sprintf("s3://%s/%s", strings.Trim(backupConfig.Bucket, "/"), strings.Trim(backupConfig.Path, "/")),
+		backupConfig.Endpoint, "object-store", "")
+	archive.SetLabels(rehearsalLabels(rehearsal))
+	if err := controllerutil.SetControllerReference(rehearsal, archive, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, archive); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
 	}
 	if err := controllerutil.SetControllerReference(rehearsal, cluster, r.Scheme); err != nil {
 		return err
 	}
 	return r.Create(ctx, cluster)
 }
+
+// scratchArchiveName is the ObjectStore a scratch recovery reads the control DB's archive through.
+const scratchArchiveName = "source-archive"
 
 func (r *LakeRestoreRehearsalReconciler) getScratchCluster(
 	ctx context.Context,
@@ -813,6 +817,7 @@ func (r *LakeRestoreRehearsalReconciler) cleanupRehearsal(
 			newScratchCluster(rehearsal),
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "source-db", Namespace: rehearsal.Status.ScratchNamespace}},
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "object-store", Namespace: rehearsal.Status.ScratchNamespace}},
+			newBarmanObjectStore(rehearsal.Status.ScratchNamespace, scratchArchiveName, "", "", "", ""),
 		}
 		if rehearsal.Spec.Service == "store" {
 			objects = []client.Object{

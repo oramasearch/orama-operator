@@ -51,6 +51,8 @@ type Result struct {
 	SizeBytes int64            `json:"sizeBytes"`
 	Message   string           `json:"message"`
 	Summary   map[string]Count `json:"summary,omitempty"`
+	// Extra is recorded in the manifest for the mechanism's own restore (the files it wrote).
+	Extra json.RawMessage `json:"extra,omitempty"`
 }
 
 // Mechanism takes one consistent backup of one datastore kind into the target, using the
@@ -66,7 +68,8 @@ type Mechanism interface {
 // rehearsal (RestoreRehearsal deletes what it restored, so the next rehearsal finds the target
 // empty). It removes only what the manifest says was restored.
 type Cleaner interface {
-	Cleanup(ctx context.Context, store Datastore, manifest Manifest) error
+	// restored is what the mechanism's Restore answered (a Zetta restore names its node there).
+	Cleanup(ctx context.Context, store Datastore, manifest Manifest, restored Restored) error
 }
 
 // mechanisms maps a datastore kind (BackupDatastoreKind) to the mechanism the backup Job runs. A
@@ -74,11 +77,38 @@ type Cleaner interface {
 // mechanism yet and the controllers refuse it in status without starting anything.
 var mechanisms = map[string]Mechanism{
 	"ClickHouse": ClickHouse{},
+	"Valkey":     Valkey{},
+	"Zetta":      Zetta{},
 }
 
 // resourceKinds are the kinds the controllers back up by writing their own operator's resources
 // (a CloudNativePG Backup, a MedusaBackupJob, a TiDB Operator Backup) instead of running a Job.
-var resourceKinds = map[string]bool{}
+var resourceKinds = map[string]bool{
+	// A CloudNativePG Backup through the Barman Cloud Plugin, which archives WAL continuously
+	// (operator#731).
+	"Postgres": true,
+	// A MedusaBackupJob of the K8ssandra datacenter (operator#734).
+	"Cassandra": true,
+	// A TiDB Operator Backup: BR, from TiKV (operator#735).
+	"TiDB": true,
+}
+
+// Refusals are the kinds that have no backup by decision, with the decision in words. Their
+// schedules and Backups are refused with it (reason NoBackupByDecision), never run.
+var Refusals = map[string]string{
+	// Decided under Steve's 2026-11-14 delegation (operator#733).
+	"Kafka": "Kafka has no backup, by decision (operator#733): it has no snapshot, a mirror to another " +
+		"cluster (MirrorMaker 2) copies deletes and bad writes as faithfully as good ones and needs a " +
+		"second cluster per Kafka, and a Lake keeps durable data in its workspace Zetta. A Kafka " +
+		"service's durability is its own replication: three brokers with min.insync.replicas 2 survive " +
+		"the loss of one. Keep anything that must outlive the Kafka in a datastore that is backed up.",
+}
+
+// Refusal is a kind's no-backup decision, if it has one.
+func Refusal(kind string) (string, bool) {
+	reason, ok := Refusals[kind]
+	return reason, ok
+}
 
 // RunsInJob reports whether a kind's backup and restore run as a Job of the operator's image.
 func RunsInJob(kind string) bool {
@@ -199,7 +229,7 @@ func run(kind, name, prefix string, timeout time.Duration, getenv func(string) s
 		return Report{Message: redact(err, bucket.SecretAccessKey).Error()}
 	}
 	// The manifest is what a restore reads and verifies against; without it the backup is not one.
-	manifest := Manifest{Kind: kind, Backup: name, CompletedAt: time.Now().UTC(), SizeBytes: result.SizeBytes, Summary: result.Summary}
+	manifest := Manifest{Kind: kind, Backup: name, CompletedAt: time.Now().UTC(), SizeBytes: result.SizeBytes, Summary: result.Summary, Extra: result.Extra}
 	if err := writeManifest(ctx, target, manifest); err != nil {
 		return Report{Message: fmt.Sprintf("backup %s was written but its manifest was not: %v", name, redact(err, bucket.SecretAccessKey))}
 	}

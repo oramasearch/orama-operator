@@ -1015,6 +1015,15 @@ func (r *LakeReconciler) reconcilePostgresService(ctx context.Context, lake *ora
 		if err := unstructured.SetNestedField(cluster.Object, true, "spec", "enableSuperuserAccess"); err != nil {
 			return err
 		}
+		// WAL archiving to the service's backup schedule's archive (operator#731), once the Barman
+		// Cloud Plugin is installed; removed with spec.backups.
+		archive := ""
+		if lake.Spec.Backups != nil && barmanArchivePluginInstalled(r.Client) {
+			archive = postgresArchiveName(lakeBackupScheduleName(name))
+		}
+		if err := setBarmanArchivePlugin(cluster, archive); err != nil {
+			return err
+		}
 		if creating {
 			storage := map[string]interface{}{"size": fmt.Sprintf("%dGi", spec.StorageGi)}
 			if class := lake.Spec.Postgres.StorageClassName; class != "" {
