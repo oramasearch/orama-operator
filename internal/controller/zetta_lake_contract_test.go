@@ -325,7 +325,7 @@ func TestLakeDomainsTheOperatorRefuses(t *testing.T) {
 		return map[string]string{"lake": testLakeHost, "repository": "r", "environment": environment, "host": host,
 			"tls": "acme", "status": "pending", "deleted": "false", "updated_at": "2026-10-17T10:00:00.000000Z"}
 	}
-	plan := planLakeDomains(lake, testLakeHost, []map[string]string{
+	plan := planVerifiedLakeDomains(lake, testLakeHost, []map[string]string{
 		row("a", "shop.example.com"),
 		row("b", "shop.example.com"),
 		row("a", testLakeHost),

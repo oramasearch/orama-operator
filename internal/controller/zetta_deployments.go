@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -178,7 +179,27 @@ func (r *OramaZettaClusterReconciler) materializeZettaPlatformRows(ctx context.C
 		log.Error(err, "deployment sync deferred — the domain guard could not be read", "lake", lake.Name)
 		return
 	}
-	domains := planLakeDomains(lake, host, rows.Domains, guard)
+	// Only a verified claim's domain is routed (lake#949). Without the domain_claims table (a lake
+	// schema before 0106) no claim is verified and every domain is refused. Any other failed read
+	// changes no domain this poll: each environment keeps the domains it has and no status is
+	// written, so a transient read never unroutes a verified host nor routes an unverified one.
+	var domains lakeDomainPlan
+	claims, err := r.domainClaims()(ctx, lake)
+	switch {
+	case errors.Is(err, errDomainClaimsTableMissing):
+		log.Info("every domain refused: "+err.Error(), "lake", lake.Name)
+		domains = planLakeDomains(lake, host, rows.Domains, guard, nil)
+	case err != nil:
+		log.Info("domain changes deferred — the domain claims could not be read", "lake", lake.Name, "err", err.Error())
+		kept, keptErr := r.currentLakeDomains(ctx, lake)
+		if keptErr != nil {
+			log.Error(keptErr, "deployment sync deferred — the current domains could not be read", "lake", lake.Name)
+			return
+		}
+		domains = lakeDomainPlan{active: kept}
+	default:
+		domains = planLakeDomains(lake, host, rows.Domains, guard, newLakeVerifiedDomains(claims))
+	}
 	operator := r.operatorID(ctx)
 	for _, state := range latestDeploymentEnvironmentStates(reduceDeploymentRows(rows.Deployments)) {
 		deploymentID := state.Desired.DeploymentID
@@ -796,9 +817,9 @@ func lakeDomainClaimSince(rows []map[string]string) map[string][3]string {
 // the first claim: the earliest live claim by its creation time (lakeDomainClaimSince), then by the
 // claim's id (repository, environment, host). Every later claim of the host by another environment
 // is refused, so a later claim never takes a host already served, whatever its repository id
-// (#776). lake does not verify domain ownership yet (lake#949): when its rows carry a verification
-// state, an unverified claim is refused here too.
-func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]string, guard lakeDomainGuard) lakeDomainPlan {
+// (#776). A row whose host has no verified claim of its repository and environment in lake's
+// domain_claims (verified, lake#949) is refused before it can claim anything.
+func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]string, guard lakeDomainGuard, verified lakeVerifiedDomains) lakeDomainPlan {
 	latest := latestPlatformRows(rows, "repository", "environment", "host")
 	since := lakeDomainClaimSince(rows)
 	keys := make([]string, 0, len(latest))
@@ -841,6 +862,10 @@ func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]st
 			plan.refused[key] = reason
 			continue
 		}
+		if !verified.allows(row) {
+			plan.refused[key] = unverifiedDomainReason(domain)
+			continue
+		}
 		if claimed[domain] != "" && claimed[domain] != identity {
 			plan.refused[key] = fmt.Sprintf("%q is already claimed by another environment", domain)
 			continue
@@ -859,6 +884,25 @@ func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]st
 		sort.Slice(domains, func(i, j int) bool { return domains[i].Host < domains[j].Host })
 	}
 	return plan
+}
+
+// currentLakeDomains is the domains each environment of lake serves now, by identity: what a poll
+// that cannot read the domain claims keeps.
+func (r *OramaZettaClusterReconciler) currentLakeDomains(ctx context.Context, lake *oramav1alpha1.Lake) (map[string][]oramav1alpha1.LakeEnvironmentDomain, error) {
+	var environments oramav1alpha1.LakeEnvironmentList
+	if err := r.List(ctx, &environments, client.InNamespace(lakeWorkloadNamespace(lake))); err != nil {
+		return nil, err
+	}
+	kept := make(map[string][]oramav1alpha1.LakeEnvironmentDomain)
+	for i := range environments.Items {
+		environment := &environments.Items[i]
+		if !metav1.IsControlledBy(environment, lake) {
+			continue
+		}
+		identity := platformEnvironmentKey(environment.Spec.Repository, environment.Spec.Environment)
+		kept[identity] = append([]oramav1alpha1.LakeEnvironmentDomain(nil), environment.Spec.Domains...)
+	}
+	return kept, nil
 }
 
 // writeDomainStatuses answers each domain request with a status row (lake docs/api/platform.md:
