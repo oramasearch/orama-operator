@@ -77,6 +77,7 @@ type Cleaner interface {
 var mechanisms = map[string]Mechanism{
 	"ClickHouse": ClickHouse{},
 	"Valkey":     Valkey{},
+	"Zetta":      Zetta{},
 }
 
 // resourceKinds are the kinds the controllers back up by writing their own operator's resources
