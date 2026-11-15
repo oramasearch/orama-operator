@@ -14,3 +14,9 @@
 # Running the Cloud v1 migration and its import consumer: operations material for one deployment.
 /docs/cloud-v1-migration.md
 /docs/cloud-v1-import-consumer.md
+
+# Pixie is removed and not released. Until its code is removed from the operator, the parts that
+# are not compiled stay out: the carried patches, the script bundle image and the manifest fetcher.
+/hack/pixie-patches/
+/hack/pixie-script-bundle/
+/hack/fetch-pixie-manifests.sh
