@@ -39,6 +39,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "backup" {
 		os.Exit(backup.Main(os.Args[2:], os.Getenv, "/dev/termination-log", os.Stderr))
 	}
+	// `/manager restore ...` restores one Backup and verifies it against its manifest (operator#741).
+	if len(os.Args) > 1 && os.Args[1] == "restore" {
+		os.Exit(backup.RestoreMain(os.Args[2:], os.Getenv, "/dev/termination-log", os.Stderr))
+	}
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
 	var zettaTunnelImage, cloudflaredImage string
 	var controlPlaneCertFile, controlPlaneKeyFile string
@@ -351,6 +355,22 @@ func main() {
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Backup")
+		os.Exit(1)
+	}
+	if err = (&controller.BackupRestoreReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		APIReader:         mgr.GetAPIReader(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "BackupRestore")
+		os.Exit(1)
+	}
+	if err = (&controller.RestoreRehearsalReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RestoreRehearsal")
 		os.Exit(1)
 	}
 	if err = (&controller.CloudflareLoadBalancerReconciler{

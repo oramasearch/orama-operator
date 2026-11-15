@@ -121,6 +121,11 @@ func (s *S3) PutWithHeaders(ctx context.Context, key string, body []byte, conten
 	return err
 }
 
+// Get reads one object whole (at most 16 MiB: manifests and small objects).
+func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
+	return s.do(ctx, http.MethodGet, key, nil, nil)
+}
+
 // Delete deletes one object. A missing object is not an error (S3 answers 204 either way).
 func (s *S3) Delete(ctx context.Context, key string) error {
 	_, err := s.do(ctx, http.MethodDelete, key, nil, nil)

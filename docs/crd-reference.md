@@ -1056,6 +1056,36 @@ The Job runs the operator's own image as `/manager backup --datastore <kind> --b
 when the Backup finishes. Deleting a Backup deletes its objects from the bucket; if the bucket
 resource is gone the objects stay.
 
+## `BackupRestore` (separate CRD, namespaced) — restore one Backup and verify it
+
+[`backups.md`](backups.md#restore), [operator#741](https://github.com/oramasearch/orama-operator/issues/741). Short name `brestore`. **The spec is immutable.**
+
+| Field | Meaning |
+|---|---|
+| `spec.backupName` | A `Backup` in this namespace; it must have succeeded. |
+| `spec.target` | A datastore reference like `spec.datastore` of a `BackupSchedule`; its kind must be the backup's. |
+| `spec.replaceSource` | Allows the target to be the backup's own datastore. Default false: refused (`Refused`). |
+| `spec.verify` | Compare the restored content with the backup's manifest. Default true. |
+| `spec.scratch` | A rehearsal target: what was restored is removed afterwards. Never allowed with the backup's own datastore. |
+| `status.phase` | `Pending`, `Running`, `Succeeded` (restored, and verified when asked), `Failed`. |
+| `status.source`, `status.jobName`, `status.startTime`, `status.completionTime` | The backup's location, the Job (`<name>-restore`), when it ran. |
+| `status.verified`, `status.evidence`, `status.message` | Whether the content matched, what was compared, the outcome in the words of what refused. |
+| `status.conditions[Complete]` | `True`/`Restored`, or `False` with `BackupNotFound`, `BackupNotFinished`, `BackupNotSucceeded`, `Refused`, `MechanismNotAvailable`, a bucket reason, `Running`, `RestoreFailed`, `NotVerified`, `JobFailed`, `NoReport` or `JobLost`. |
+
+## `RestoreRehearsal` (separate CRD, namespaced) — a restore of the newest backup on a schedule
+
+[`backups.md`](backups.md#restore). Short name `rrehearsal`.
+
+| Field | Meaning |
+|---|---|
+| `spec.backupScheduleName` | The `BackupSchedule` whose newest succeeded `Backup` is restored. |
+| `spec.target` | The scratch datastore; never the schedule's own (`Ready=False`, `Refused`), and of the same kind. |
+| `spec.schedule` | Five-field cron, UTC. Default `0 5 * * 0`. |
+| `spec.keep` | Finished `BackupRestore`s kept, default 4. |
+| `spec.suspend` | No new rehearsals. |
+| `status.lastScheduleTime`, `status.nextScheduleTime`, `status.lastSuccessfulRestore`, `status.lastSuccessTime` | Its newest tick, the next one, and the newest restore that was verified. |
+| `status.conditions` | `Ready`; `LastRehearsalSucceeded` (`RestoredAndVerified`, or the restore's reason); `OnSchedule` (`False`, `RehearsalLate`). |
+
 ## `EdgeProvider` (separate CRD, namespaced) — the vendor, account and credentials for edge resources
 
 Principle 10's provider resource for the edge kinds (operator#578). A Lake with a `dnsSecretRef` owns

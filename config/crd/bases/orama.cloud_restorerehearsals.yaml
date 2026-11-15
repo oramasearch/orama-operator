@@ -1,0 +1,223 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: restorerehearsals.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: RestoreRehearsal
+    listKind: RestoreRehearsalList
+    plural: restorerehearsals
+    shortNames:
+    - rrehearsal
+    singular: restorerehearsal
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.backupScheduleName
+      name: Schedule
+      type: string
+    - jsonPath: .spec.target.name
+      name: Target
+      type: string
+    - jsonPath: .status.lastSuccessTime
+      name: Last success
+      type: date
+    - jsonPath: .status.conditions[?(@.type=="OnSchedule")].status
+      name: On schedule
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: RestoreRehearsal restores the newest backup of a schedule into
+          a scratch datastore on a schedule.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: RestoreRehearsalSpec is the desired state of a RestoreRehearsal.
+            properties:
+              backupScheduleName:
+                description: |-
+                  BackupScheduleName is the schedule, in this namespace, whose newest succeeded Backup each
+                  rehearsal restores.
+                minLength: 1
+                type: string
+              keep:
+                default: 4
+                description: Keep is how many finished BackupRestores of this rehearsal
+                  are kept. Default 4.
+                format: int32
+                minimum: 1
+                type: integer
+              schedule:
+                default: 0 5 * * 0
+                description: Schedule is a five-field cron expression, in UTC. Default
+                  weekly, Sunday at 05:00.
+                type: string
+              suspend:
+                type: boolean
+              target:
+                description: |-
+                  Target is the scratch datastore restored into. It must not be the schedule's datastore (the
+                  controller refuses that too), and is emptied after each rehearsal.
+                properties:
+                  connectionSecretRef:
+                    description: |-
+                      ConnectionSecretRef names a Secret in the namespace with the datastore's connection: keys
+                      `host` and `username` and `password`, and optionally `port` and `database`. The backup Job
+                      reads it as environment variables; the operator never copies it. Required for the kinds whose
+                      backup Job talks to the server (ClickHouse, Zetta, Valkey); the kinds whose own operator
+                      takes the backup need none.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  kind:
+                    description: Kind is the datastore's kind; it selects the backup
+                      mechanism.
+                    enum:
+                    - Postgres
+                    - ClickHouse
+                    - Zetta
+                    - Kafka
+                    - Cassandra
+                    - TiDB
+                    - Valkey
+                    - SQLite
+                    - DuckDB
+                    - Polars
+                    type: string
+                  name:
+                    description: |-
+                      Name is the datastore's name in the namespace (its Service or resource name). It is part
+                      of the default bucket path and labels each Backup.
+                    minLength: 1
+                    type: string
+                  podSelector:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      PodSelector selects the datastore's pods. While a backup or restore runs, the operator lets
+                      those pods accept the run's pod, and, for a kind whose server writes to the bucket itself
+                      (ClickHouse, TiDB, Cassandra), reach public HTTPS on 443 (operator#740). Empty means the
+                      kind's default: the labels its operator puts on the pods of a datastore of this name.
+                    type: object
+                required:
+                - kind
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: connectionSecretRef is required for a ClickHouse, Zetta
+                    or Valkey datastore
+                  rule: '!(self.kind in [''ClickHouse'', ''Zetta'', ''Valkey'']) ||
+                    has(self.connectionSecretRef)'
+            required:
+            - backupScheduleName
+            - target
+            type: object
+          status:
+            description: RestoreRehearsalStatus is the observed state of a RestoreRehearsal.
+            properties:
+              conditions:
+                description: |-
+                  Conditions: Ready (it can run), LastRehearsalSucceeded, and OnSchedule (False once a whole tick
+                  has passed without a verified restore).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastScheduleTime:
+                format: date-time
+                type: string
+              lastSuccessTime:
+                format: date-time
+                type: string
+              lastSuccessfulRestore:
+                description: LastSuccessfulRestore names the newest BackupRestore
+                  that restored and verified.
+                type: string
+              nextScheduleTime:
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

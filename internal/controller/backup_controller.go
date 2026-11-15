@@ -249,17 +249,41 @@ func resolveBackupBucket(ctx context.Context, c client.Client, namespace string,
 	return &secret, "", "", nil
 }
 
-// createRun writes the bucket credentials copy, the network policy and the Job.
+// createRun writes the bucket credentials copy, the network policies and the Job.
 func (r *BackupReconciler) createRun(ctx context.Context, b *oramav1alpha1.Backup, bucket *corev1.Secret, image, prefix, jobName string) error {
 	labels := map[string]string{
 		"app.kubernetes.io/managed-by": backupOperatorManagedTag,
 		"app.kubernetes.io/component":  "backup",
 		backupNameLabel:                dnsLabelValue(b.Name),
 	}
-	credentials := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: jobName + "-bucket", Namespace: b.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, credentials, func() error {
-		if credentials.ResourceVersion != "" && !metav1.IsControlledBy(credentials, b) {
-			return fmt.Errorf("Secret %s/%s exists and is not this Backup's", b.Namespace, credentials.Name)
+	runPod := map[string]string{backupNameLabel: dnsLabelValue(b.Name)}
+	credentials, err := writeRunResources(ctx, r.Client, r.Scheme, b, jobName, bucket, b.Spec.Datastore, runPod, labels)
+	if err != nil {
+		return err
+	}
+	pullSecrets, err := copyOperatorPullSecrets(ctx, r.Client, r.APIReader, r.OperatorNamespace, b.Namespace)
+	if err != nil {
+		return err
+	}
+	job := newBackupJob(b, image, prefix, jobName, credentials, pullSecrets, labels)
+	if err := controllerutil.SetControllerReference(b, job, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+// writeRunResources writes what one run (a Backup or a BackupRestore, the owner) needs beside its
+// Job: the copy of the bucket's scoped credentials, the run pod's NetworkPolicy (no ingress; egress to
+// DNS, its own namespace and public HTTPS) and the datastore's. It returns the copy's name.
+func writeRunResources(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, jobName string, bucket *corev1.Secret, store oramav1alpha1.BackupDatastoreRef, runPod, labels map[string]string) (string, error) {
+	namespace := owner.GetNamespace()
+	credentials := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: jobName + "-bucket", Namespace: namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, c, credentials, func() error {
+		if credentials.ResourceVersion != "" && !metav1.IsControlledBy(credentials, owner) {
+			return fmt.Errorf("Secret %s/%s exists and is not this run's", namespace, credentials.Name)
 		}
 		credentials.Labels = labels
 		credentials.Type = corev1.SecretTypeOpaque
@@ -267,18 +291,18 @@ func (r *BackupReconciler) createRun(ctx context.Context, b *oramav1alpha1.Backu
 		for _, key := range []string{"accessKeyId", "secretAccessKey", "endpoint", "bucket", "region"} {
 			credentials.Data[key] = append([]byte(nil), bucket.Data[key]...)
 		}
-		return controllerutil.SetControllerReference(b, credentials, r.Scheme)
+		return controllerutil.SetControllerReference(owner, credentials, scheme)
 	}); err != nil {
-		return err
+		return "", err
 	}
 
 	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
 	dns, https := intstr.FromInt32(53), intstr.FromInt32(443)
-	policy := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: b.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, policy, func() error {
+	policy := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, c, policy, func() error {
 		policy.Labels = labels
 		policy.Spec = networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{backupNameLabel: dnsLabelValue(b.Name)}},
+			PodSelector: metav1.LabelSelector{MatchLabels: runPod},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				{ // DNS
@@ -289,56 +313,58 @@ func (r *BackupReconciler) createRun(ctx context.Context, b *oramav1alpha1.Backu
 					To: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{}}},
 				},
 				{ // the object store: public HTTPS only
-					To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{
-						CIDR: "0.0.0.0/0", Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10"},
-					}}},
+					To:    []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0", Except: publicHTTPSExcept}}},
 					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &https}},
 				},
 			},
 		}
-		return controllerutil.SetControllerReference(b, policy, r.Scheme)
+		return controllerutil.SetControllerReference(owner, policy, scheme)
 	}); err != nil {
-		return err
+		return "", err
 	}
-
-	if err := ensureDatastoreRunPolicy(ctx, r.Client, r.Scheme, b, jobName, b.Spec.Datastore, map[string]string{backupNameLabel: dnsLabelValue(b.Name)}, labels); err != nil {
-		return err
+	if err := ensureDatastoreRunPolicy(ctx, c, scheme, owner, jobName, store, runPod, labels); err != nil {
+		return "", err
 	}
-
-	pullSecrets, err := copyOperatorPullSecrets(ctx, r.Client, r.APIReader, r.OperatorNamespace, b.Namespace)
-	if err != nil {
-		return err
-	}
-	job := newBackupJob(b, image, prefix, jobName, credentials.Name, pullSecrets, labels)
-	if err := controllerutil.SetControllerReference(b, job, r.Scheme); err != nil {
-		return err
-	}
-	if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	return nil
+	return credentials.Name, nil
 }
 
 func newBackupJob(b *oramav1alpha1.Backup, image, prefix, jobName, bucketSecret string, pullSecrets []string, labels map[string]string) *batchv1.Job {
+	args := []string{
+		"--datastore", string(b.Spec.Datastore.Kind),
+		"--backup", b.Name,
+		"--prefix", prefix,
+		"--timeout", fmt.Sprintf("%ds", backupJobDeadline-60),
+	}
+	return newBackupSystemJob(b.Namespace, jobName, image, "backup", args, b.Spec.Datastore, bucketSecret, pullSecrets, labels)
+}
+
+// runEnv is a run's environment: the datastore connection and the bucket copy.
+func runEnv(store oramav1alpha1.BackupDatastoreRef, bucketSecret string) []corev1.EnvVar {
 	fromSecret := func(env, secret, key string, optional bool) corev1.EnvVar {
 		return corev1.EnvVar{Name: env, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key, Optional: boolPtr(optional),
 		}}}
 	}
-	env := connectionEnv(b.Spec.Datastore, fromSecret)
-	env = append(env,
+	env := connectionEnv(store, fromSecret)
+	return append(env,
 		fromSecret(backup.EnvBucketEndpoint, bucketSecret, "endpoint", false),
 		fromSecret(backup.EnvBucketName, bucketSecret, "bucket", false),
 		fromSecret(backup.EnvBucketRegion, bucketSecret, "region", true),
 		fromSecret(backup.EnvBucketAccessKey, bucketSecret, "accessKeyId", false),
 		fromSecret(backup.EnvBucketSecretKey, bucketSecret, "secretAccessKey", false),
 	)
+}
+
+// newBackupSystemJob is the Job every run of the backup system uses: `/manager <command> <args>`
+// from the operator's image, restricted, no service account token, one attempt.
+func newBackupSystemJob(namespace, jobName, image, command string, args []string, store oramav1alpha1.BackupDatastoreRef, bucketSecret string, pullSecrets []string, labels map[string]string) *batchv1.Job {
+	env := runEnv(store, bucketSecret)
 	var references []corev1.LocalObjectReference
 	for _, name := range pullSecrets {
 		references = append(references, corev1.LocalObjectReference{Name: name})
 	}
 	return &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: b.Namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: namespace, Labels: labels},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            int32Ptr(0),
 			ActiveDeadlineSeconds:   int64Ptr(backupJobDeadline),
@@ -356,15 +382,10 @@ func newBackupJob(b *oramav1alpha1.Backup, image, prefix, jobName, bucketSecret 
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{{
-						Name:    backupContainerName,
-						Image:   image,
-						Command: []string{"/manager", "backup"},
-						Args: []string{
-							"--datastore", string(b.Spec.Datastore.Kind),
-							"--backup", b.Name,
-							"--prefix", prefix,
-							"--timeout", fmt.Sprintf("%ds", backupJobDeadline-60),
-						},
+						Name:                     backupContainerName,
+						Image:                    image,
+						Command:                  []string{"/manager", command},
+						Args:                     args,
 						Env:                      env,
 						TerminationMessagePath:   corev1.TerminationMessagePathDefault,
 						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
@@ -408,8 +429,13 @@ func jobOutcome(job *batchv1.Job) (finished, succeeded bool, message string) {
 
 // report reads the backup container's termination message from the Job's pods.
 func (r *BackupReconciler) report(ctx context.Context, job *batchv1.Job) (backup.Report, bool, error) {
+	return readRunReport(ctx, r.Client, job)
+}
+
+// readRunReport reads a run container's termination message from its Job's pods.
+func readRunReport(ctx context.Context, c client.Client, job *batchv1.Job) (backup.Report, bool, error) {
 	var pods corev1.PodList
-	if err := r.List(ctx, &pods, client.InNamespace(job.Namespace), client.MatchingLabels{"job-name": job.Name}); err != nil {
+	if err := c.List(ctx, &pods, client.InNamespace(job.Namespace), client.MatchingLabels{"job-name": job.Name}); err != nil {
 		return backup.Report{}, false, err
 	}
 	for _, pod := range pods.Items {
@@ -426,13 +452,17 @@ func (r *BackupReconciler) report(ctx context.Context, job *batchv1.Job) (backup
 }
 
 func (r *BackupReconciler) cleanupRun(ctx context.Context, b *oramav1alpha1.Backup) error {
-	jobName := backupJobName(b.Name)
+	return cleanupRunResources(ctx, r.Client, b.Namespace, backupJobName(b.Name))
+}
+
+// cleanupRunResources deletes what writeRunResources wrote.
+func cleanupRunResources(ctx context.Context, c client.Client, namespace, jobName string) error {
 	for _, object := range []client.Object{
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: jobName + "-bucket", Namespace: b.Namespace}},
-		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: b.Namespace}},
-		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: datastoreRunPolicyName(jobName), Namespace: b.Namespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: jobName + "-bucket", Namespace: namespace}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: namespace}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: datastoreRunPolicyName(jobName), Namespace: namespace}},
 	} {
-		if err := deleteIfExists(ctx, r.Client, object); err != nil {
+		if err := deleteIfExists(ctx, c, object); err != nil {
 			return err
 		}
 	}
@@ -479,15 +509,19 @@ func (r *BackupReconciler) objectStore(bucket backup.Bucket) BackupObjectStore {
 
 // operatorImage is the operator's own image: the manager container's, read from its pod.
 func (r *BackupReconciler) operatorImage(ctx context.Context) (string, error) {
-	if r.Image != "" {
-		return r.Image, nil
+	return operatorOwnImage(ctx, r.Image, r.APIReader, r.OperatorNamespace)
+}
+
+func operatorOwnImage(ctx context.Context, image string, reader client.Reader, namespace string) (string, error) {
+	if image != "" {
+		return image, nil
 	}
 	podName := os.Getenv("HOSTNAME")
-	if r.APIReader == nil || r.OperatorNamespace == "" || podName == "" {
+	if reader == nil || namespace == "" || podName == "" {
 		return "", nil
 	}
 	var pod corev1.Pod
-	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: r.OperatorNamespace, Name: podName}, &pod); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: podName}, &pod); err != nil {
 		return "", client.IgnoreNotFound(err)
 	}
 	for _, container := range pod.Spec.Containers {
