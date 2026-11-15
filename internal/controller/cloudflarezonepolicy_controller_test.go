@@ -590,7 +590,7 @@ func TestZonePolicyReportsARefusedCertificateOrder(t *testing.T) {
 }
 
 func TestEdgeCertificateHelpers(t *testing.T) {
-	for name, want := range map[string]int{"lakelive.example": 0, "eu.lakelive.example": 1, "*.lakelive.example": 1, "*.eu.lakelive.example": 2, "a.b.lakelive.example": 2, "example.com": -1, "notlake.live": -1} {
+	for name, want := range map[string]int{"lakelive.example": 0, "eu.lakelive.example": 1, "*.lakelive.example": 1, "*.eu.lakelive.example": 2, "a.b.lakelive.example": 2, "example.com": -1, "notlakelive.example": -1} {
 		if got := edgeHostDepth(name, "lakelive.example"); got != want {
 			t.Errorf("edgeHostDepth(%q) = %d, want %d", name, got, want)
 		}
