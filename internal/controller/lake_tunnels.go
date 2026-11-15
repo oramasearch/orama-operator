@@ -90,8 +90,27 @@ func (r *LakeReconciler) syncLakeTunnels(ctx context.Context, lake *oramav1alpha
 	now := lakeTunnelClock()
 	keep := map[string]bool{}
 	changing := false
+	perWorkspace := newRowLimit(lakeTunnelGrantsPerWorkspace, "live tunnel grants per workspace")
+	perCustomer := newRowLimit(lakeTunnelGrantsPerCustomer, "live tunnel grants per customer")
 	for i := range grants {
 		grant := &grants[i]
+		// Every live grant goes into the relay's one projection, shared by every tenant of the
+		// cluster: past either limit (operator#782, lake#983) a grant is refused, and its Tunnel,
+		// if one was made, is removed with the orphans below.
+		if live := grant.RevokedAt == nil && now.Before(grant.ExpiresAt); live {
+			inWorkspace, inCustomer := perWorkspace.admit(grant.WorkspaceID), perCustomer.admit(grant.CustomerID)
+			if !inWorkspace || !inCustomer {
+				refusal := perWorkspace.refusal()
+				if !inCustomer {
+					refusal = perCustomer.refusal()
+				}
+				status := LakeTunnelGrantStatus{GrantID: grant.ID, Phase: oramav1alpha1.TunnelPhaseFailed, Message: refusal, ObservedGeneration: grant.Generation}
+				if err := writeTunnelGrantStatus(ctx, store, grant, status); err != nil {
+					changing = true
+				}
+				continue
+			}
+		}
 		keep[grant.WorkspaceNamespace+"/"+lakeTunnelName(grant.ID)] = true
 		status, err := r.syncLakeTunnel(ctx, lake, grant, now)
 		if err != nil {

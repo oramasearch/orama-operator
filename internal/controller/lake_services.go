@@ -534,6 +534,30 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	return changing
 }
 
+// servicesOverCustomerLimit is the present services past their customer's limit, counted in the
+// order lake created them, each workspace's own Zetta included (lake#987). A service whose
+// resources already exist is not in it: what was made before the limit existed keeps running.
+func servicesOverCustomerLimit(services []LakeService) map[string]bool {
+	limit := newRowLimit(lakeServicesPerCustomer, "services per customer")
+	over := map[string]bool{}
+	for i := range services {
+		svc := &services[i]
+		if svc.Desired == serviceDesiredAbsent && !(svc.Kind == serviceKindZetta && svc.WorkspaceZetta) {
+			continue
+		}
+		if !limit.admit(svc.CustomerID) && !serviceAlreadyRunning(svc) {
+			over[svc.ID] = true
+		}
+	}
+	return over
+}
+
+// serviceAlreadyRunning is whether lake's status shows a service past provisioning, so a limit
+// never stops one that was made before it.
+func serviceAlreadyRunning(svc *LakeService) bool {
+	return svc.Status != nil && svc.Status.Phase == ServicePhaseReady
+}
+
 // syncLakeServices applies one read of the services and stores tables: absent services first, so
 // a deletion frees its quota slot in the same pass; then present services oldest first; then the
 // stores (lake_stores.go); then the credential Secret, which holds both; then the status of every
@@ -610,8 +634,14 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	results := make(map[string]serviceResult, len(present))
 	presentSlugs := preservedSlugs
 	credentials := map[string][]byte{}
+	overCustomerLimit := servicesOverCustomerLimit(services)
 	for _, svc := range present {
 		presentSlugs[svc.Slug] = true
+		if overCustomerLimit[svc.ID] {
+			// Past the customer's limit (operator#782, lake#987): refused, and nothing is made.
+			results[svc.ID] = serviceResult{phase: ServicePhaseFailed, message: newRowLimit(lakeServicesPerCustomer, "services per customer").refusal()}
+			continue
+		}
 		if mounts.unknown && isWrapperServiceKind(svc.Kind) {
 			// Its mounts could not be read: left as it is until they can.
 			changing = true

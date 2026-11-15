@@ -17,6 +17,10 @@ var errWorkspacesTableMissing = errors.New("the workspaces table is not installe
 // LakeWorkspaceRow is lake's desired workspace row and the observation last written by the
 // operator. The SQL contract is owned by lake#265/lake#311.
 type LakeWorkspaceRow struct {
+	// overCustomerLimit is set by the sync, not read from lake: the row is past its customer's
+	// workspace limit (operator#782), so no namespace is made for it.
+	overCustomerLimit bool
+
 	ID                     string
 	CustomerID             string
 	Name                   string

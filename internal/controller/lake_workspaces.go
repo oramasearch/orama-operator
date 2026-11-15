@@ -203,6 +203,14 @@ func (r *LakeWorkspacesReconciler) syncLakeWorkspaces(
 	rows []LakeWorkspaceRow,
 ) bool {
 	live := r.liveWorkspaceCount(ctx, lake, rows)
+	// Past a customer's limit, counted in the order lake created the rows (operator#782, lake#987),
+	// a workspace gets no namespace; one that already has one keeps it.
+	perCustomer := newRowLimit(lakeWorkspacesPerCustomer, "workspaces per customer")
+	for i := range rows {
+		if rows[i].Desired != "deleted" {
+			rows[i].overCustomerLimit = !perCustomer.admit(rows[i].CustomerID)
+		}
+	}
 	changing := false
 	for desiredDeleted := 1; desiredDeleted >= 0; desiredDeleted-- {
 		for i := range rows {
@@ -672,6 +680,9 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNamespace(
 	} else {
 		if limit := int(lake.Spec.Workspaces.MaxWorkspaces); limit > 0 && *live >= limit {
 			return false, fmt.Errorf("workspace quota reached (%d)", limit)
+		}
+		if row.overCustomerLimit {
+			return false, errors.New(newRowLimit(lakeWorkspacesPerCustomer, "workspaces per customer").refusal())
 		}
 		namespace.Name = name
 	}

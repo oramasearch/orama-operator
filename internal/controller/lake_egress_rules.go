@@ -94,6 +94,7 @@ func (r *LakeReconciler) syncLakeEgressRules(
 		keep[workspace.Namespace] = map[string]bool{}
 	}
 	changing := false
+	limit := newRowLimit(lakeEgressRulesPerWorkspace, "egress rules per workspace")
 	for i := range snapshot.Rules {
 		row := &snapshot.Rules[i]
 		workspace, found := workspaceByID[row.WorkspaceID]
@@ -105,6 +106,14 @@ func (r *LakeReconciler) syncLakeEgressRules(
 			continue
 		}
 		keep[workspace.Namespace][lakeEgressRuleName(row.ID)] = true
+		// Past the workspace's limit (operator#782) a rule is refused. One made before the limit
+		// existed is kept as it is, never torn down.
+		if row.Desired == oramav1alpha1.EgressRuleDesiredPresent && !limit.admit(row.WorkspaceID) {
+			if writeEgressRuleStatus(ctx, store, row, failedEgressRuleStatus(row, limit.refusal())) != nil {
+				changing = true
+			}
+			continue
+		}
 		status, err := r.syncLakeEgressRule(ctx, lake, row)
 		if err != nil {
 			log.Error(err, "egress rule reconciliation deferred", "rule", row.ID)

@@ -1442,6 +1442,11 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 			reserved[name] = struct{}{}
 		}
 	}
+	// The per-tenant limits (lake_limits.go, operator#782): fixed, the same on every cluster.
+	env = append(env, lakeLimitEnv()...)
+	for name := range lakeLimitEnvNames() {
+		reserved[name] = struct{}{}
+	}
 	for _, custom := range lake.Spec.Env {
 		if _, found := reserved[custom.Name]; found {
 			continue

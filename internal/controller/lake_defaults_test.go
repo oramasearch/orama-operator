@@ -446,8 +446,10 @@ func wantLakeOperatorEnv(postgres, deployments bool) []string {
 	if postgres {
 		names = append(names, "LAKE_SERVICE_DIR")
 	}
-	return append(names, "LAKE_AGENT_ENDPOINTS", "LAKE_INTERNAL_URL", "LAKE_AGENT_MODEL",
+	names = append(names, "LAKE_AGENT_ENDPOINTS", "LAKE_INTERNAL_URL", "LAKE_AGENT_MODEL",
 		"LAKE_AGENT_SERVICE_TOKEN", "LAKE_AGENT_BUS_DIR")
+	// The per-tenant limits, last (operator#782).
+	return append(names, envNamesOf(lakeLimitEnv())...)
 }
 
 // The MCP runner image becomes an image App's image: lake creates every stdio MCP connection as
