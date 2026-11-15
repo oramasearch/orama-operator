@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 // mesh-projector is the operator's node-local half of zetta-tunnel's mesh. It runs beside the
 // node agent in this node's mesh DaemonSet, reads this node's template from this node's own mounted

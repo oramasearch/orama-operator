@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # orama-operator — standard kubebuilder targets.
 # Requires: go on PATH (export PATH="/opt/homebrew/bin:$(go env GOPATH)/bin:$PATH");
 # controller-gen is fetched on demand by `make generate`/`make manifests`.

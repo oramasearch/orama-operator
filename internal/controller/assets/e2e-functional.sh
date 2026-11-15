@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+
 # Orama Cloud v1 — comprehensive functional e2e suite.
 #
 # Runs as the OramaCloudV1E2ETest Job's main container against a LIVE in-cluster

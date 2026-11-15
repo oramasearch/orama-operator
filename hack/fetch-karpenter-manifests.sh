@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 # Re-vendor the pinned upstream Karpenter manifests the operator server-side-applies when
 # spec.capacity.karpenter.install is set (operator#75 — operator-owned Karpenter install).
 #

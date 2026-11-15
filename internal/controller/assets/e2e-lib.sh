@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # Orama Cloud v1 e2e — the HTTP and assertion helpers both suite scripts use.
 #
 # Sourced by e2e-functional.sh (and through it by e2e-control-plane.sh); shipped beside them in the

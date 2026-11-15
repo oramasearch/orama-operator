@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 // Package backup is the operator's in-process backup system (operator#453): one Go interface,
 // Mechanism, with one implementation per datastore kind, run by the manager binary started as

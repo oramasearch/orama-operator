@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 // pushchart publishes the operator's chart for one operator version, so a management cluster can
 // install that version on a leaf (docs/infrastructure/README.md). The chart goes to its own

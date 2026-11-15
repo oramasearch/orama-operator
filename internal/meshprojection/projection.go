@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 // Package meshprojection is the contract between the operator, which decides which pods on a node
 // are enrolled in zetta-tunnel's mesh and what they may reach, and the node projector, which alone

@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+
 # Prints internal/controller/assets/dashboard-reference-rows.sql from a dashboard control database
 # (operator#378): every row of subscription_plans, stripe_addon_prices and llms, all columns, with
 # the Stripe price ID columns removed (those are per stack, spec.components.controlDB.stripePrices).
