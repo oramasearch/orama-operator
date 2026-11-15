@@ -514,6 +514,9 @@ func cleanupRunResources(ctx context.Context, c client.Client, namespace, jobNam
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: jobName + "-bucket", Namespace: namespace}},
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: namespace}},
 		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: datastoreRunPolicyName(jobName), Namespace: namespace}},
+		// A TiDB run's keys and its tool pod's policy (backup_tidb.go).
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: jobName + "-tidb-s3", Namespace: namespace}},
+		&networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: datastoreRunPolicyName(jobName + "-tool"), Namespace: namespace}},
 	} {
 		if err := deleteIfExists(ctx, c, object); err != nil {
 			return err

@@ -321,7 +321,8 @@ func TestKarpenterInstallPatternsMatchCRD(t *testing.T) {
 // The chart and generated ClusterRoles scope RBAC writes, bind and escalate to exactly the bundle's
 // names, and grant none of those verbs without a name.
 // TestChartKarpenterRBACMatchesBundle also covers the vendored Pixie bundles (operator#15), the
-// other vendored RBAC the operator applies: the scoped names are exactly the two bundles' objects.
+// other vendored RBAC the operator applies: the scoped names are exactly the two bundles' objects,
+// and the backup system's tidb-backup-manager.
 func TestChartKarpenterRBACMatchesBundle(t *testing.T) {
 	want := map[string][]string{}
 	pixie := []karpenterObjectKey{}
@@ -341,6 +342,10 @@ func TestChartKarpenterRBACMatchesBundle(t *testing.T) {
 		}
 	}
 	want["customresourcedefinitions"] = append([]string(nil), karpenterCRDNames...)
+	// The one Role and RoleBinding the backup system writes itself: TiDB Operator's backup pods
+	// report through them (backup_tidb.go, operator#735).
+	want["roles"] = append(want["roles"], tidbBackupManager)
+	want["rolebindings"] = append(want["rolebindings"], tidbBackupManager)
 	scoped := map[string]bool{"create": true, "update": true, "patch": true, "delete": true, "bind": true, "escalate": true, "*": true}
 
 	for _, path := range []string{"../../chart/templates/rbac.yaml", "../../config/rbac/role.yaml"} {

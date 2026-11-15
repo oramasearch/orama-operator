@@ -493,6 +493,8 @@ rules:
 - apiGroups:
   - pingcap.com
   resources:
+  - backups
+  - restores
   - tidbclusters
   verbs:
   - create
@@ -630,6 +632,17 @@ rules:
   verbs:
   - create
   - delete
+  - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - tidb-backup-manager
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
   - patch
   - update
 - apiGroups:

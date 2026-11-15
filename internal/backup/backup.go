@@ -88,6 +88,8 @@ var resourceKinds = map[string]bool{
 	"Postgres": true,
 	// A MedusaBackupJob of the K8ssandra datacenter (operator#734).
 	"Cassandra": true,
+	// A TiDB Operator Backup: BR, from TiKV (operator#735).
+	"TiDB": true,
 }
 
 // Refusals are the kinds that have no backup by decision, with the decision in words. Their
