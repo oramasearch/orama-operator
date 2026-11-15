@@ -263,8 +263,9 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Six additional Lake-only client policies pair with its egress; all legacy policies remain.
-	// One more lets the operator reach workspace Postgres for credential roles (operator#469).
-	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients) + 6 + 1; len(policies.Items) != want {
+	// One more lets the operator reach workspace Postgres for credential roles (operator#469), and
+	// more let it reach TiDB and Cassandra for their tenant users (operator#771).
+	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients) + 6 + 1 + len(workspaceOramaOperatorIngresses); len(policies.Items) != want {
 		t.Fatalf("network policies = %d, want %d", len(policies.Items), want)
 	}
 	for _, policy := range policies.Items {
@@ -278,6 +279,17 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 				len(policy.Spec.Ingress[0].Ports) != 1 || policy.Spec.Ingress[0].Ports[0].Port.IntVal != servicePostgresPort ||
 				policy.Spec.PodSelector.MatchLabels["cnpg.io/podRole"] != "instance" {
 				t.Fatalf("operator Postgres ingress = %#v", policy.Spec)
+			}
+		}
+		for _, allowance := range workspaceOramaOperatorIngresses {
+			if policy.Name != allowance.name {
+				continue
+			}
+			from := policy.Spec.Ingress[0].From
+			if len(from) != 1 || from[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "orama-system" ||
+				from[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "orama-operator" ||
+				len(policy.Spec.Ingress[0].Ports) != 1 || policy.Spec.Ingress[0].Ports[0].Port.IntVal != allowance.ports[0] {
+				t.Fatalf("operator ingress %s = %#v", policy.Name, policy.Spec)
 			}
 		}
 		if policy.Name == workspaceLakeIngressName {

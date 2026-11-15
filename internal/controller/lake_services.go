@@ -687,7 +687,16 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		aliases[svc.ID] = svc.Slug
 		serviceWorkspaces[svc.ID] = svc.WorkspaceID
 	}
-	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, credentials, aliases, serviceWorkspaces)
+	// A connection file naming the administrator of a kind that delivers a tenant user is never
+	// kept or written (operator#771), so one an older operator wrote goes on this pass.
+	adminUsers := map[string][]string{}
+	for _, svc := range present {
+		if tenant, ok := catalogKinds[svc.Kind].(catalogTenantUser); ok {
+			adminUsers[svc.Slug] = tenant.adminUsers(svc)
+		}
+	}
+	refused := func(slug string, credential []byte) bool { return deliversAdministrator(credential, adminUsers[slug]) }
+	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, refused, credentials, aliases, serviceWorkspaces)
 	if err != nil {
 		log.Error(err, "service credentials deferred")
 	}
@@ -1242,8 +1251,9 @@ func (r *LakeReconciler) removeServiceCredential(ctx context.Context, lake *oram
 // or store whose connection is known (service slugs are svc- and ws-, store slugs st-, so they
 // never collide). A present one keeps its key while its connection cannot be read (a transient
 // read never removes a file lake depends on); a key keep refuses (absent, or no longer listed) is
-// dropped. It returns the slugs whose fresh credential is now in the Secret.
-func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, keep func(slug string) bool, credentials map[string][]byte, aliases map[string]string, serviceWorkspaces map[string]string) (map[string]bool, error) {
+// dropped. A file refused says must never reach a tenant (an administrator's, operator#771) is
+// neither kept nor written. It returns the slugs whose fresh credential is now in the Secret.
+func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, keep func(slug string) bool, refused func(slug string, credential []byte) bool, credentials map[string][]byte, aliases map[string]string, serviceWorkspaces map[string]string) (map[string]bool, error) {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: namespace}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(secret), secret); err == nil && !metav1.IsControlledBy(secret, lake) {
 		return nil, fmt.Errorf("secret %s/%s exists and is not controlled by Lake %s", namespace, secret.Name, lake.Name)
@@ -1255,11 +1265,14 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 		secret.Type = corev1.SecretTypeOpaque
 		data := map[string][]byte{}
 		for key, value := range secret.Data {
-			if slug, ok := strings.CutSuffix(key, ".json"); ok && keep(slug) {
+			if slug, ok := strings.CutSuffix(key, ".json"); ok && keep(slug) && !refused(slug, value) {
 				data[key] = value
 			}
 		}
 		for slug, credential := range credentials {
+			if refused(slug, credential) {
+				continue
+			}
 			data[serviceCredentialKey(slug)] = credential
 		}
 		for id, slug := range aliases {
@@ -1291,10 +1304,33 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 		r.refreshLakeServiceMounts(ctx, namespace, labels, secret.ResourceVersion)
 	}
 	written := make(map[string]bool, len(credentials))
-	for slug := range credentials {
-		written[slug] = true
+	for slug, credential := range credentials {
+		if !refused(slug, credential) {
+			written[slug] = true
+		}
 	}
 	return written, nil
+}
+
+// deliversAdministrator reports whether a connection file names one of admins as its user. A file
+// that cannot be read is treated as one, so for a kind with administrators only a file the
+// operator can prove is the tenant user's reaches a tenant (operator#771).
+func deliversAdministrator(credential []byte, admins []string) bool {
+	if len(admins) == 0 {
+		return false
+	}
+	var connection struct {
+		User string `json:"user"`
+	}
+	if err := json.Unmarshal(credential, &connection); err != nil || connection.User == "" {
+		return true
+	}
+	for _, admin := range admins {
+		if connection.User == admin {
+			return true
+		}
+	}
+	return false
 }
 
 // lakeServicesSecretVersionAnnotation carries the services Secret's resourceVersion on each lake

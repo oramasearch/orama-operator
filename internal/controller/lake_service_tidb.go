@@ -27,7 +27,15 @@ const (
 	// tidbVersion is the TiDB release the operator's own v1.6.6 examples run.
 	tidbVersion = "v8.5.7"
 	tidbPort    = 4000
-	tidbUser    = "root"
+	// tidbRootUser is TiDB's administrator. Only the operator signs in as it; tenants receive
+	// tidbTenantUser (operator#771).
+	tidbRootUser = "root"
+	// tidbTenantUser is the user a tenant receives, with every privilege on its own databases and
+	// none on TiDB itself (operator#771). tidbTenantDatabase is the database made for it.
+	tidbTenantUser     = "app"
+	tidbTenantDatabase = "app"
+	// tidbTenantKey is the key of the tenant user's password in Secret <cluster>-tenant.
+	tidbTenantKey = "password"
 	// tidbRootKey is the key TiDB Operator reads the root password from in <cluster>-init.
 	tidbRootKey = "root"
 	// tidbInitSecretSuffix: with spec.tidb.initializer.createPassword, TiDB Operator sets the
@@ -65,12 +73,18 @@ func tidbNativePasswordHash(password string) string {
 }
 
 // tidbBootstrapSQL sets root's password while TiDB bootstraps its first start, before it accepts a
-// connection (operator#774). TiDB runs initialize-sql-file once, inside bootstrap, so there is no
-// window in which root has an empty password. The ConfigMap holds only the password's hash, never
-// the password. TiDB Operator's initializer (createPassword) then finds root already protected
-// ("Access denied" with an empty password) and records passwordInitialized.
-func tidbBootstrapSQL(password string) string {
-	return fmt.Sprintf("ALTER USER 'root'@'%%' IDENTIFIED WITH 'mysql_native_password' AS '%s';\n", tidbNativePasswordHash(password))
+// connection (operator#774), and creates the tenant user with its database (operator#771). TiDB
+// runs initialize-sql-file once, inside bootstrap, so there is no window in which root has an empty
+// password and a new cluster has its tenant user from the first start. The ConfigMap holds only the
+// passwords' hashes, never a password. TiDB Operator's initializer (createPassword) then finds root
+// already protected ("Access denied" with an empty password) and records passwordInitialized.
+// A cluster made before operator#771 gets its tenant user from the operator over SQL instead
+// (tenantUsers.ensureTiDB).
+func tidbBootstrapSQL(rootPassword, tenantPassword string) string {
+	statements := append([]string{
+		fmt.Sprintf("ALTER USER 'root'@'%%' IDENTIFIED WITH 'mysql_native_password' AS '%s'", tidbNativePasswordHash(rootPassword)),
+	}, tidbTenantCreateStatements(tenantPassword, []string{tidbTenantDatabase})...)
+	return strings.Join(statements, ";\n") + ";\n"
 }
 
 func (k tidbServiceKind) build(in catalogService, password string) []catalogResource {
@@ -141,7 +155,7 @@ func (k tidbServiceKind) build(in catalogService, password string) []catalogReso
 	return []catalogResource{
 		{catalogObject: objects[0], fields: fields},
 		{catalogObject: objects[1], fields: []serviceField{
-			{path: []string{"data"}, value: map[string]interface{}{tidbBootstrapKey: tidbBootstrapSQL(password)}},
+			{path: []string{"data"}, value: map[string]interface{}{tidbBootstrapKey: tidbBootstrapSQL(password, in.tenantPassword)}},
 		}},
 	}
 }
@@ -149,6 +163,12 @@ func (k tidbServiceKind) build(in catalogService, password string) []catalogReso
 func (tidbServiceKind) passwordSecret(name string) (string, string) {
 	return name + tidbInitSecretSuffix, tidbRootKey
 }
+
+func (tidbServiceKind) tenantSecret(name string) (string, string) {
+	return name + serviceTenantSecretSuffix, tidbTenantKey
+}
+
+func (tidbServiceKind) adminUsers(*LakeService) []string { return []string{tidbRootUser} }
 
 func tidbHost(in catalogService) string {
 	return fmt.Sprintf("%s-tidb.%s.svc.cluster.local", in.name, in.namespace)
@@ -178,21 +198,30 @@ func (tidbServiceKind) ready(in catalogService, found map[string]*unstructured.U
 	return true, ""
 }
 
-func (tidbServiceKind) credential(_ context.Context, _ client.Reader, in catalogService, _ map[string]*unstructured.Unstructured, password string) ([]byte, string, error) {
-	if password == "" {
+// credential delivers the tenant user, never root (operator#771). The operator first makes sure, as
+// root, that the user exists with only its grants (tenantUsers.ensureTiDB); until it has, nothing is
+// delivered and the pass is retried.
+func (tidbServiceKind) credential(ctx context.Context, _ client.Reader, in catalogService, _ map[string]*unstructured.Unstructured, password string) ([]byte, string, error) {
+	if password == "" || in.tenantPassword == "" {
+		return nil, "", nil
+	}
+	if !ensureTenantUserOnce(ctx, in, password, func(ctx context.Context) error {
+		return tenantUsers.ensureTiDB(ctx, in, password, in.tenantPassword)
+	}) {
 		return nil, "", nil
 	}
 	address := fmt.Sprintf("%s:%d", tidbHost(in), tidbPort)
-	uri := (&url.URL{Scheme: "mysql", User: url.UserPassword(tidbUser, password), Host: address}).String()
+	uri := (&url.URL{Scheme: "mysql", User: url.UserPassword(tidbTenantUser, in.tenantPassword), Host: address, Path: "/" + tidbTenantDatabase}).String()
 	credential, err := json.Marshal(struct {
 		Kind     string `json:"kind"`
 		Endpoint string `json:"endpoint"`
 		Host     string `json:"host"`
 		Port     int    `json:"port"`
+		Database string `json:"database"`
 		User     string `json:"user"`
 		Password string `json:"password"`
 		URI      string `json:"uri"`
-	}{serviceKindTiDB, address, tidbHost(in), tidbPort, tidbUser, password, uri})
+	}{serviceKindTiDB, address, tidbHost(in), tidbPort, tidbTenantDatabase, tidbTenantUser, in.tenantPassword, uri})
 	return credential, "", err
 }
 

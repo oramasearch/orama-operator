@@ -93,6 +93,19 @@ func (k cassandraServiceKind) build(in catalogService, _ string) []catalogResour
 
 func (cassandraServiceKind) passwordSecret(string) (string, string) { return "", "" }
 
+func (cassandraServiceKind) tenantSecret(name string) (string, string) {
+	return name + serviceTenantSecretSuffix, cassandraTenantKey
+}
+
+// adminUsers: the generated superuser, and Cassandra's stock one.
+func (cassandraServiceKind) adminUsers(svc *LakeService) []string {
+	return []string{cassandraSuperuserSecret(svc.Slug), "cassandra"}
+}
+
+// cassandraSuperuserSecret is the superuser Secret K8ssandra generates, <cluster name>-superuser;
+// the role it holds has the same name.
+func cassandraSuperuserSecret(slug string) string { return slug + "-superuser" }
+
 // cassandraHost is cass-operator's datacenter Service, <cluster>-<datacenter object>-service.
 func cassandraHost(in catalogService) string {
 	slug := cassandraSlugName(in)
@@ -118,15 +131,17 @@ func (cassandraServiceKind) ready(in catalogService, found map[string]*unstructu
 	return true, ""
 }
 
-// credential reads the superuser Secret K8ssandra generates, <cluster name>-superuser, keys
-// username and password. K8ssandra makes it controlled by the K8ssandraCluster; one it does not
-// control was not generated for this service.
+// credential delivers the tenant role, never a superuser (operator#771). The operator reads the
+// superuser Secret K8ssandra generates, <cluster name>-superuser, keys username and password, and
+// signs in with it to keep the tenant role (tenantUsers.ensureCassandra); until that has succeeded,
+// nothing is delivered and the pass is retried. K8ssandra makes the Secret controlled by the
+// K8ssandraCluster; one it does not control was not generated for this service.
 func (cassandraServiceKind) credential(ctx context.Context, c client.Reader, in catalogService, found map[string]*unstructured.Unstructured, _ string) ([]byte, string, error) {
 	cluster := found[k8ssandraClusterGVK.Kind]
-	if cluster == nil {
+	if cluster == nil || in.tenantPassword == "" {
 		return nil, "", nil
 	}
-	secretName := cassandraSlugName(in) + "-superuser"
+	secretName := cassandraSuperuserSecret(cassandraSlugName(in))
 	secret, err := readServiceSecret(ctx, c, in.namespace, secretName)
 	if err != nil || secret == nil {
 		return nil, "", err
@@ -134,8 +149,16 @@ func (cassandraServiceKind) credential(ctx context.Context, c client.Reader, in 
 	if !metav1.IsControlledBy(secret, cluster) {
 		return nil, foreignServiceMessage("Secret", in.namespace, secretName), nil
 	}
-	user, password := string(secret.Data["username"]), string(secret.Data["password"])
-	if user == "" || password == "" {
+	superuser, superPassword := string(secret.Data["username"]), string(secret.Data["password"])
+	if superuser == "" || superPassword == "" {
+		return nil, "", nil
+	}
+	if superuser == cassandraTenantRole {
+		return nil, fmt.Sprintf("Secret %s/%s names the superuser %s, the tenant role's name", in.namespace, secretName, cassandraTenantRole), nil
+	}
+	if !ensureTenantUserOnce(ctx, in, superuser+"\x00"+superPassword, func(ctx context.Context) error {
+		return tenantUsers.ensureCassandra(ctx, in, superuser, superPassword, in.tenantPassword)
+	}) {
 		return nil, "", nil
 	}
 	credential, err := json.Marshal(struct {
@@ -144,9 +167,11 @@ func (cassandraServiceKind) credential(ctx context.Context, c client.Reader, in 
 		Host       string `json:"host"`
 		Port       int    `json:"port"`
 		Datacenter string `json:"datacenter"`
+		Keyspace   string `json:"keyspace"`
 		User       string `json:"user"`
 		Password   string `json:"password"`
-	}{serviceKindCassandra, cassandraServiceKind{}.endpoint(in), cassandraHost(in), cassandraPort, cassandraDatacenter, user, password})
+	}{serviceKindCassandra, cassandraServiceKind{}.endpoint(in), cassandraHost(in), cassandraPort, cassandraDatacenter,
+		cassandraTenantKeyspace, cassandraTenantRole, in.tenantPassword})
 	return credential, "", err
 }
 

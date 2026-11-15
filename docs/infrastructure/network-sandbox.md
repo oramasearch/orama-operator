@@ -171,6 +171,8 @@ ports, reject other Lakes, operator and unlabelled source pods, and check stable
 | `allow-lake-egress` | Workspace pods reach only the owning Lake pods on the configured Lake port. |
 | `allow-cnpg-operator-ingress` | CloudNativePG reaches instance-manager 8000 and Postgres 5432. |
 | `allow-operator-to-postgres` | The Orama operator reaches CloudNativePG instances on 5432 to keep the roles of credential-scoped Connections (#469). |
+| `allow-orama-operator-tidb-sql` | The Orama operator reaches TiDB SQL 4000 as root to keep the tenant user (#771). |
+| `allow-orama-operator-cassandra-cql` | The Orama operator reaches Cassandra CQL 9042 as the superuser to keep the tenant role (#771). |
 | `allow-clickhouse-operator-ingress` | Altinity reaches ClickHouse HTTP 8123 for readiness and schema work. |
 | `allow-clickhouse-keeper-operator-ingress` | Altinity reaches Keeper 2181 to create replicated paths. |
 | `allow-tidb-pd-operator-ingress` | TiDB operator reaches PD 2379 for members, health and stores. |

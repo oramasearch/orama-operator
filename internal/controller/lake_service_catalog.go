@@ -92,6 +92,9 @@ type catalogService struct {
 	// image is the image of a kind the Orama operator runs itself (sqlite, duckdb, polars); empty
 	// otherwise.
 	image string
+	// tenantPassword is the generated password of the tenant user a catalogTenantUser kind
+	// creates inside the cluster and delivers (operator#771); empty for other kinds.
+	tenantPassword string
 }
 
 // catalogObject names one upstream object a kind may write.
@@ -126,6 +129,23 @@ func servicePasswordLength(kind catalogKind) int {
 	}
 	return servicePasswordBytes
 }
+
+// catalogTenantUser is implemented by a kind whose upstream operator makes only an administrator
+// (TiDB's root, the K8ssandra superuser). The Orama operator then creates a non-administrator
+// tenant user inside the cluster, with a password it generates into tenantSecret, and delivers
+// only that user (operator#771). The administrator's credential stays in a Secret only the
+// operator reads.
+type catalogTenantUser interface {
+	// tenantSecret names the Secret holding the tenant user's generated password, and its key.
+	tenantSecret(name string) (secretName, key string)
+	// adminUsers are the user names that are never delivered for svc. A connection file in the
+	// services Secret naming one of them, written by an operator from before operator#771, is
+	// removed on the next pass, whether or not the tenant user could be created yet.
+	adminUsers(svc *LakeService) []string
+}
+
+// serviceTenantSecretSuffix names the Secret <name>-tenant of a catalogTenantUser kind.
+const serviceTenantSecretSuffix = "-tenant"
 
 // catalogResource is one desired upstream object.
 type catalogResource struct {
@@ -297,6 +317,17 @@ func (r *LakeReconciler) reconcileCatalogService(ctx context.Context, lake *oram
 	if secretName, key := kind.passwordSecret(in.name); secretName != "" {
 		var failure string
 		password, failure, err = r.ensureServicePassword(ctx, in, secretName, key, servicePasswordLength(kind))
+		if err != nil {
+			return serviceResult{}, err
+		}
+		if failure != "" {
+			return serviceResult{phase: ServicePhaseFailed, message: failure}, nil
+		}
+	}
+	if tenant, ok := kind.(catalogTenantUser); ok {
+		secretName, key := tenant.tenantSecret(in.name)
+		var failure string
+		in.tenantPassword, failure, err = r.ensureServicePassword(ctx, in, secretName, key, servicePasswordLength(kind))
 		if err != nil {
 			return serviceResult{}, err
 		}
@@ -483,10 +514,10 @@ func (r *LakeReconciler) applyCatalogResource(ctx context.Context, in catalogSer
 
 // deleteCatalogService deletes an absent catalog service: every upstream object it owns (primary
 // first, in one pass), then — once they are gone, so nothing can recreate them — the PVCs left
-// behind, and once those are gone too, the generated password Secret: the credential is the last
-// thing to go, never before the data it opens. It reports what remains; only objects
-// passing the ownership rule are deleted, and a PVC only when the service provably ran here (an
-// owned object was seen, or service_status carries its endpoint).
+// behind, and once those are gone too, the generated password Secrets (the administrator's, then
+// the tenant user's): the credential is the last thing to go, never before the data it opens. It
+// reports what remains; only objects passing the ownership rule are deleted, and a PVC only when
+// the service provably ran here (an owned object was seen, or service_status carries its endpoint).
 func (r *LakeReconciler) deleteCatalogService(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, svc *LakeService, previousEndpoint string, kind catalogKind) (serviceResult, bool, error) {
 	in := newCatalogService(lake, namespace, svc, lakeServiceSpec{})
 	remaining := false
@@ -536,6 +567,12 @@ func (r *LakeReconciler) deleteCatalogService(ctx context.Context, lake *oramav1
 	}
 
 	if secretName, _ := kind.passwordSecret(in.name); secretName != "" {
+		if err := r.deleteServicePassword(ctx, in, secretName); err != nil {
+			return serviceResult{}, false, err
+		}
+	}
+	if tenant, ok := kind.(catalogTenantUser); ok {
+		secretName, _ := tenant.tenantSecret(in.name)
 		if err := r.deleteServicePassword(ctx, in, secretName); err != nil {
 			return serviceResult{}, false, err
 		}

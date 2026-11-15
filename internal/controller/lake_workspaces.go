@@ -856,6 +856,12 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 			"The Orama operator signs in to workspace Postgres services to keep the roles of credential-scoped Connections (operator#469).",
 			workspaceOperatorPostgresPolicy(r.OperatorNamespace, namespace, labels),
 		))
+		for _, allowance := range workspaceOramaOperatorIngresses {
+			policies = append(policies, sandboxAllowance(
+				allowance.comment,
+				workspaceOramaOperatorIngressPolicy(allowance, r.OperatorNamespace, namespace, labels),
+			))
+		}
 	}
 	policies = append(policies, workspaceLakeServiceIngressAllowances(lake)...)
 	connectionPolicies, connectionErr := r.existingWorkspaceConnectionAllowances(ctx, namespace)

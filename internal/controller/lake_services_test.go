@@ -393,6 +393,9 @@ type serviceHarness struct {
 	updates *int
 	// changing is what the last poll reported: a service still starting or being deleted.
 	changing bool
+	// tenantUsers stands in for the operator's SQL and CQL sessions to TiDB and Cassandra
+	// (operator#771).
+	tenantUsers *fakeTenantUsers
 }
 
 func newServiceHarness(t *testing.T, lake *oramav1alpha1.Lake, store *fakeServiceStore, objects ...client.Object) *serviceHarness {
@@ -456,8 +459,12 @@ func newServiceHarnessWithout(t *testing.T, lake *oramav1alpha1.Lake, store *fak
 				return c.Delete(ctx, obj, opts...)
 			},
 		}).Build()
+	users := &fakeTenantUsers{}
+	previous := tenantUsers
+	tenantUsers = users
+	t.Cleanup(func() { tenantUsers = previous })
 	return &serviceHarness{t: t, client: c, scheme: s, store: store, lake: lake, deletes: deletes, deletedKinds: deletedKinds, updates: updates,
-		reconciler: &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}}
+		tenantUsers: users, reconciler: &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}}
 }
 
 func (h *serviceHarness) poll() {

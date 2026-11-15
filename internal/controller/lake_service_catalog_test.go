@@ -48,7 +48,11 @@ type catalogCase struct {
 	upstreamSecret func(h *serviceHarness, c catalogCase)
 	// passwordSecret is the generated password Secret and key, "" when upstream makes it.
 	passwordSecret, passwordKey string
-	endpoint                    string
+	// tenantSecret is the generated password Secret (key "password") of the tenant user the
+	// operator creates and delivers instead of the administrator (operator#771); "" for a kind
+	// whose delivered user its upstream operator makes.
+	tenantSecret string
+	endpoint     string
 	// credential is the expected <slug>.json for password.
 	credential func(password string) string
 	// claimLabels are the labels the upstream operator puts on the service's PVCs.
@@ -201,11 +205,22 @@ func catalogCases() []catalogCase {
 				}
 				bootstrap := h.upstream(configMapGVK, bootstrapName)
 				sqlText, _, _ := unstructured.NestedString(bootstrap.Object, "data", "bootstrap-sql")
-				if sqlText != "ALTER USER 'root'@'%' IDENTIFIED WITH 'mysql_native_password' AS '"+tidbNativePasswordHash(root)+"';\n" {
-					h.t.Fatalf("bootstrap SQL = %q", sqlText)
+				// operator#771: the tenant user and its database are made in the same bootstrap.
+				tenant := string(h.secret(c.name() + "-tenant").Data["password"])
+				if len(tenant) != 32 || tenant == root {
+					h.t.Fatal("no generated tenant password in <cluster>-tenant")
 				}
-				if strings.Contains(sqlText, root) {
-					h.t.Fatal("the bootstrap ConfigMap carries the root password itself")
+				tenantHash := tidbNativePasswordHash(tenant)
+				want := "ALTER USER 'root'@'%' IDENTIFIED WITH 'mysql_native_password' AS '" + tidbNativePasswordHash(root) + "';\n" +
+					"CREATE DATABASE IF NOT EXISTS `app`;\n" +
+					"CREATE USER IF NOT EXISTS 'app'@'%' IDENTIFIED WITH 'mysql_native_password' AS '" + tenantHash + "';\n" +
+					"ALTER USER 'app'@'%' IDENTIFIED WITH 'mysql_native_password' AS '" + tenantHash + "';\n" +
+					"GRANT ALL PRIVILEGES ON `app`.* TO 'app'@'%';\n"
+				if sqlText != want {
+					h.t.Fatalf("bootstrap SQL = %q, want %q", sqlText, want)
+				}
+				if strings.Contains(sqlText, root) || strings.Contains(sqlText, tenant) {
+					h.t.Fatal("the bootstrap ConfigMap carries a password itself")
 				}
 			},
 			waiting: "waiting for TiDB pd",
@@ -225,11 +240,13 @@ func catalogCases() []catalogCase {
 				h.update(tc)
 			},
 			passwordSecret: "prod-svc-888888888888-init", passwordKey: "root",
-			endpoint: "prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000",
+			tenantSecret: "prod-svc-888888888888-tenant",
+			endpoint:     "prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000",
+			// operator#771: the tenant user, never root.
 			credential: func(password string) string {
 				return `{"kind":"tidb","endpoint":"prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000",` +
-					`"host":"prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local","port":4000,"user":"root","password":"` + password + `",` +
-					`"uri":"mysql://root:` + password + `@prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000"}`
+					`"host":"prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local","port":4000,"database":"app","user":"app","password":"` + password + `",` +
+					`"uri":"mysql://app:` + password + `@prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000/app"}`
 			},
 			claimLabels: map[string]string{"app.kubernetes.io/instance": "prod-svc-888888888888", "app.kubernetes.io/managed-by": "tidb-operator"},
 		},
@@ -269,11 +286,13 @@ func catalogCases() []catalogCase {
 					OwnerReferences: []metav1.OwnerReference{{APIVersion: "k8ssandra.io/v1alpha1", Kind: "K8ssandraCluster", Name: kc.GetName(), UID: kc.GetUID(), Controller: &controller}}},
 					Data: map[string][]byte{"username": []byte(c.slug + "-superuser"), "password": []byte("cql-secret")}})
 			},
-			endpoint: "svc-999999999999-svc-999999999999-service.prod-ws-123e4567e89b.svc.cluster.local:9042",
-			credential: func(string) string {
+			tenantSecret: "prod-svc-999999999999-tenant",
+			endpoint:     "svc-999999999999-svc-999999999999-service.prod-ws-123e4567e89b.svc.cluster.local:9042",
+			// operator#771: the tenant role, never the superuser.
+			credential: func(password string) string {
 				return `{"kind":"cassandra","endpoint":"svc-999999999999-svc-999999999999-service.prod-ws-123e4567e89b.svc.cluster.local:9042",` +
 					`"host":"svc-999999999999-svc-999999999999-service.prod-ws-123e4567e89b.svc.cluster.local","port":9042,"datacenter":"dc1",` +
-					`"user":"svc-999999999999-superuser","password":"cql-secret"}`
+					`"keyspace":"app","user":"app","password":"` + password + `"}`
 			},
 			claimLabels: map[string]string{cassandraClusterLabel: "svc-999999999999"},
 		},
@@ -400,6 +419,15 @@ func (h *serviceHarness) password(c catalogCase) string {
 	return string(h.secret(c.passwordSecret).Data[c.passwordKey])
 }
 
+// deliveredPassword is the password of the user c's connection names: the tenant user's for a
+// kind that delivers one (operator#771), else the generated one.
+func (h *serviceHarness) deliveredPassword(c catalogCase) string {
+	if c.tenantSecret != "" {
+		return string(h.secret(c.tenantSecret).Data["password"])
+	}
+	return h.password(c)
+}
+
 func catalogClaim(c catalogCase, name string) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testServiceWorkspaceNamespace, Labels: c.claimLabels}}
 }
@@ -447,24 +475,27 @@ func TestServicesCatalogBuild(t *testing.T) {
 				}
 			}
 			c.checkBuild(h, c)
-			if c.passwordSecret != "" {
-				secret := h.secret(c.passwordSecret)
+			for _, name := range []string{c.passwordSecret, c.tenantSecret} {
+				if name == "" {
+					continue
+				}
+				secret := h.secret(name)
 				if !metav1.IsControlledBy(secret, h.lake) || secret.Labels[serviceIDLabel] != c.id {
-					t.Fatalf("password Secret not the Lake's: %v %v", secret.OwnerReferences, secret.Labels)
+					t.Fatalf("password Secret %s not the Lake's: %v %v", name, secret.OwnerReferences, secret.Labels)
 				}
 			}
 			expectStatus(t, store.status(t, c.id), ServicePhaseProvisioning, c.waiting, c.endpoint)
 
-			// A steady service is never rewritten, and its password never rotates.
-			password := h.password(c)
+			// A steady service is never rewritten, and its passwords never rotate.
+			password, delivered := h.password(c), h.deliveredPassword(c)
 			*h.updates = 0
 			h.poll()
 			h.poll()
 			if *h.updates != 0 {
 				t.Fatalf("steady passes issued %d updates", *h.updates)
 			}
-			if h.password(c) != password {
-				t.Fatal("the generated password changed")
+			if h.password(c) != password || h.deliveredPassword(c) != delivered {
+				t.Fatal("a generated password changed")
 			}
 		})
 	}
@@ -496,7 +527,7 @@ func TestServicesCatalogReadyGatingAndCredential(t *testing.T) {
 				h.poll()
 			}
 			expectStatus(t, store.status(t, c.id), ServicePhaseReady, "service ready", c.endpoint)
-			if got, want := string(h.credentials()[c.slug+".json"]), c.credential(h.password(c)); got != want {
+			if got, want := string(h.credentials()[c.slug+".json"]), c.credential(h.deliveredPassword(c)); got != want {
 				t.Fatalf("credential =\n%s\nwant\n%s", got, want)
 			}
 		})
@@ -543,11 +574,17 @@ func TestServicesCatalogDeletionOrder(t *testing.T) {
 			if c.passwordSecret != "" {
 				h.secret(c.passwordSecret)
 			}
+			if c.tenantSecret != "" {
+				h.secret(c.tenantSecret)
+			}
 			expectStatus(t, store.status(t, c.id), ServicePhaseDeleting, fmt.Sprintf("deleting the %s data volumes", catalogKinds[c.kind].title()), c.endpoint)
 
 			h.poll()
 			if c.passwordSecret != "" {
 				want = append(want, "Secret/"+c.passwordSecret)
+			}
+			if c.tenantSecret != "" {
+				want = append(want, "Secret/"+c.tenantSecret)
 			}
 			if fmt.Sprint(*h.deletedKinds) != fmt.Sprint(want) {
 				t.Fatalf("deletion order = %v, want %v", *h.deletedKinds, want)
@@ -573,9 +610,12 @@ func TestServicesCatalogRefusesForeignObjects(t *testing.T) {
 			h.poll()
 			want := fmt.Sprintf("%s prod-ws-123e4567e89b/%s exists and is not this Lake's service", kind, name)
 			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, want, "")
-			if c.passwordSecret != "" {
-				if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
-					t.Fatalf("a refused service generated a password Secret: %v", err)
+			for _, name := range []string{c.passwordSecret, c.tenantSecret} {
+				if name == "" {
+					continue
+				}
+				if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: name}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+					t.Fatalf("a refused service generated password Secret %s: %v", name, err)
 				}
 			}
 
@@ -612,6 +652,19 @@ func TestServicesCatalogRefusesForeignSecrets(t *testing.T) {
 				Data: map[string][]byte{c.passwordKey: []byte("chosen-by-someone-else")}})
 			h.poll()
 			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("Secret prod-ws-123e4567e89b/%s exists and is not this Lake's service", c.passwordSecret), "")
+		})
+	}
+	// A tenant password Secret of the service's name the Lake does not own (operator#771).
+	for _, c := range catalogCases() {
+		if c.tenantSecret == "" {
+			continue
+		}
+		t.Run(c.kind+"/tenant", func(t *testing.T) {
+			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{}`, false)}}
+			h := newServiceHarness(t, serviceTestLake(), store, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.tenantSecret, Namespace: testServiceNamespace},
+				Data: map[string][]byte{"password": []byte("chosen-by-someone-else")}})
+			h.poll()
+			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("Secret lake/%s exists and is not this Lake's service", c.tenantSecret), "")
 		})
 	}
 	// An upstream Secret its upstream object does not own is not trusted as the credential.
