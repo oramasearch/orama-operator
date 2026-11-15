@@ -238,7 +238,7 @@ func (v Valkey) Restore(ctx context.Context, store Datastore, source Target, man
 }
 
 // Cleanup implements Cleaner: the scratch target held nothing before the restore.
-func (v Valkey) Cleanup(ctx context.Context, store Datastore, _ Manifest) error {
+func (v Valkey) Cleanup(ctx context.Context, store Datastore, _ Manifest, _ Restored) error {
 	primaries, err := v.primaries(ctx, store)
 	if err != nil {
 		return err

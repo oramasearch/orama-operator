@@ -68,7 +68,8 @@ type Mechanism interface {
 // rehearsal (RestoreRehearsal deletes what it restored, so the next rehearsal finds the target
 // empty). It removes only what the manifest says was restored.
 type Cleaner interface {
-	Cleanup(ctx context.Context, store Datastore, manifest Manifest) error
+	// restored is what the mechanism's Restore answered (a Zetta restore names its node there).
+	Cleanup(ctx context.Context, store Datastore, manifest Manifest, restored Restored) error
 }
 
 // mechanisms maps a datastore kind (BackupDatastoreKind) to the mechanism the backup Job runs. A

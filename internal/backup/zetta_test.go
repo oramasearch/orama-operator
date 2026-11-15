@@ -17,11 +17,14 @@ import (
 	"testing"
 )
 
-// fakeZetta answers the backup routes of zetta#1518, or 404 like today's engine when absent.
+// fakeZetta answers the backup routes of zetta#1521, or 404 like an engine without them.
 type fakeZetta struct {
-	absent   bool
-	released bool
-	restored []byte
+	absent    bool
+	released  bool
+	restored  []byte
+	discarded string
+	// expired: the restore answers one record of collection "sessions" as expired.
+	expired bool
 }
 
 func (f *fakeZetta) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -35,14 +38,22 @@ func (f *fakeZetta) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/backup_snapshot":
-		fmt.Fprint(w, `{"data":{"snapshot":"s1","summary":{"table:lake.events":12,"bucket:drive":3}}}`)
+		// The engine's envelope, with snapshot and summary also at the top level.
+		fmt.Fprint(w, `{"ok":true,"value":{"snapshot":"s1"},"snapshot":"s1","summary":{"table:lake.events":12,"bucket:drive":3,"collection:sessions":2}}`)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/backup_snapshot/s1":
 		fmt.Fprint(w, "ARCHIVE-BYTES")
 	case r.Method == http.MethodDelete && r.URL.Path == "/v1/backup_snapshot/s1":
 		f.released = true
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/restore_snapshot":
 		f.restored, _ = io.ReadAll(r.Body)
-		fmt.Fprint(w, `{"summary":{"table:lake.events":12,"bucket:drive":3}}`)
+		sessions, expired := 2, "{}"
+		if f.expired {
+			sessions, expired = 1, `{"sessions":1}`
+		}
+		fmt.Fprintf(w, `{"ok":true,"value":{"snapshot":"s1","details":{"node_id":"n7","expired_records":%s}},"summary":{"table:lake.events":12,"bucket:drive":3,"collection:sessions":%d}}`, expired, sessions)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/restore_snapshot:discard":
+		body, _ := io.ReadAll(r.Body)
+		f.discarded = string(body)
 	default:
 		http.Error(w, "unexpected", http.StatusBadRequest)
 	}
@@ -70,7 +81,9 @@ func TestZettaSnapshotsArchivesReleasesAndRestores(t *testing.T) {
 	if string(objects.objects["ws-1/zetta/z/b1/"+zettaArchiveKey]) != "ARCHIVE-BYTES" || !engine.released || result.Summary["table:lake.events"] != Exact(12) {
 		t.Fatalf("result %+v, released %v, objects %v", result, engine.released, objects.objects)
 	}
-	manifest := Manifest{Kind: "Zetta", Backup: "b1", Summary: result.Summary}
+	manifest := Manifest{Kind: "Zetta", Backup: "b1", Summary: result.Summary, Extra: result.Extra}
+	// A record that expired between the backup and the restore is allowed for, as the engine does.
+	engine.expired = true
 	restored, err := Zetta{}.Restore(context.Background(), zettaStore(t, server), target, manifest)
 	if err != nil || string(engine.restored) != "ARCHIVE-BYTES" {
 		t.Fatalf("restore: %v, body %q", err, engine.restored)
@@ -78,13 +91,25 @@ func TestZettaSnapshotsArchivesReleasesAndRestores(t *testing.T) {
 	if _, err := Verify(manifest, restored.Observed); err != nil {
 		t.Fatal(err)
 	}
+	if err := (Zetta{}).Cleanup(context.Background(), zettaStore(t, server), manifest, restored); err != nil {
+		t.Fatal(err)
+	}
+	if engine.discarded != `{"node_id":"n7","snapshot":"s1"}` {
+		t.Fatalf("discard body = %q", engine.discarded)
+	}
+}
+
+func TestZettaDefaultsToTheMCPListenPort(t *testing.T) {
+	if got := (Zetta{}).url(Datastore{Host: "z"}, "/v1/backup_snapshot"); got != "http://z:4800/v1/backup_snapshot" {
+		t.Fatalf("url = %s", got)
+	}
 }
 
 func TestZettaWithoutTheBackupRoutesSaysSo(t *testing.T) {
 	server := httptest.NewServer(&fakeZetta{absent: true})
 	defer server.Close()
 	_, err := Zetta{}.Backup(context.Background(), zettaStore(t, server), Target{Bucket: Bucket{Endpoint: "http://unused", Name: "b"}, Prefix: "p/"})
-	if err == nil || !strings.Contains(err.Error(), "zetta#1518") {
+	if err == nil || !strings.Contains(err.Error(), "zetta#1521") {
 		t.Fatalf("err = %v", err)
 	}
 }

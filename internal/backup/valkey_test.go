@@ -242,7 +242,7 @@ func TestValkeyBacksUpAndRestoresThroughTheReplicationProtocol(t *testing.T) {
 	if _, err := Verify(manifest, restored.Observed); err != nil {
 		t.Fatalf("verify: %v (observed %v)", err, restored.Observed)
 	}
-	if err := mechanism.Cleanup(context.Background(), scratchStore, manifest); err != nil || !scratch.flushed {
+	if err := mechanism.Cleanup(context.Background(), scratchStore, manifest, restored); err != nil || !scratch.flushed {
 		t.Fatalf("cleanup: %v, flushed %v", err, scratch.flushed)
 	}
 

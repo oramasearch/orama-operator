@@ -115,7 +115,7 @@ func (c ClickHouse) Restore(ctx context.Context, store Datastore, source Target,
 
 // Cleanup implements Cleaner: it drops the databases the manifest's tables are in, on the scratch
 // target only (RestoreRehearsal), never a system database.
-func (c ClickHouse) Cleanup(ctx context.Context, store Datastore, manifest Manifest) error {
+func (c ClickHouse) Cleanup(ctx context.Context, store Datastore, manifest Manifest, _ Restored) error {
 	databases := map[string]bool{}
 	for table := range manifest.Summary {
 		if database, _, ok := strings.Cut(table, "."); ok {
