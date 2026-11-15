@@ -60,6 +60,18 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// EgressAllowConfigMap names a ConfigMap in this namespace whose key `allow` is the node's egress
+	// allowlist, in the engine's ZETTA_EGRESS_ALLOW syntax (operator#724, zetta#1332). The Lake
+	// reconcilers set it on every workspace Zetta and managed Zetta service and write the ConfigMap
+	// from the namespace's NetworkSandbox. It is mounted on every node at /etc/zetta/egress/allow,
+	// named by ZETTA_EGRESS_ALLOW_FILE. A Zetta image that re-reads that file (status.imageFeatures
+	// .egressAllowFile) gets ZETTA_EGRESS_ALLOW empty, so a rule change reaches the node without a
+	// restart; any other image gets the ConfigMap's value as ZETTA_EGRESS_ALLOW, which rolls the
+	// nodes as before. A ZETTA_EGRESS_ALLOW in spec.env is kept and wins. Until the ConfigMap exists
+	// the StatefulSet is not created or changed. Empty: no file, and the allowlist is spec.env's.
+	// +optional
+	EgressAllowConfigMap string `json:"egressAllowConfigMap,omitempty"`
+
 	// NOTE: inter-node peer traffic is ALWAYS mutual-TLS. The operator mints one shared cluster join
 	// token per cluster (Secret `<name>-zetta-cluster`) and injects it into every node as
 	// ZETTA_CLUSTER_TOKEN; the engine derives the cluster CA from it, so all nodes form ONE cluster
@@ -423,10 +435,24 @@ type OramaZettaClusterStatus struct {
 	// sorted and de-duplicated so a steady collision does not cause status writes.
 	// +optional
 	IgnoredEnvVars []string `json:"ignoredEnvVars,omitempty"`
+	// ImageFeatures is what an image said about itself in `zetta --help`, read once per spec.image
+	// by Job <name>-zetta-features while spec.egressAllowConfigMap is set (operator#724). The operator
+	// acts on it only while its image is spec.image.
+	// +optional
+	ImageFeatures *ZettaImageFeatures `json:"imageFeatures,omitempty"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ZettaImageFeatures is what one Zetta image reported about itself.
+type ZettaImageFeatures struct {
+	// Image is the spec.image the features were read from.
+	Image string `json:"image"`
+	// EgressAllowFile is true when the image's usage lists ZETTA_EGRESS_ALLOW_FILE: it re-reads its
+	// egress allowlist from that file while it runs (zetta#1332).
+	EgressAllowFile bool `json:"egressAllowFile"`
 }
 
 //+kubebuilder:object:root=true

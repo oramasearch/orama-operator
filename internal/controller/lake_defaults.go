@@ -65,6 +65,8 @@ var lakeDefaultLibrary = []oramav1alpha1.LakeLibraryAgent{
 //
 // ZETTA_EGRESS_ALLOW follows them (zetta#75, operator#724): rendered for each Zetta from what its
 // namespace's NetworkSandbox allows it (lake_zetta_egress.go), unless the spec's env names it.
+// For a workspace Zetta or managed Zetta service it goes in the cluster's egress ConfigMap, which an
+// image that re-reads ZETTA_EGRESS_ALLOW_FILE reads without a restart (zetta_egress_file.go).
 var lakeDefaultZettaEnv = []corev1.EnvVar{
 	{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
 	{Name: "MALLOC_ARENA_MAX", Value: "2"},
@@ -107,13 +109,14 @@ func lakeDataPlaneZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 	return withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Zetta.Env), zettaEgressDeny)
 }
 
-// serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta, with the
-// egress allowlist rendered from its workspace namespace (workspaceZettaEgressAllow) and, last, the
-// connector destinations approved from the Lake services in that namespace
+// serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta, with, last,
+// the connector destinations approved from the Lake services in that namespace
 // (workspaceZettaConnectorAllow, lake_zetta_connector_destinations.go), which the spec cannot set.
-func serviceZettaEnv(lake *oramav1alpha1.Lake, egressAllow, connectorAllow string) []corev1.EnvVar {
-	return withZettaConnectorAllow(
-		withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv), egressAllow), connectorAllow)
+// Its egress allowlist is not in the env: it is rendered from its workspace namespace
+// (workspaceZettaEgressAllow) into the cluster's ConfigMap, spec.egressAllowConfigMap
+// (zetta_egress_file.go, operator#724), unless spec.services.zettaEnv states ZETTA_EGRESS_ALLOW.
+func serviceZettaEnv(lake *oramav1alpha1.Lake, connectorAllow string) []corev1.EnvVar {
+	return withZettaConnectorAllow(withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv), connectorAllow)
 }
 
 // lakeAppsRuntimeImage is the image runtime-mode apps run.

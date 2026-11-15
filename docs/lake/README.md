@@ -195,6 +195,10 @@ NetworkSandbox allows each Zetta into its allowlist: the EgressRules and Connect
 that Zetta and the workspace's `internetEgress` (`*:443`); the data-plane Zetta gets an empty list
 ([#724](https://github.com/oramasearch/orama-operator/issues/724),
 [egress rules](../infrastructure/egress-rules.md#a-lake-zettas-own-allowlist-defense-in-depth)).
+For a workspace Zetta or managed Zetta service the list is its ConfigMap `<cluster>-zetta-egress`,
+mounted as `ZETTA_EGRESS_ALLOW_FILE`; an image whose `zetta --help` lists that variable re-reads it
+without a restart and gets `ZETTA_EGRESS_ALLOW` empty, any other image gets the list as
+`ZETTA_EGRESS_ALLOW`.
 Every managed Zetta service and workspace Zetta also gets `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`: the
 exact `host:port` of each postgres, tidb, sqlite, duckdb and polars service in its workspace
 namespace, empty when there are none, and never taken from the spec

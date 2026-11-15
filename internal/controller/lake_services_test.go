@@ -560,12 +560,20 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 	}
 	if cluster.Spec.Replicas != 2 || cluster.Spec.Storage.Size != "20Gi" || cluster.Spec.Image != "oramasearch/zetta:service" ||
 		cluster.Spec.IngressEnabled || cluster.Spec.ProvisionOperatorSchema == nil || *cluster.Spec.ProvisionOperatorSchema ||
-		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 4 ||
+		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 3 ||
 		cluster.Spec.Env[0].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || cluster.Spec.Env[0].Value != "134217728" ||
 		cluster.Spec.Env[1].Name != "MALLOC_ARENA_MAX" || cluster.Spec.Env[1].Value != "2" ||
-		cluster.Spec.Env[2].Name != "ZETTA_EGRESS_ALLOW" || cluster.Spec.Env[2].Value != "" ||
-		cluster.Spec.Env[3].Name != "ZETTA_CONNECTOR_ALLOW_DESTINATIONS" || cluster.Spec.Env[3].Value != "" {
+		cluster.Spec.Env[2].Name != "ZETTA_CONNECTOR_ALLOW_DESTINATIONS" || cluster.Spec.Env[2].Value != "" ||
+		// The egress allowlist is the cluster's ConfigMap, not its env (operator#724).
+		cluster.Spec.EgressAllowConfigMap != cluster.Name+"-zetta-egress" {
 		t.Fatalf("unexpected zetta service spec: %+v", cluster.Spec)
+	}
+	var egress corev1.ConfigMap
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.EgressAllowConfigMap}, &egress); err != nil {
+		t.Fatalf("the service Zetta's egress ConfigMap: %v", err)
+	}
+	if allow, found := egress.Data["allow"]; !found || allow != "" || !metav1.IsControlledBy(&egress, cluster) {
+		t.Fatalf("egress ConfigMap = %+v, want an empty (deny) allowlist controlled by the cluster", egress)
 	}
 	endpoint := "http://prod-svc-111111111111-zetta.lake.svc.cluster.local:4800"
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseProvisioning, "waiting for the Zetta nodes", endpoint)

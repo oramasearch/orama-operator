@@ -75,8 +75,9 @@ spec:
     zettaImage: oramasearch/zetta:<tag>
     zettaEnv:                # copied to every Zetta service, including the workspace-owned cluster; the
                              # operator adds ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
-                             # MALLOC_ARENA_MAX=2 and ZETTA_EGRESS_ALLOW (rendered from the
-                             # workspace NetworkSandbox) for each name the list does not set,
+                             # MALLOC_ARENA_MAX=2 for each name the list does not set, and, unless
+                             # it sets ZETTA_EGRESS_ALLOW, the allowlist rendered from the workspace
+                             # NetworkSandbox into ConfigMap <cluster>-zetta-egress (#724),
                              # then ZETTA_CONNECTOR_ALLOW_DESTINATIONS (the namespace's postgres,
                              # tidb, sqlite, duckdb and polars endpoints; a stated value is dropped)
       - { name: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES, value: "134217728" }

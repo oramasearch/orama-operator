@@ -142,8 +142,8 @@ the Lake namespace allows its pods nothing outside but DNS and their own cluster
 
 **Where the engine is wider than the policy.** Its syntax has no exceptions. `*:443` also admits
 in-cluster names on 443, and a CIDR entry keeps the pod, node and API server addresses the policy
-cuts out. Those addresses change as nodes come and go, and every change to the variable rolls the
-StatefulSet, so the policy alone keeps excluding them.
+cuts out. Those addresses change as nodes come and go, and on an image that keeps the list in its
+environment every change rolls the StatefulSet, so the policy alone keeps excluding them.
 
 **Name rules go through the gateway, the engine does not know it.** The policy lets a name rule's
 source reach only the egress gateway. The engine dials the destination name directly and has no
@@ -151,14 +151,36 @@ gateway client, so the entry states the destination the rule allows. It takes ef
 routes named destinations through the gateway
 ([zetta#1331](https://github.com/oramasearch/zetta/issues/1331)).
 
-**Changes roll the Zetta.** The variable is in the pod template, so adding or removing a rule or
-Connection for a Zetta restarts its pods on the next workspace or services poll (up to 60 seconds
-after the sandbox changes). A file the engine re-reads would avoid that and needs an engine change
-([zetta#1332](https://github.com/oramasearch/zetta/issues/1332)). The list is sorted and
-de-duplicated, so an unchanged sandbox never rolls anything. When the namespace cannot be read, the
-running value is kept; a list longer than 64 KiB (beyond what one environment string can safely hold)
-becomes deny and is logged. A spec that names `ZETTA_EGRESS_ALLOW` (`spec.zetta.env`,
-`spec.services.zettaEnv`) keeps its own value.
+**The list is a file the Zetta re-reads, where its image can**
+([#724](https://github.com/oramasearch/orama-operator/issues/724),
+[zetta#1332](https://github.com/oramasearch/zetta/issues/1332), zetta
+[PR #1510](https://github.com/oramasearch/zetta/pull/1510),
+`internal/controller/zetta_egress_file.go`). A workspace Zetta's or managed Zetta service's list is
+written to ConfigMap **`<cluster>-zetta-egress`** (key `allow`), controlled by its
+`OramaZettaCluster`, which names it in `spec.egressAllowConfigMap`. Every node mounts it read-only at
+`/etc/zetta/egress/allow`, and `ZETTA_EGRESS_ALLOW_FILE` points there. What the node does with it is
+what its image says, never a flag: Job **`<cluster>-zetta-features`** runs `zetta --help` from
+`spec.image` once per image (no environment, no volume, no token), and the answer is kept in
+`status.imageFeatures`.
+
+| The image | `ZETTA_EGRESS_ALLOW` | A rule or Connection change |
+|---|---|---|
+| Its usage lists `ZETTA_EGRESS_ALLOW_FILE` (`status.imageFeatures.egressAllowFile`) | empty: the file is the whole list | reaches the running node within seconds (it re-reads the file every 2 s, and kubelet updates a mounted ConfigMap within about a minute); **no restart** |
+| Any other image, or one whose answer is not in yet | the ConfigMap's value, as before | rolls its pods on the next workspace or services poll (up to 60 seconds), as before |
+
+- **The operator rolls first.** An image without zetta#1332 ignores the file and keeps the variable,
+  so nothing changes for it. When the answer for a new image arrives, its StatefulSet rolls once to
+  drop the value from its environment.
+- **Until the ConfigMap exists, the StatefulSet waits**, so no node starts with a list it was not
+  given. The Lake reconcilers write it right after the cluster.
+- **A bad or missing file never widens anything.** The engine keeps its last good list when a
+  replacement is malformed or removed, and denies when the file is missing at startup.
+- The list is sorted and de-duplicated, so an unchanged sandbox writes nothing. When the namespace
+  cannot be read, the running value (the ConfigMap's, or the variable of a cluster not moved yet) is
+  kept; a list longer than 64 KiB becomes deny and is logged.
+- A spec that names `ZETTA_EGRESS_ALLOW` (`spec.zetta.env`, `spec.services.zettaEnv`) keeps its own
+  value, and then no ConfigMap is named. The data-plane Zetta's list is the constant deny, so it stays
+  in its environment.
 
 ## A workspace Zetta's approved connector destinations
 
