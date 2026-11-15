@@ -203,6 +203,8 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orama.cloud,resources=backupschedules,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orama.cloud,resources=cloudflarer2buckets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=scheduledbackups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=backups,verbs=get;list;watch;create;update;patch;delete
 
@@ -445,6 +447,15 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		conditionsChanged = true
 	}
 	if apimeta.SetStatusCondition(&desiredConditions, lakeFeaturesCondition(&lake)) {
+		conditionsChanged = true
+	}
+	// The managed services' backups (operator#740): configured, bucket ready, every schedule on
+	// schedule and its newest backup succeeded.
+	backupsCondition, err := r.lakeBackupsCondition(ctx, &lake)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("read backup schedules: %w", err)
+	}
+	if apimeta.SetStatusCondition(&desiredConditions, backupsCondition) {
 		conditionsChanged = true
 	}
 	// ClerkReady exists only on a Lake with spec.clerk.
@@ -2101,6 +2112,8 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&oramav1alpha1.LakeApp{}, handler.EnqueueRequestsFromMapFunc(lakeRequestsForAppSandbox)).
 		Owns(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
+		Owns(&oramav1alpha1.BackupSchedule{}).
+		Owns(&oramav1alpha1.CloudflareR2Bucket{}).
 		Owns(newCNPGScheduledBackup(nil, ""))
 	if r.ServiceEvents != nil {
 		builder = builder.WatchesRawSource(source.Channel(r.ServiceEvents, &handler.EnqueueRequestForObject{}))

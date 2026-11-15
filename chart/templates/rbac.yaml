@@ -44,6 +44,8 @@ rules:
       - postgresschemas
       - backupschedules
       - backups
+      - backuprestores
+      - restorerehearsals
       - clerkapplications
       - lakes
       - lakee2etests
@@ -128,6 +130,8 @@ rules:
       - cloudflarer2buckets/finalizers
       - backupschedules/status
       - backups/status
+      - backuprestores/status
+      - restorerehearsals/status
       - backups/finalizers
       - cloudflareloadbalancers/finalizers
       - postgresschemas/finalizers

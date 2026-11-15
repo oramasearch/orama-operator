@@ -105,3 +105,36 @@ The live recovery rehearsal remains deferred until backups are enabled. On lake.
 `spec.postgres.backup` enabled: no Barman object store, no `ScheduledBackup`, no CNPG `Backup`.
 What exists, what is missing and how the rehearsal is declared from the `lake-prod` set file are in
 [restore rehearsals](restore-rehearsals.md). Do not run it as part of an operator code change.
+
+## Managed services
+
+[operator#740](https://github.com/oramasearch/orama-operator/issues/740). The control-plane backup
+above is the Lake's own database. The data in its managed services goes through the operator's
+backup system ([`../backups.md`](../backups.md)) once the Lake has `spec.backups`:
+
+```yaml
+spec:
+  backups:
+    cloudflareSecretRef: {name: cloudflare-r2}   # token, accountID: may create R2 buckets and API tokens
+    schedule: "0 3 * * *"                        # default
+    keep: 7                                      # default
+```
+
+- The Lake owns `CloudflareR2Bucket` `lake-<name>-backups` in its namespace, `deletionPolicy:
+  Retain`: removing `spec.backups` or deleting the Lake deletes the resource, never the bucket or a
+  backup, and setting it again adopts the bucket.
+- Each ready managed service gets a `BackupSchedule` `<datastore>-backup` in its workspace
+  namespace, where `<datastore>` is the service's resource (`<lake>-<slug>`, or the workspace's
+  Zetta cluster). For Zetta, ClickHouse and Valkey the Lake also writes `<datastore>-backup-connection`
+  (`host`, `port`, `username`, `password`, `database`) from the service's connection. The workspace
+  namespace is added to the bucket's `allowedNamespaces`.
+- **A late or failed backup is shown**: appended to the service's `service_status` message (for
+  example `service ready; backup late: no backup has succeeded since ...`), and summarised in the
+  Lake's condition `BackupsOnSchedule`. A workspace's own Zetta shows only on the condition, since
+  its status belongs to the workspace reconciler.
+- Deleting a service deletes its schedule and connection Secret. Its `Backup`s are only labelled,
+  so they and their objects stay.
+
+Nothing of this is applied to any cluster: `spec.backups` is set in a set file, with Steve's consent
+for the apply, and the account token is Steve's to issue.
+

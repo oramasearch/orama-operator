@@ -141,6 +141,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"search-workers", r.reconcileSearchWorkers},
 		{"idp", r.reconcileIdP},
 		{"cloudflare", r.reconcileCloudflare},
+		{"backups", r.reconcileV1Backups}, // the backup bucket and schedules (operator#740)
 		{"demoSeed", r.reconcileDemoSeed},
 		// Scrape configuration, alert rules and dashboards on the platform's kube-prometheus-stack
 		// and Perses (operator#15); a cluster without them yet is not an error.
@@ -205,6 +206,7 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&oramav1alpha1.CloudflareKVNamespace{}).
 		Owns(&oramav1alpha1.CloudflareR2Bucket{}).
+		Owns(&oramav1alpha1.BackupSchedule{}).
 		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).

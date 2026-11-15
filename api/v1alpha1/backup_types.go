@@ -34,6 +34,7 @@ const (
 )
 
 // BackupDatastoreRef identifies the datastore, which is in the same namespace as the backup.
+// +kubebuilder:validation:XValidation:rule="!(self.kind in ['ClickHouse', 'Zetta', 'Valkey']) || has(self.connectionSecretRef)",message="connectionSecretRef is required for a ClickHouse, Zetta or Valkey datastore"
 type BackupDatastoreRef struct {
 	// Kind is the datastore's kind; it selects the backup mechanism.
 	Kind BackupDatastoreKind `json:"kind"`
@@ -43,8 +44,17 @@ type BackupDatastoreRef struct {
 	Name string `json:"name"`
 	// ConnectionSecretRef names a Secret in the namespace with the datastore's connection: keys
 	// `host` and `username` and `password`, and optionally `port` and `database`. The backup Job
-	// reads it as environment variables; the operator never copies it.
-	ConnectionSecretRef LocalSecretReference `json:"connectionSecretRef"`
+	// reads it as environment variables; the operator never copies it. Required for the kinds whose
+	// backup Job talks to the server (ClickHouse, Zetta, Valkey); the kinds whose own operator
+	// takes the backup need none.
+	// +optional
+	ConnectionSecretRef *LocalSecretReference `json:"connectionSecretRef,omitempty"`
+	// PodSelector selects the datastore's pods. While a backup or restore runs, the operator lets
+	// those pods accept the run's pod, and, for a kind whose server writes to the bucket itself
+	// (ClickHouse, TiDB, Cassandra), reach public HTTPS on 443 (operator#740). Empty means the
+	// kind's default: the labels its operator puts on the pods of a datastore of this name.
+	// +optional
+	PodSelector map[string]string `json:"podSelector,omitempty"`
 }
 
 // LocalSecretReference names a Secret in the same namespace.

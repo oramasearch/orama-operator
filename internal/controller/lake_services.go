@@ -669,6 +669,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	if err := r.removeLakeWorkspacesSecret(ctx, lake, namespace); err != nil {
 		log.Error(err, "cannot remove the superseded workspace credential Secret")
 	}
+	backupsSwept := true
 	for _, svc := range present {
 		result, found := results[svc.ID]
 		if !found {
@@ -677,6 +678,15 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		if result.resourceReady {
 			if written[svc.Slug] {
 				result.phase, result.message = ServicePhaseReady, "service ready"
+				// The service's backups (lake_backups.go, operator#740): a schedule that is not
+				// ready, failed or late is said here; a steady one adds nothing.
+				note, err := r.reconcileServiceBackup(ctx, lake, svc, result.credential)
+				if err != nil {
+					log.Error(err, "service backup schedule deferred", "service", svc.ID)
+					backupsSwept = false
+				} else if note != "" {
+					result.message += "; " + note
+				}
 			} else {
 				result.phase, result.message = ServicePhaseProvisioning, "delivering the connection"
 			}
@@ -686,6 +696,28 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		}
 		if err := writeServiceStatus(ctx, store, svc, result); err != nil {
 			log.Error(err, "service status write deferred", "service", svc.ID)
+		}
+	}
+	// The workspace Zettas' schedules: their status belongs to the workspace reconciler, so their
+	// backups show only on the Lake's BackupsOnSchedule condition.
+	for _, svc := range workspaceZettas {
+		if credential := credentials[svc.Slug]; credential != nil {
+			if _, err := r.reconcileServiceBackup(ctx, lake, svc, credential); err != nil {
+				log.Error(err, "workspace Zetta backup schedule deferred", "service", svc.ID)
+				backupsSwept = false
+			}
+		}
+	}
+	if backupsSwept {
+		keepBackups := map[string]bool{}
+		for _, svc := range present {
+			keepBackups[svc.ID] = true
+		}
+		for _, svc := range workspaceZettas {
+			keepBackups[svc.ID] = true
+		}
+		if err := r.sweepLakeBackups(ctx, lake, keepBackups); err != nil {
+			log.Error(err, "backup schedules sweep deferred")
 		}
 	}
 	finishLakeStores(ctx, lake, store, &storesPass, written)

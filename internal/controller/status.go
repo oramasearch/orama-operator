@@ -271,6 +271,13 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 	default:
 		drop = append(drop, clusterRowReadyCondition)
 	}
+	// BackupsOnSchedule (operator#740) leaves the phase alone: a late backup is said, not hidden in
+	// readiness.
+	if backups, err := r.v1BackupsCondition(ctx, oc); err != nil {
+		log.FromContext(ctx).Error(err, "read backup schedules")
+	} else {
+		conds = append(conds, backups)
+	}
 	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, drop, conds...)
 	return allReady
 }

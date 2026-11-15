@@ -293,6 +293,7 @@ rules:
   - orama.cloud
   resources:
   - aksclusters
+  - backuprestores
   - backups
   - backupschedules
   - clerkapplications
@@ -337,6 +338,7 @@ rules:
   - pixieviziers
   - postgresschemas
   - rabbitmqtopologies
+  - restorerehearsals
   - stripecatalogs
   - stripewebhookendpoints
   - tunnels
@@ -392,6 +394,7 @@ rules:
   - orama.cloud
   resources:
   - aksclusters/status
+  - backuprestores/status
   - backups/status
   - backupschedules/status
   - clerkapplications/status
@@ -437,6 +440,7 @@ rules:
   - pixieviziers/status
   - postgresschemas/status
   - rabbitmqtopologies/status
+  - restorerehearsals/status
   - statuspages/status
   - stripecatalogs/status
   - stripewebhookendpoints/status

@@ -44,34 +44,60 @@ func (t Target) URL() string {
 	return t.Bucket.Endpoint + "/" + t.Bucket.Name + "/" + t.Prefix
 }
 
-// Result is what a mechanism reports.
+// Result is what a mechanism reports. Summary is the content fingerprint the backup is verified
+// against after a restore (operator#741): what the mechanism counts, per table, database or file
+// (Manifest).
 type Result struct {
-	SizeBytes int64  `json:"sizeBytes"`
-	Message   string `json:"message"`
+	SizeBytes int64            `json:"sizeBytes"`
+	Message   string           `json:"message"`
+	Summary   map[string]Count `json:"summary,omitempty"`
 }
 
 // Mechanism takes one consistent backup of one datastore kind into the target, using the
-// engine's own snapshot rather than reimplementing it.
+// engine's own snapshot rather than reimplementing it, and restores one into an empty datastore of
+// the same kind. Restore returns what it observed in the restored datastore (Observed), which is
+// compared with the backup's Manifest.
 type Mechanism interface {
 	Backup(ctx context.Context, store Datastore, target Target) (Result, error)
+	Restore(ctx context.Context, store Datastore, source Target, manifest Manifest) (Restored, error)
 }
 
-// mechanisms maps a datastore kind (BackupDatastoreKind) to its mechanism. A kind not here has no
-// mechanism yet: the controllers refuse it in status and never start a Job for it.
+// Cleaner is a mechanism that can empty a scratch datastore it restored into, for a restore
+// rehearsal (RestoreRehearsal deletes what it restored, so the next rehearsal finds the target
+// empty). It removes only what the manifest says was restored.
+type Cleaner interface {
+	Cleanup(ctx context.Context, store Datastore, manifest Manifest) error
+}
+
+// mechanisms maps a datastore kind (BackupDatastoreKind) to the mechanism the backup Job runs. A
+// kind whose own operator takes the backup is in resourceKinds instead; any other kind has no
+// mechanism yet and the controllers refuse it in status without starting anything.
 var mechanisms = map[string]Mechanism{
 	"ClickHouse": ClickHouse{},
 }
 
-// Supported reports whether a datastore kind has a mechanism.
-func Supported(kind string) bool {
+// resourceKinds are the kinds the controllers back up by writing their own operator's resources
+// (a CloudNativePG Backup, a MedusaBackupJob, a TiDB Operator Backup) instead of running a Job.
+var resourceKinds = map[string]bool{}
+
+// RunsInJob reports whether a kind's backup and restore run as a Job of the operator's image.
+func RunsInJob(kind string) bool {
 	_, ok := mechanisms[kind]
 	return ok
 }
 
+// Supported reports whether a datastore kind has a mechanism, of either sort.
+func Supported(kind string) bool {
+	return RunsInJob(kind) || resourceKinds[kind]
+}
+
 // SupportedKinds lists the kinds with a mechanism, sorted.
 func SupportedKinds() []string {
-	kinds := make([]string, 0, len(mechanisms))
+	kinds := make([]string, 0, len(mechanisms)+len(resourceKinds))
 	for kind := range mechanisms {
+		kinds = append(kinds, kind)
+	}
+	for kind := range resourceKinds {
 		kinds = append(kinds, kind)
 	}
 	sort.Strings(kinds)
@@ -90,13 +116,19 @@ const (
 	EnvBucketRegion      = "BUCKET_REGION"
 	EnvBucketAccessKey   = "BUCKET_ACCESS_KEY_ID"
 	EnvBucketSecretKey   = "BUCKET_SECRET_ACCESS_KEY"
+	// EnvVolumePath is where a volume-backed kind's data is mounted in the Job (operator#738).
+	EnvVolumePath = "VOLUME_PATH"
 )
 
-// Report is the termination message the Job writes; the controller parses it.
+// Report is the termination message the Job writes; the controller parses it. Verified and
+// Evidence are a restore's: whether the restored content matched the backup's manifest, and what
+// was compared.
 type Report struct {
 	Succeeded bool   `json:"succeeded"`
 	SizeBytes int64  `json:"sizeBytes,omitempty"`
 	Message   string `json:"message"`
+	Verified  bool   `json:"verified,omitempty"`
+	Evidence  string `json:"evidence,omitempty"`
 }
 
 // ParseReport reads a termination message. ok is false when it is not a Report.
@@ -112,8 +144,11 @@ func ParseReport(message string) (Report, bool) {
 const terminationLimit = 3500
 
 func (r Report) encode() []byte {
-	if len(r.Message) > terminationLimit {
-		r.Message = r.Message[:terminationLimit] + "…"
+	if len(r.Evidence) > terminationLimit/3 {
+		r.Evidence = r.Evidence[:terminationLimit/3] + "…"
+	}
+	if len(r.Message)+len(r.Evidence) > terminationLimit {
+		r.Message = r.Message[:max(0, terminationLimit-len(r.Evidence))] + "…"
 	}
 	data, _ := json.Marshal(r)
 	return data
@@ -144,11 +179,39 @@ func Main(args []string, getenv func(string) string, terminationLog string, stde
 func run(kind, name, prefix string, timeout time.Duration, getenv func(string) string) Report {
 	mechanism, ok := mechanisms[kind]
 	if !ok {
-		return Report{Message: fmt.Sprintf("no backup mechanism for datastore kind %q; supported: %s", kind, strings.Join(SupportedKinds(), ", "))}
+		return Report{Message: fmt.Sprintf("no backup mechanism for datastore kind %q runs in a Job; supported: %s", kind, strings.Join(SupportedKinds(), ", "))}
 	}
 	if name == "" || prefix == "" {
 		return Report{Message: "--backup and --prefix are required"}
 	}
+	bucket, store, err := fromEnvironment(getenv)
+	if err != nil {
+		return Report{Message: err.Error()}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	target := Target{Bucket: bucket, Prefix: strings.Trim(prefix, "/") + "/"}
+	result, err := mechanism.Backup(ctx, store, target)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return Report{Message: fmt.Sprintf("backup %s did not finish within %s: %v", name, timeout, err)}
+		}
+		return Report{Message: redact(err, bucket.SecretAccessKey).Error()}
+	}
+	// The manifest is what a restore reads and verifies against; without it the backup is not one.
+	manifest := Manifest{Kind: kind, Backup: name, CompletedAt: time.Now().UTC(), SizeBytes: result.SizeBytes, Summary: result.Summary}
+	if err := writeManifest(ctx, target, manifest); err != nil {
+		return Report{Message: fmt.Sprintf("backup %s was written but its manifest was not: %v", name, redact(err, bucket.SecretAccessKey))}
+	}
+	message := result.Message
+	if message == "" {
+		message = "backup completed"
+	}
+	return Report{Succeeded: true, SizeBytes: result.SizeBytes, Message: message}
+}
+
+// fromEnvironment reads the bucket and the datastore connection the controller gave the Job.
+func fromEnvironment(getenv func(string) string) (Bucket, Datastore, error) {
 	bucket, err := BucketFromSecret(map[string][]byte{
 		"endpoint":        []byte(getenv(EnvBucketEndpoint)),
 		"bucket":          []byte(getenv(EnvBucketName)),
@@ -157,7 +220,7 @@ func run(kind, name, prefix string, timeout time.Duration, getenv func(string) s
 		"secretAccessKey": []byte(getenv(EnvBucketSecretKey)),
 	})
 	if err != nil {
-		return Report{Message: err.Error()}
+		return Bucket{}, Datastore{}, err
 	}
 	store := Datastore{
 		Host:     getenv(EnvDatastoreHost),
@@ -166,21 +229,8 @@ func run(kind, name, prefix string, timeout time.Duration, getenv func(string) s
 		Password: getenv(EnvDatastorePassword),
 		Database: getenv(EnvDatastoreDatabase),
 	}
-	if store.Host == "" {
-		return Report{Message: "the datastore connection Secret has no host"}
+	if store.Host == "" && getenv(EnvVolumePath) == "" {
+		return Bucket{}, Datastore{}, errors.New("the datastore connection Secret has no host")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	result, err := mechanism.Backup(ctx, store, Target{Bucket: bucket, Prefix: strings.Trim(prefix, "/") + "/"})
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return Report{Message: fmt.Sprintf("backup %s did not finish within %s: %v", name, timeout, err)}
-		}
-		return Report{Message: err.Error()}
-	}
-	message := result.Message
-	if message == "" {
-		message = "backup completed"
-	}
-	return Report{Succeeded: true, SizeBytes: result.SizeBytes, Message: message}
+	return bucket, store, nil
 }

@@ -141,6 +141,9 @@ type fakeClickHouse struct {
 	t        *testing.T
 	queries  []string
 	failWith string
+	// empty: the server has no table until a RESTORE (a restore target).
+	empty, restored bool
+	dropped         []string
 }
 
 func (f *fakeClickHouse) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -161,6 +164,16 @@ func (f *fakeClickHouse) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fmt.Fprint(w, "e7a1\tBACKUP_CREATED\n")
+	case strings.HasPrefix(query, "RESTORE"):
+		f.restored = true
+		fmt.Fprint(w, "r9\tRESTORED\n")
+	case strings.HasPrefix(query, "DROP DATABASE"):
+		f.dropped = append(f.dropped, query)
+	case strings.Contains(query, "system.tables"):
+		if f.empty && !f.restored {
+			return
+		}
+		fmt.Fprint(w, `{"database":"events","name":"hits","total_rows":"10"}`+"\n")
 	case strings.HasPrefix(query, "SELECT"):
 		fmt.Fprint(w, `{"id":"e7a1","status":"BACKUP_CREATED","total_size":"4096"}`+"\n")
 	}
@@ -189,20 +202,23 @@ func TestClickHouseBacksUpEveryUserDatabaseToTheTarget(t *testing.T) {
 	}
 	want := "BACKUP ALL EXCEPT DATABASES `system`, `information_schema`, `INFORMATION_SCHEMA` TO S3(" +
 		"'https://acct.r2.cloudflarestorage.com/backups/ws-1/clickhouse/events/b1/', 'key-id', 's\\'cret')"
-	if fake.queries[0] != want {
-		t.Fatalf("query\n got %s\nwant %s", fake.queries[0], want)
+	// Rows are counted before and after the snapshot (operator#741), then the size is read.
+	if len(fake.queries) != 4 || !strings.Contains(fake.queries[0], "system.tables") || fake.queries[1] != want ||
+		!strings.Contains(fake.queries[2], "system.tables") || !strings.Contains(fake.queries[3], "system.backups WHERE id = 'e7a1'") {
+		t.Fatalf("queries = %q\nwant the count, %s, the count, the size", fake.queries, want)
 	}
-	if !strings.Contains(fake.queries[1], "system.backups WHERE id = 'e7a1'") {
-		t.Fatalf("size query = %s", fake.queries[1])
+	if got := result.Summary["events.hits"]; got.Min != 10 || got.Max != 10 {
+		t.Fatalf("summary = %v; want events.hits counted at 10", result.Summary)
 	}
 
 	store := clickHouseStore(t, server)
 	store.Database = "events"
+	fake.queries = nil
 	if _, err := (ClickHouse{}).Backup(context.Background(), store, target); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(fake.queries[2], "BACKUP DATABASE `events` TO S3(") {
-		t.Fatalf("one-database query = %s", fake.queries[2])
+	if !strings.HasPrefix(fake.queries[1], "BACKUP DATABASE `events` TO S3(") || !strings.Contains(fake.queries[0], "database = 'events'") {
+		t.Fatalf("one-database queries = %q", fake.queries)
 	}
 }
 
@@ -222,9 +238,12 @@ func TestMainReportsThroughTheTerminationMessage(t *testing.T) {
 	server := httptest.NewServer(fake)
 	defer server.Close()
 	store := clickHouseStore(t, server)
+	objects := &fakeStore{objects: map[string][]byte{}, pageMax: 10}
+	bucketServer := httptest.NewServer(objects)
+	defer bucketServer.Close()
 	env := map[string]string{
 		EnvDatastoreHost: store.Host, EnvDatastorePort: store.Port, EnvDatastoreUsername: "backup", EnvDatastorePassword: "pw",
-		EnvBucketEndpoint: "https://acct.r2.cloudflarestorage.com", EnvBucketName: "backups", EnvBucketAccessKey: "k", EnvBucketSecretKey: "s",
+		EnvBucketEndpoint: bucketServer.URL, EnvBucketName: "backups", EnvBucketAccessKey: "key-id", EnvBucketSecretKey: "s",
 	}
 	termination := filepath.Join(t.TempDir(), "termination-log")
 	var stderr bytes.Buffer
@@ -237,14 +256,24 @@ func TestMainReportsThroughTheTerminationMessage(t *testing.T) {
 	if !ok || !report.Succeeded || report.SizeBytes != 4096 {
 		t.Fatalf("report = %+v (%s)", report, data)
 	}
-	if !strings.Contains(fake.queries[0], "/backups/ws/clickhouse/events/b1/'") {
-		t.Fatalf("prefix not used: %s", fake.queries[0])
+	var backupQuery string
+	for _, query := range fake.queries {
+		if strings.HasPrefix(query, "BACKUP") {
+			backupQuery = query
+		}
+	}
+	if !strings.Contains(backupQuery, "/backups/ws/clickhouse/events/b1/'") {
+		t.Fatalf("prefix not used: %s", backupQuery)
+	}
+	// The manifest a restore reads is written beside the backup.
+	if _, ok := objects.objects["ws/clickhouse/events/b1/"+ManifestKey]; !ok {
+		t.Fatalf("no manifest written; objects: %v", objects.objects)
 	}
 
 	code = Main([]string{"--datastore", "Postgres", "--backup", "b2", "--prefix", "p"}, func(k string) string { return env[k] }, termination, &stderr)
 	data, _ = os.ReadFile(termination)
 	report, ok = ParseReport(string(data))
-	if code != 1 || !ok || report.Succeeded || !strings.Contains(report.Message, `no backup mechanism for datastore kind "Postgres"`) {
+	if code != 1 || !ok || report.Succeeded || !strings.Contains(report.Message, `no backup mechanism for datastore kind "Postgres" runs in a Job`) {
 		t.Fatalf("exit %d, report %+v", code, report)
 	}
 }

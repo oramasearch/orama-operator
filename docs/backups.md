@@ -21,8 +21,10 @@ What backs up today, per datastore, and the research behind each mechanism, are 
 | **ClickHouse** mechanism (`BACKUP ... TO S3`) | **Implemented.** The first datastore with a mechanism. |
 | **Postgres** mechanism (Lake's control plane, Cloud v1's control DB, Lake `postgres` services) | **Not built: waiting on Steve's choice** of tool ([research](research/backups/README.md#postgres-the-decision-that-is-open)). A Postgres `BackupSchedule` reports `Ready=False`, `MechanismNotAvailable`. |
 | Zetta, Kafka, Cassandra, TiDB, Valkey, SQLite, DuckDB, Polars | Not built; each is filed (see [Follow-ups](#follow-ups)). Refused the same way. |
-| Owners creating schedules (a Lake for its services, an `OramaCloudV1` for its datastores) and showing a late backup on themselves | Not built; filed. Today a schedule is a resource you write. |
-| Restore and the scheduled restore rehearsal | Not built; their kinds are settled after these two (issue body). |
+| Owners creating schedules (a Lake for its services, an `OramaCloudV1` for its datastores) and showing a late or failed backup on themselves | **Implemented** ([#740](https://github.com/oramasearch/orama-operator/issues/740), [Owners](#owners)). Not yet applied to any cluster. |
+| The datastore's own network access during a run (accepting the run's pod; egress to the bucket for a server that writes it itself) | **Implemented** ([#740](https://github.com/oramasearch/orama-operator/issues/740), [How one backup runs](#how-one-backup-runs)). |
+| `BackupRestore` and `RestoreRehearsal` kinds, `/manager restore`, the backup manifest and verification against it | **Implemented** ([#741](https://github.com/oramasearch/orama-operator/issues/741), [Restore](#restore)). Not yet applied to any cluster. |
+| ClickHouse restore (`RESTORE ... FROM S3`, row counts per table before and after the snapshot) | **Implemented** ([#741](https://github.com/oramasearch/orama-operator/issues/741)). |
 | Usage metering of backup storage | Not built; [#435](https://github.com/oramasearch/orama-operator/issues/435). |
 
 ## The kinds
@@ -76,7 +78,14 @@ outcome, the size and a message in the words of whatever refused. The controller
 Backup's status. The issue's design had the Job write the status itself; reading the termination
 message instead means the backup pod holds no Kubernetes credential at all.
 
-When the Backup has succeeded or failed, the credentials copy and the network policy are deleted.
+4. **A second `NetworkPolicy`, `<job>-ds`, on the datastore's pods** (`spec.datastore.podSelector`,
+   or the kind's default selector): they accept connections from the backup pod, which the
+   namespace's default-deny would refuse, and, for a kind whose server writes the backup to the
+   bucket itself (ClickHouse's `BACKUP ... TO S3`, TiDB's BR on TiKV, Cassandra's Medusa), they may
+   reach public addresses on 443 with the same exceptions. It exists only while the run does
+   ([#740](https://github.com/oramasearch/orama-operator/issues/740)).
+
+When the Backup has succeeded or failed, the credentials copy and both network policies are deleted.
 
 ### Status
 
@@ -87,6 +96,52 @@ When the Backup has succeeded or failed, the credentials copy and the network po
 
 Status is written only when it changes; a steady schedule causes no writes. The schedule wakes for
 its next tick and for the moment it would turn late.
+
+## Restore
+
+[#741](https://github.com/oramasearch/orama-operator/issues/741). *A backup that has never been
+restored is not counted as working* (#453), so restoring is part of the system, with one shape for
+every kind.
+
+**The manifest.** Every backup a Job takes ends by writing `<path>/<backup>/orama-backup.json`: the
+kind, the Backup, when it completed, its size, and a **summary** of what the mechanism counted (for
+ClickHouse, the rows of every table, counted before and after the snapshot, so a server that keeps
+taking writes still gives a range the restored count must fall in). A backup whose manifest cannot be
+written is a failed backup.
+
+**`BackupRestore`** (short name `brestore`, spec immutable) restores one succeeded `Backup` of its
+namespace into `spec.target`, a datastore of the same kind:
+
+- It refuses the datastore the backup was taken of unless `spec.replaceSource` is set (recovery in
+  place), and never restores over content: the mechanism refuses a target that already has any of
+  the backup's tables, keys or files, and a kind whose restore creates the datastore creates
+  `target.name`, which must not exist yet.
+- It runs `/manager restore --datastore <kind> --restore <name> --prefix <path>/<backup>
+  --verify=<bool> --cleanup=<scratch>` as a Job exactly like a backup's (restricted, no service
+  account token, the bucket copy `<job>-bucket`, the run's policy and the target's `<job>-ds`, all
+  owned by the restore and deleted when it finishes), or, for a kind whose own operator restores,
+  that operator's resources.
+- **Verification** (`spec.verify`, default true) reads the manifest, counts the same things in the
+  restored datastore and passes only if every one is present and within its recorded range, and
+  nothing else appeared. `status.verified` and `status.evidence` say what was compared;
+  `status.phase` is `Succeeded` only when restored and, when asked, verified.
+- `spec.scratch` marks a rehearsal target: afterwards, what was restored is removed (the restored
+  ClickHouse databases, never `system` or `default`), so the next rehearsal finds it empty.
+
+**`RestoreRehearsal`** (short name `rrehearsal`) does that on a cron schedule (UTC, default weekly,
+Sunday 05:00): each tick creates a `BackupRestore` of the newest succeeded `Backup` of
+`spec.backupScheduleName` into `spec.target` with `scratch: true`, owned by the rehearsal, and keeps
+the newest `keep` (default 4) finished ones. It refuses a target that is the schedule's own
+datastore or of another kind. Its timing comes from its newest restore, like a schedule's. Status:
+`lastSuccessfulRestore`, `lastSuccessTime`, and conditions `Ready` (`Scheduled`, `Suspended`,
+`InvalidSchedule`, `Refused`), `LastRehearsalSucceeded` (`RestoredAndVerified`, or the restore's
+reason) and `OnSchedule` (`False`, `RehearsalLate`, once a whole tick has passed without a verified
+restore).
+
+`LakeRestoreRehearsal` stays as it is: it rehearses a Lake's control database and store from their
+CNPG backups and CSI snapshots and writes the Lake's data-service evidence
+([`lake/restore-rehearsals.md`](lake/restore-rehearsals.md)). The new kinds rehearse anything the
+backup system backs up.
 
 ## The bucket
 
@@ -154,6 +209,31 @@ spec:
 ```
 
 Nothing like this is applied to any cluster yet: applying a resource is Steve's consent.
+
+## Owners
+
+[#740](https://github.com/oramasearch/orama-operator/issues/740). The resource that owns a datastore
+writes its schedules, so nobody writes one by hand, and a late or failed backup is visible on that
+owner.
+
+**A `Lake` with `spec.backups`** owns a `CloudflareR2Bucket` `lake-<name>-backups` in its namespace
+(`deletionPolicy: Retain`, made with the account token in `spec.backups.cloudflareSecretRef`, its
+credentials allowed for every workspace namespace that has a schedule) and, for each ready managed
+service, a `BackupSchedule` `<datastore>-backup` in the service's workspace namespace, with a
+connection Secret `<datastore>-backup-connection` for the kinds whose Job talks to the server. The
+connection comes from the service's connection document, which the Lake already reads from lake's
+control Postgres (decision 51). A schedule that is not ready, a failed newest backup or a late one is
+appended to the service's `service_status` message (nothing is added while all is well, so a steady
+service writes nothing) and summarised in the Lake's `BackupsOnSchedule` condition. Deleting a
+service deletes its schedule and connection; its Backups stay. Details:
+[`lake/backups.md`](lake/backups.md#managed-services).
+
+**An `OramaCloudV1`** with Cloudflare on and a token owns `<stack>-backups` (`Retain`) and a daily
+schedule for its control DB (`Postgres`, `<stack>-controldb`) and in-cluster analytics
+(`ClickHouse`, `<stack>-analytics`, with `<stack>-analytics-backup-connection` from its generated
+password). The cache (Redis) holds what the stack rebuilds, the broker (RabbitMQ) is a transport, and
+the engine is rebuilt from its sources, so none gets a schedule. Its `BackupsOnSchedule` condition
+says what is late or failed, without changing the stack's phase.
 
 ## Platform
 
