@@ -121,7 +121,7 @@ func TestV1RenderedStorageBounds(t *testing.T) {
 		oc.Spec.Components.ControlDB.Enabled = true
 		oc.Spec.DemoSeed = true
 		scheme := ocv1TestScheme(t)
-		kube := fake.NewClientBuilder().WithScheme(scheme).Build()
+		kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(appliedGrantsSchema(t, oc, analyticsProcessorGrantsSchemaSuffix)).Build()
 		r := &OramaCloudV1Reconciler{Client: kube, Scheme: scheme}
 		for _, fn := range []func() error{
 			func() error {

@@ -397,7 +397,8 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   dashboard, never a reader. `<cr>-disco-auth` rolls DISCO, workers and index-builder;
   `<cr>-pgadmin-auth` rolls pgAdmin, whose emptyDir config DB is initialized with the retained
   password at each start. analytics-processor's hash also covers its component
-  Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
+  Secret (ClickHouse password) and its control DB Secret, `<cr>-controldb-analytics-processor` (the
+  Postgres URI of its own role, #823; `<cr>-controldb-app` on a read-tier replica). Metadata changes roll
   nothing. An
   existing e2e Job is immutable and keeps the reference it was created with.
 - **Declared rotation (#594).** `spec.credentialRotation: {broker: N, cache: N}` rotates a generated
@@ -987,7 +988,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   `controldb_cluster_row.go`) — the dashboard places a project on an `oramacore_clusters` row, so a
   control DB without one cannot create projects. Cluster rows are never copied from Prod 1: each
   stack's only row is the operator's `c1` (orama-bridge `docs/projects/orama-cloud-v1/decisions-2026-10-16.md`,
-  decision 9). Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008, the reference rows, the migration role's grants and the dashboard role's grants) is current and the master key is valid, the operator
+  decision 9). Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008, the reference rows, the migration role's grants, the dashboard role's grants and analytics-processor's grants) is current and the master key is valid, the operator
   runs the Job `<cr>-controldb-cluster-row`, which inserts one row **only when the table has no row
   at all**, soft-deleted rows included: `name` = the CR name, `cluster_prefix` = `c1` (the only
   prefix the `collections.orama.com` worker routes, so customers' read keys keep working),
@@ -1048,6 +1049,7 @@ the next. A streaming replica receives the primary's schema and owns none.
 | 3 | `<cr>-controldb-reference-data` | `reference-data.sql` | none (`applyEveryVersion`) | The reference rows again, with this stack's Stripe prices, re-applied whenever the rows or the prices change |
 | 4 | `<cr>-controldb-migration-grants` | `migration-grants.sql` | none (`applyEveryVersion`) | The `migration` role's grants ([#653](https://github.com/oramasearch/orama-operator/issues/653)): `SELECT, INSERT, UPDATE, DELETE` on every table in `public` and `USAGE, SELECT` on its sequences, now and as default privileges. Its header names the versions of schemas 1 and 2, so a new version of a schema that creates tables re-applies it |
 | 5 | `<cr>-controldb-dashboard-grants` | `dashboard-grants.sql` | none (`applyEveryVersion`) | The `dashboard` role's grants ([#99](https://github.com/oramasearch/orama-operator/issues/99)): `CONNECT, TEMPORARY` on the database (the `projects` delete trigger creates a temporary table), `SELECT, INSERT, UPDATE, DELETE` on every table in `public` except the rows the operator owns (`subscription_plans`, `stripe_addon_prices`, `llms`, `oramacore_clusters`: `SELECT` only), and `USAGE, SELECT` on its sequences, now and as default privileges. No DDL, no `TRUNCATE`, no other schema. Same header rule as schema 4 |
+| 6 | `<cr>-controldb-analytics-processor-grants` | `analytics-processor-grants.sql` | none (`applyEveryVersion`) | analytics-processor's grants ([#823](https://github.com/oramasearch/orama-operator/issues/823)): creates schema `analytics` and its run log `analytics.runs` when missing (as the owner; an existing schema and table are kept as they are), then gives `analytics_processor` `CONNECT, CREATE` on the database (its `CREATE SCHEMA analytics` at start is checked against the database before Postgres finds the schema exists), `USAGE, CREATE` on schema `analytics` (its `CREATE TABLE IF NOT EXISTS`) and `SELECT, INSERT, UPDATE` on `analytics.runs` (`UPDATE` is what its `ACCESS EXCLUSIVE` lock needs). Nothing in `public`, no `DELETE` or `TRUNCATE`. |
 
 - **Why a second schema for 0008.** A database built from the 0000 to 0007 file already has
   `crawler_configs`, so the first schema's Job skips it; 0008 appended there would never reach
@@ -1109,8 +1111,23 @@ the next. A streaming replica receives the primary's schema and owns none.
   running dashboard keeps the owner's credentials until its role can sign in, and then rolls once.
   A read-tier replica's dashboard keeps the owner's credentials until replica credentials are wired.
   The owner (`<cr>-controldb-app`) is left to the `PostgresSchema` Jobs, the cluster-row Job and
-  pgAdmin; index-builder and analytics-processor still use it
-  ([#99](https://github.com/oramasearch/orama-operator/issues/99) follow-ups below).
+  pgAdmin; index-builder still uses it
+  ([#822](https://github.com/oramasearch/orama-operator/issues/822): its Prisma tables are not in the
+  control DB).
+- **The analytics-processor role** ([#823](https://github.com/oramasearch/orama-operator/issues/823),
+  `controldb_roles.go`). `spec.managed.roles` also declares `analytics_processor`: `login: true`, not
+  a superuser, no `createdb`, `createrole`, `replication` or `bypassrls`, `connectionLimit: 10`. Its
+  password is `<cr>-controldb-analytics-processor` (`kubernetes.io/basic-auth`, `username`,
+  `password`, `uri`, labelled `cnpg.io/reload`), generated once. Its grants are schema 6. The
+  processor's `postgres.url` comes from that Secret's `uri` wherever the control DB runs as a primary,
+  and its Deployment is not written until schema 6 is `Applied`, so a running processor keeps the
+  owner's URI until its role can sign in, then rolls once. The schema and table stay owned by the
+  owner: no `ALTER ... OWNER`, which would need the owner to be a member of the new role. The one
+  privilege wider than its work is `CREATE` on the database (it could create a schema of its own),
+  kept because the processor runs `CREATE SCHEMA analytics` at every start.
+  `TestControlDBSchemasAgainstPostgres` signs in as it and runs the processor's statements, on an
+  empty database and on one whose run log the owner created with a row, and checks it is refused
+  `public`, `DELETE`, `TRUNCATE` and DDL on the run log.
   `TestControlDBSchemasAgainstPostgres` signs in as the role and checks it can read every table and
   do the dashboard's writes, including the delete triggers, and is refused DDL, `TRUNCATE`, writes
   to the operator-owned rows and any other schema.

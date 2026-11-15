@@ -347,6 +347,9 @@ func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
 	if oc.Spec.Components.Dashboard.Enabled {
 		names = append(names, dashboardDBSecrets(oc)...)
 	}
+	if oc.Spec.Components.AnalyticsProcessor.Enabled {
+		names = append(names, analyticsProcessorDBSecret(oc))
+	}
 	if name, _ := masterAPIKeyRef(oc); name != "" {
 		names = append(names, name)
 	}

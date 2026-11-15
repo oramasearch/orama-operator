@@ -24,13 +24,38 @@ import (
 // it once its Job applied the current version.
 func appliedDashboardGrants(t *testing.T, kube client.Client, oc *oramav1alpha1.OramaCloudV1) {
 	t.Helper()
+	appliedGrants(t, kube, oc, dashboardGrantsSchemaSuffix)
+}
+
+// appliedGrantsSchema is the grants PostgresSchema <cr><suffix> as its controller leaves it once its
+// Job applied the version this operator renders, for a fake client's initial objects.
+func appliedGrantsSchema(t *testing.T, oc *oramav1alpha1.OramaCloudV1, suffix string) *oramav1alpha1.PostgresSchema {
+	t.Helper()
 	schemas, err := controlDBSchemas(oc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + dashboardGrantsSchemaSuffix, Namespace: oc.Namespace}}
+	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + suffix, Namespace: oc.Namespace}}
 	for _, s := range schemas {
-		if s.suffix == dashboardGrantsSchemaSuffix {
+		if s.suffix == suffix {
+			ps.Spec.Version = schemaVersion(s.sql)
+		}
+	}
+	ps.Status = oramav1alpha1.PostgresSchemaStatus{Phase: "Applied", AppliedVersion: ps.Spec.Version}
+	return ps
+}
+
+// appliedGrants creates the grants PostgresSchema <cr><suffix> as its controller leaves it once its
+// Job applied the current version.
+func appliedGrants(t *testing.T, kube client.Client, oc *oramav1alpha1.OramaCloudV1, suffix string) {
+	t.Helper()
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + suffix, Namespace: oc.Namespace}}
+	for _, s := range schemas {
+		if s.suffix == suffix {
 			ps.Spec.Version = schemaVersion(s.sql)
 		}
 	}
@@ -87,8 +112,8 @@ func TestDashboardManagedRoleAndSecret(t *testing.T) {
 		"login": true, "superuser": false, "createdb": false, "createrole": false, "replication": false, "bypassrls": false,
 		"inherit": true, "connectionLimit": int64(40), "passwordSecret": map[string]interface{}{"name": "v1-controldb-dashboard"},
 	}
-	if len(roles) != 2 || !reflect.DeepEqual(roles[1], want) {
-		t.Fatalf("managed roles = %v, want the migration role then %v", roles, want)
+	if len(roles) != 3 || !reflect.DeepEqual(roles[1], want) {
+		t.Fatalf("managed roles = %v, want the migration role, then %v, then analytics-processor's", roles, want)
 	}
 	sec := &corev1.Secret{}
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: "v1-controldb-dashboard"}, sec); err != nil {
@@ -118,7 +143,7 @@ func TestDashboardGrantsSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := schemas[len(schemas)-1]
+	last := schemas[len(schemas)-2]
 	if last.suffix != dashboardGrantsSchemaSuffix || !last.everyVersion || last.key != "dashboard-grants.sql" || last.guard != "crawler_configs" {
 		t.Fatalf("last schema = %+v", last)
 	}
@@ -254,5 +279,96 @@ func TestReadReplicaDashboardKeepsOwnerCredentials(t *testing.T) {
 	}
 	if s, _ := envSecret(dep.Spec.Template.Spec.Containers[0].Env, "DATABASE_URL"); s != "v1-controldb-app" {
 		t.Errorf("replica dashboard DATABASE_URL from %s", s)
+	}
+}
+
+// analytics-processor signs in as its own role (#823): a managed role that can create nothing but
+// a schema, its own password Secret, grants exactly for the statements it runs on analytics.runs and
+// nothing in public, and the processor is not written until those grants apply.
+func TestAnalyticsProcessorRoleGrantsAndGate(t *testing.T) {
+	ctx := context.Background()
+	oc := newControlDBStack()
+	oc.Spec.Components.AnalyticsProcessor.Enabled = true
+	r, kube := newControlDBReconciler(t, oc)
+	if err := r.reconcileControlDB(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(cnpgClusterGVK)
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-controldb"}, cluster); err != nil {
+		t.Fatal(err)
+	}
+	roles, _, _ := unstructured.NestedSlice(cluster.Object, "spec", "managed", "roles")
+	want := map[string]interface{}{
+		"name": "analytics_processor", "comment": "analytics-processor's control DB client (operator#823)", "ensure": "present",
+		"login": true, "superuser": false, "createdb": false, "createrole": false, "replication": false, "bypassrls": false,
+		"inherit": true, "connectionLimit": int64(10), "passwordSecret": map[string]interface{}{"name": "v1-controldb-analytics-processor"},
+	}
+	if len(roles) != 3 || !reflect.DeepEqual(roles[2], want) {
+		t.Fatalf("managed roles = %v, want %v last", roles, want)
+	}
+	sec := &corev1.Secret{}
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: "v1-controldb-analytics-processor"}, sec); err != nil {
+		t.Fatal(err)
+	}
+	pass := string(sec.Data["password"])
+	if sec.Type != corev1.SecretTypeBasicAuth || string(sec.Data["username"]) != analyticsProcessorRole || len(pass) != 48 ||
+		string(sec.Data["uri"]) != "postgresql://analytics_processor:"+pass+"@v1-controldb-rw.orama-system:5432/oramacore" ||
+		sec.Labels["cnpg.io/reload"] != "true" || !metav1.IsControlledBy(sec, oc) {
+		t.Fatalf("analytics-processor role Secret = %v %v", sec.Type, sec.Labels)
+	}
+
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := schemas[len(schemas)-1]
+	if last.suffix != analyticsProcessorGrantsSchemaSuffix || !last.everyVersion || last.key != "analytics-processor-grants.sql" {
+		t.Fatalf("last schema = %+v", last)
+	}
+	for _, want := range []string{
+		"CREATE SCHEMA IF NOT EXISTS analytics;",
+		"CREATE TABLE IF NOT EXISTS analytics.runs (",
+		"GRANT CONNECT, CREATE ON DATABASE %I TO analytics_processor', current_database()",
+		"GRANT USAGE, CREATE ON SCHEMA analytics TO analytics_processor;",
+		"GRANT SELECT, INSERT, UPDATE ON analytics.runs TO analytics_processor;",
+		"REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON analytics.runs FROM analytics_processor;",
+	} {
+		if !strings.Contains(last.sql, want) {
+			t.Errorf("analytics-processor grants lack %q:\n%s", want, last.sql)
+		}
+	}
+	for _, never := range []string{"SCHEMA public", "ALL TABLES", "OWNER", "DROP", "SUPERUSER"} {
+		if strings.Contains(last.sql, never) {
+			t.Errorf("analytics-processor grants contain %q:\n%s", never, last.sql)
+		}
+	}
+
+	// Until the grants apply the processor is not written; then it reads its own role's URI only.
+	key := client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-analytics-processor"}
+	if err := r.reconcileAnalyticsProcessor(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(ctx, key, &appsv1.Deployment{}); err == nil {
+		t.Fatal("the processor was written before its role's grants applied")
+	}
+	appliedGrants(t, kube, oc, analyticsProcessorGrantsSchemaSuffix)
+	if err := r.reconcileAnalyticsProcessor(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	dep := &appsv1.Deployment{}
+	if err := kube.Get(ctx, key, dep); err != nil {
+		t.Fatal(err)
+	}
+	render := dep.Spec.Template.Spec.InitContainers[0]
+	if s, k := envSecret(render.Env, "PG_URI"); s != "v1-controldb-analytics-processor" || k != "uri" {
+		t.Fatalf("PG_URI from %s/%s, want v1-controldb-analytics-processor/uri", s, k)
+	}
+	for _, c := range append(dep.Spec.Template.Spec.InitContainers, dep.Spec.Template.Spec.Containers...) {
+		for _, e := range c.Env {
+			if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == controlDBAppSecret(oc) {
+				t.Errorf("processor %s still reads the owner Secret", e.Name)
+			}
+		}
 	}
 }

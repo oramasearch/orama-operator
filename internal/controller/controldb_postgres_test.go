@@ -66,12 +66,26 @@ func TestControlDBSchemasAgainstPostgres(t *testing.T) {
 		p.verifyTeamCreation()
 		p.verifyMigrationGrants()
 		p.verifyDashboardGrants()
+		p.verifyAnalyticsProcessorGrants()
 		// Reconcile again, then run 0008's Job once more: the guard skips it and nothing changes.
 		p.reconcileStack()
 		if out := p.runSchemaScript("-controldb-schema-0008"); !strings.Contains(out, "schema already applied (team_migrations present)") {
 			t.Fatalf("complete 0008 was not skipped: %s", out)
 		}
 		p.verifySchema()
+	})
+
+	// A live stack's run log was created by the owner (the processor ran as it before #823): the
+	// grants keep its rows and the processor works on it as its own role.
+	t.Run("existing analytics run log", func(t *testing.T) {
+		p := newControlDBProof(t, admin)
+		p.sql("CREATE SCHEMA analytics; " + analyticsProcessorRunsTableDDL +
+			"INSERT INTO analytics.runs VALUES ('88888888-8888-4888-8888-888888888888', now(), now(), now(), now(), now(), 1, 1);")
+		p.converge()
+		if got := p.sql("SELECT count(*) FROM analytics.runs"); got != "1" {
+			t.Fatalf("the existing run log has %s rows, want the 1 it had", got)
+		}
+		p.verifyAnalyticsProcessorGrants()
 	})
 
 	t.Run("0000-0007 with a team", func(t *testing.T) {
@@ -184,6 +198,14 @@ func newControlDBProof(t *testing.T, admin string) *controlDBProof {
 		runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE "+dashboardRole+" LOGIN")
 		t.Cleanup(func() {
 			runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "DROP ROLE "+dashboardRole)
+		})
+	}
+	// analytics-processor's role (#823) likewise, with LOGIN.
+	if runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c",
+		"SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '"+analyticsProcessorRole+"')") == "t" {
+		runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE "+analyticsProcessorRole+" LOGIN")
+		t.Cleanup(func() {
+			runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "DROP ROLE "+analyticsProcessorRole)
 		})
 	}
 	name := fmt.Sprintf("controldb_%d", time.Now().UnixNano())
@@ -562,4 +584,36 @@ SELECT 'flow ok';
 		p.t.Error("the dashboard holds TRUNCATE or a grant option on a public table")
 	}
 	p.sql("DROP SCHEMA analytics CASCADE; DELETE FROM oramacore_clusters WHERE id = '" + cluster + "'")
+}
+
+// verifyAnalyticsProcessorGrants signs in as analytics_processor (#823) and runs what the processor
+// runs at start and per import (analytics-processor src/clients/postgres.rs): CREATE SCHEMA, refused
+// only because it exists (42P06, which the processor ignores), CREATE TABLE IF NOT EXISTS, the
+// ACCESS EXCLUSIVE lock, SELECT and INSERT. It is refused schema public, DELETE, TRUNCATE and DDL on
+// the run log.
+func (p *controlDBProof) verifyAnalyticsProcessorGrants() {
+	p.t.Helper()
+	role := analyticsProcessorRole
+	if out, err := p.sqlAs(role, "CREATE SCHEMA analytics;"); err == nil || !strings.Contains(out, "already exists") {
+		p.t.Fatalf("CREATE SCHEMA analytics as the processor: want 42P06 (already exists), got %v\n%s", err, out)
+	}
+	work := analyticsProcessorRunsTableDDL + `LOCK TABLE analytics.runs IN ACCESS EXCLUSIVE MODE NOWAIT;
+SELECT count(*) FROM analytics.runs;
+INSERT INTO analytics.runs VALUES ('99999999-9999-4999-8999-999999999999', now(), now(), now(), now(), now(), 0, 0);
+SELECT 'processor ok';
+`
+	if out, err := p.sqlAs(role, work); err != nil || !strings.HasSuffix(out, "processor ok") {
+		p.t.Fatalf("the processor's own statements failed: %v\n%s", err, out)
+	}
+	for what, stmt := range map[string]string{
+		"read schema public":   "SELECT count(*) FROM teams",
+		"delete a run":         "DELETE FROM analytics.runs",
+		"truncate the run log": "TRUNCATE analytics.runs",
+		"drop the run log":     "DROP TABLE analytics.runs",
+		"alter the run log":    "ALTER TABLE analytics.runs ADD COLUMN proof int",
+	} {
+		if out, err := p.sqlAs(role, stmt); err == nil {
+			p.t.Errorf("the processor may %s (%s): %s", what, stmt, out)
+		}
+	}
 }

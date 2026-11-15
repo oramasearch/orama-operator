@@ -185,7 +185,11 @@ the server lacks it, as CNPG would, and drops it at the end only if it created i
 for the `dashboard` role (`LOGIN`, operator#99) and signs in as it to check its grants: every public
 table readable, the dashboard's writes and delete triggers working, and DDL, `TRUNCATE`, writes to
 the operator-owned rows and other schemas refused. That sign-in has no password, so the server must
-trust local connections (Homebrew's default `pg_hba.conf` does).
+trust local connections (Homebrew's default `pg_hba.conf` does). It also creates `analytics_processor` (`LOGIN`, operator#823) and runs
+analytics-processor's own statements as it, on an empty database and on one whose run log the owner
+already holds with a row: `CREATE SCHEMA` refused only as already existing, `CREATE TABLE IF NOT
+EXISTS`, the `ACCESS EXCLUSIVE` lock, `SELECT` and `INSERT`, and no `public`, `DELETE`, `TRUNCATE`
+or DDL on the run log.
 
 The control DB's cluster-row script (`TestControlDBClusterRowAgainstPostgres`, operator#443) runs
 against local Postgres with `CONTROLDB_TEST_POSTGRES=1` (connection
