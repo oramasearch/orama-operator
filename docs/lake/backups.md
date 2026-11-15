@@ -133,8 +133,10 @@ spec:
 - Each ready managed service gets a `BackupSchedule` `<datastore>-backup` in its workspace
   namespace, where `<datastore>` is the service's resource (`<lake>-<slug>`, or the workspace's
   Zetta cluster). For Zetta, ClickHouse and Valkey the Lake also writes `<datastore>-backup-connection`
-  (`host`, `port`, `username`, `password`, `database`) from the service's connection. The workspace
-  namespace is added to the bucket's `allowedNamespaces`.
+  (`host`, `port`, `username`, `password`, `database`) from the service's connection. A SQLite,
+  DuckDB or Polars service gets one schedule per data claim, `data-<datastore>-<i>-backup`, a copy
+  of the claim from a CSI snapshot ([operator#737](https://github.com/oramasearch/orama-operator/issues/737)).
+  The workspace namespace is added to the bucket's `allowedNamespaces`.
 - **A late or failed backup is shown**: appended to the service's `service_status` message (for
   example `service ready; backup late: no backup has succeeded since ...`), and summarised in the
   Lake's condition `BackupsOnSchedule`. A workspace's own Zetta shows only on the condition, since
