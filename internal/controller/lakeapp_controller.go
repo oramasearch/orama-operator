@@ -981,6 +981,8 @@ func (r *LakeAppReconciler) reconcileLakeAppLakeSecrets(ctx context.Context, lak
 				Type: "lake",
 				Lake: &oramav1alpha1.LakeStaticSecretSource{Mount: reference.Mount, Name: reference.Name},
 			}
+			// The app's own workspace: lake delivers only a mount of it (lake#950, lake#971).
+			sealed.Spec.WorkspaceID = app.Spec.Sync.WorkspaceID
 			// The Lake stays its controller (the LakeSealedSecret reconciler sets it); the app is a
 			// plain owner, so deleting the app deletes the delivery and its Secret.
 			return controllerutil.SetOwnerReference(app, sealed, r.Scheme)

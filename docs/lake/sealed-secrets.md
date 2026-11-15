@@ -104,8 +104,10 @@ Secret RBAC remains security-critical.
 
 ### Lake static secret
 
-`source.type: lake` carries only `{mount, name, version?}`. The operator sends the source, target
-AAD, current recipient, and its projected Kubernetes service-account token to
+`source.type: lake` carries only `{mount, name, version?}`. A lake or dynamic source also needs
+`spec.workspaceID`, the workspace of the app, store or environment the Secret is for, taken from
+that object's own row and immutable once set; without it nothing is minted. The operator sends the
+workspace, the source, target AAD, current recipient, and its projected Kubernetes service-account token to
 `POST /v1/mint_sealed_secret` on the referenced Lake, authenticated with the Lake's admin bearer
 (`Authorization: Bearer`, from the operator-minted `lake-<lake>-admin` Secret, lake#625). Lake
 delivers only to the operator credential, seals only to the delivery key it was given
@@ -165,11 +167,12 @@ the response.
 #### What a lake source does not bind
 
 The envelope binds the cluster, the namespace and the Secret name. App and store projections all
-live in the shared Lake namespace, so it does not bind the workspace, and lake's
-`mint_sealed_secret` does not check that the mount belongs to the workspace the projection is for:
-the only workspace check is when the reference is written (`check_secret_references`,
-`create_store`). Binding it at delivery is
-[lake#950](https://github.com/oramasearch/lake/issues/950). When lake stops delivering a secret
+live in the shared Lake namespace, so the envelope does not bind the workspace. The delivery does:
+every mint names `spec.workspaceID` (the app's `spec.sync.workspaceId`, the store row's workspace),
+and lake answers `not_found` unless the mount is in that workspace, at every delivery and not only
+when the reference is written ([lake#950](https://github.com/oramasearch/lake/issues/950),
+[lake#971](https://github.com/oramasearch/lake/issues/971)). An envelope whose AAD includes the
+workspace would be a version 2 and is not done. When lake stops delivering a secret
 (deleted, destroyed, revoked), the last projected Secret is kept and retried every five minutes;
 removing it on a definite refusal is
 [orama-operator#777](https://github.com/oramasearch/orama-operator/issues/777). The security review is

@@ -427,6 +427,7 @@ func remoteSealedSecretObjects(
 	}
 	publicKey := private.PublicKey().Bytes()
 	lake, resource, keySecret := sealedSecretObjects(referenceKID(publicKey), publicKey, privateKey)
+	resource.Spec.WorkspaceID = testSealedWorkspaceID
 	if typ == "lake" {
 		resource.Spec.Source = oramav1alpha1.LakeSealedSecretSource{
 			Type: "lake",
@@ -472,8 +473,13 @@ func decodeMintRequest(t *testing.T, request *http.Request) lakeMintRequest {
 	if err := json.NewDecoder(request.Body).Decode(&mint); err != nil {
 		t.Fatal(err)
 	}
+	if mint.WorkspaceID != testSealedWorkspaceID {
+		t.Errorf("mint names workspace %q, want the resource's %q", mint.WorkspaceID, testSealedWorkspaceID)
+	}
 	return mint
 }
+
+const testSealedWorkspaceID = "ws-sealed"
 
 func referenceSealForMintRequest(
 	t *testing.T,
@@ -730,6 +736,30 @@ func TestLakeSourceNeedsTheLakesAdminSecret(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("lake was called %d times without a credential", calls)
+	}
+}
+
+// TestLakeSourceNeedsItsWorkspace: lake checks every delivery against the workspace the Secret is
+// for (lake#950, lake#971), so a lake source without spec.workspaceID is never sent.
+func TestLakeSourceNeedsItsWorkspace(t *testing.T) {
+	scheme := newSealedSecretScheme(t)
+	lake, resource, keySecret := remoteSealedSecretObjects(t, "lake")
+	resource.Spec.WorkspaceID = ""
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(lake, resource, keySecret, lakeAdminTokenSecret()).
+		WithStatusSubresource(lake, resource).
+		Build()
+	reconciler := &LakeSealedSecretReconciler{Client: kube, Scheme: scheme, LakeURL: server.URL}
+	_, _ = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: clientKey(resource.Name, resource.Namespace)})
+	if calls != 0 {
+		t.Fatalf("lake was asked %d times for a delivery that names no workspace", calls)
+	}
+	produced := &corev1.Secret{}
+	if err := kube.Get(context.Background(), clientKey("database", "app"), produced); err == nil {
+		t.Fatal("a Secret was produced without a workspace")
 	}
 }
 

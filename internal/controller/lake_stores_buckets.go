@@ -122,8 +122,10 @@ func (r *LakeReconciler) reconcileBucketStore(ctx context.Context, lake *oramav1
 		}
 		// Only a changed reference is written, so a steady store makes no API writes.
 		if sealed.Spec.LakeRef.Name != lake.Name || sealed.Spec.Template != template || len(sealed.Spec.Data) != 0 ||
-			sealed.Spec.Source.Type != source.Type || sealed.Spec.Source.Lake == nil || *sealed.Spec.Source.Lake != *source.Lake {
+			sealed.Spec.Source.Type != source.Type || sealed.Spec.Source.Lake == nil || *sealed.Spec.Source.Lake != *source.Lake ||
+			sealed.Spec.WorkspaceID != st.WorkspaceID {
 			sealed.Spec.LakeRef = corev1.LocalObjectReference{Name: lake.Name}
+			sealed.Spec.WorkspaceID = st.WorkspaceID
 			sealed.Spec.Template = template
 			sealed.Spec.Data = nil
 			sealed.Spec.Source = source
@@ -138,7 +140,9 @@ func (r *LakeReconciler) reconcileBucketStore(ctx context.Context, lake *oramav1
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: storeClaimLabels(lake, labels, st),
 				Annotations: map[string]string{serviceCustomerAnnotation: st.CustomerID}},
 			Spec: oramav1alpha1.LakeSealedSecretSpec{
-				LakeRef: corev1.LocalObjectReference{Name: lake.Name}, Template: template, Source: source},
+				LakeRef: corev1.LocalObjectReference{Name: lake.Name}, Template: template, Source: source,
+				// The store's own workspace: lake delivers only a mount of it (lake#950, lake#971).
+				WorkspaceID: st.WorkspaceID},
 		}
 		if err := controllerutil.SetControllerReference(lake, sealed, r.Scheme); err != nil {
 			return serviceResult{}, err
