@@ -267,7 +267,8 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 	}
 	// Six additional Lake-only client policies pair with its egress; all legacy policies remain.
 	// One more lets the operator reach workspace Postgres for credential roles (operator#469).
-	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients) + 6 + 1; len(policies.Items) != want {
+	// More let it list Valkey and Kafka users with its own identity (operator#1172).
+	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients) + 6 + 1 + len(workspaceOperatorAuditIngresses); len(policies.Items) != want {
 		t.Fatalf("network policies = %d, want %d", len(policies.Items), want)
 	}
 	for _, policy := range policies.Items {

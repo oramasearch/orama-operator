@@ -44,7 +44,7 @@ func builtKafkaObjects(t *testing.T, in catalogService) map[string]*unstructured
 				t.Fatalf("%s %v: %v", resource.gvk.Kind, field.path, err)
 			}
 		}
-		out[resource.gvk.Kind] = obj
+		out[catalogFoundKey((kafkaServiceKind{}).objects(in), resource.catalogObject)] = obj
 	}
 	return out
 }

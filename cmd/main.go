@@ -393,6 +393,7 @@ func main() {
 		APIReader:         mgr.GetAPIReader(),
 		Clientset:         clientset,
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		Recorder:          mgr.GetEventRecorderFor("lake-controller"),
 		// Only with the control plane listening: lake has nothing to ask otherwise.
 		ServiceConnectionURL:    serviceConnectionURL(controlPlaneAddr, controlPlaneServiceURL),
 		ServiceConnectionCAFile: controlPlaneCAFile,

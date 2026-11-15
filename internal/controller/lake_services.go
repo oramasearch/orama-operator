@@ -204,6 +204,9 @@ type serviceResult struct {
 	endpoint      string
 	resourceReady bool
 	credential    []byte
+	// note is added to a Ready service's message, e.g. the users the operator did not make
+	// (operator#1172).
+	note string
 }
 
 // lakeServicesEnabled: every Lake runs managed services (operator#539); they need the control
@@ -702,7 +705,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		}
 		if result.resourceReady {
 			if written[svc.Slug] {
-				result.phase, result.message = ServicePhaseReady, "service ready"
+				result.phase, result.message = ServicePhaseReady, "service ready"+result.note
 			} else {
 				result.phase, result.message = ServicePhaseProvisioning, "delivering the connection"
 			}
