@@ -6,6 +6,7 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,10 +73,13 @@ type zettaIngressDocument struct {
 }
 
 type zettaIngressHost struct {
-	Name        string              `json:"name"`
-	Certificate string              `json:"certificate"`
-	Key         string              `json:"key"`
-	Routes      []zettaIngressRoute `json:"routes"`
+	Name        string `json:"name"`
+	Certificate string `json:"certificate"`
+	Key         string `json:"key"`
+	// ClientCA, when set, is the PEM CA file beside routes.json that a caller's client certificate
+	// must chain to: the gateway refuses the handshake without one (zetta-tunnel#34, operator#1152).
+	ClientCA string              `json:"client_ca,omitempty"`
+	Routes   []zettaIngressRoute `json:"routes"`
 }
 
 type zettaIngressRoute struct {
@@ -90,7 +94,7 @@ type zettaIngressRoute struct {
 // backends it must reach.
 type zettaIngressProjection struct {
 	Document zettaIngressDocument
-	// Files are the certificate and key files beside routes.json.
+	// Files are the certificate, key and client CA files beside routes.json.
 	Files map[string][]byte
 	// Served are the Ingresses (namespace/name) whose every host is served.
 	Served map[string]bool
@@ -196,24 +200,79 @@ func requiresOriginClientCertificate(ingress *networkingv1.Ingress) bool {
 	return verify != "" && verify != "off"
 }
 
-// originClientCertHosts is every host (lower case) of any Ingress that requires a client
-// certificate (operator#798, LSR-136). The gateway verifies no client certificate (zetta-tunnel's
-// ingress listener), so serving such a host would let a caller who finds the gateway's address skip
-// the edge, its WAF and rate limits, and set the edge's attribution headers itself. ingress-nginx
-// applies auth-tls to the whole host, so the host is refused on every Ingress that names it, of any
-// class and any owner, and one being deleted still counts until it is gone.
-func originClientCertHosts(ingresses []networkingv1.Ingress) map[string]bool {
-	protected := map[string]bool{}
+// originClientCA is what one host needs to be served with the edge's client-certificate requirement:
+// the CA its callers' certificates must chain to, or why the gateway cannot serve it.
+type originClientCA struct {
+	pem     []byte
+	refusal string
+}
+
+// zettaIngressClientCAFile is the host's client CA file beside routes.json.
+func zettaIngressClientCAFile(host string) string { return host + ".client-ca.pem" }
+
+// originClientCAs is the client-certificate requirement of every host (lower case) of any Ingress
+// that requires one (operator#798, LSR-136; operator#1152). ingress-nginx applies auth-tls to the
+// whole host, so the requirement holds for the host on every Ingress that names it, of any class and
+// any owner, and one being deleted still counts until it is gone. The gateway verifies the same CA
+// nginx does: the auth-tls-secret's ca.crt, which the Lake controller fills from the zone's
+// origin-pull CA (reconcileEdgeClientCA). A host is refused instead when the gateway cannot make
+// nginx's exact check: verification other than "on" (zetta-tunnel requires a certificate or asks for
+// none), no CA Secret, a CA Secret that is missing or holds no PEM certificate, or two Ingresses for
+// the host naming different CAs.
+func originClientCAs(ctx context.Context, c client.Client, ingresses []networkingv1.Ingress) (map[string]originClientCA, error) {
+	result := map[string]originClientCA{}
 	for i := range ingresses {
 		ingress := &ingresses[i]
 		if !requiresOriginClientCertificate(ingress) {
 			continue
 		}
+		requirement, err := ingressClientCA(ctx, c, ingress)
+		if err != nil {
+			return nil, err
+		}
 		for _, rule := range ingress.Spec.Rules {
-			protected[strings.ToLower(rule.Host)] = true
+			host := strings.ToLower(rule.Host)
+			existing, seen := result[host]
+			switch {
+			case !seen:
+				result[host] = requirement
+			case existing.refusal != "":
+			case requirement.refusal != "":
+				result[host] = requirement
+			case !bytes.Equal(bytes.TrimSpace(existing.pem), bytes.TrimSpace(requirement.pem)):
+				result[host] = originClientCA{refusal: "Ingresses for this host require client certificates from different CAs"}
+			}
 		}
 	}
-	return protected
+	return result, nil
+}
+
+// ingressClientCA reads one Ingress's client-certificate requirement.
+func ingressClientCA(ctx context.Context, c client.Client, ingress *networkingv1.Ingress) (originClientCA, error) {
+	verify := strings.ToLower(strings.TrimSpace(ingress.Annotations[annotationNginxAuthTLSVerifyClient]))
+	if verify != "" && verify != "on" {
+		return originClientCA{refusal: fmt.Sprintf("it verifies origin client certificates as %q (nginx auth-tls-verify-client), and the gateway either requires a certificate or asks for none", verify)}, nil
+	}
+	reference := strings.TrimSpace(ingress.Annotations[annotationNginxAuthTLSSecret])
+	if reference == "" {
+		return originClientCA{refusal: "it requires origin client certificates but names no CA Secret (nginx auth-tls-secret)"}, nil
+	}
+	namespace, name, found := strings.Cut(reference, "/")
+	if !found {
+		namespace, name = ingress.Namespace, reference
+	}
+	var secret corev1.Secret
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &secret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return originClientCA{}, err
+		}
+		return originClientCA{refusal: fmt.Sprintf("its origin client CA Secret %s/%s does not exist yet", namespace, name)}, nil
+	}
+	ca := secret.Data["ca.crt"]
+	if _, err := pemCertificates(ca); len(bytes.TrimSpace(ca)) == 0 || err != nil {
+		return originClientCA{refusal: fmt.Sprintf("its origin client CA Secret %s/%s holds no PEM certificate in ca.crt", namespace, name)}, nil
+	}
+	return originClientCA{pem: append([]byte(nil), ca...)}, nil
 }
 
 // projectIngresses builds the gateway's projection from every Ingress the operator wrote, whatever
@@ -233,7 +292,10 @@ func projectIngresses(ctx context.Context, c client.Client) (zettaIngressProject
 		return a.Name < b.Name
 	})
 	denied := sourceDeniedHosts(ingresses.Items)
-	protected := originClientCertHosts(ingresses.Items)
+	clientCAs, err := originClientCAs(ctx, c, ingresses.Items)
+	if err != nil {
+		return projection, err
+	}
 	hosts := map[string]*zettaIngressHost{}
 	hostOwner := map[string]string{}
 	paths := map[string]bool{}
@@ -273,8 +335,8 @@ func projectIngresses(ctx context.Context, c client.Client) (zettaIngressProject
 				served = false
 				continue
 			}
-			if protected[host] {
-				skip(host, "it requires origin client certificates (nginx auth-tls, authenticated origin pulls), which the gateway does not verify")
+			if clientCA, protected := clientCAs[host]; protected && clientCA.refusal != "" {
+				skip(host, clientCA.refusal)
 				served = false
 				continue
 			}
@@ -378,6 +440,12 @@ func projectIngresses(ctx context.Context, c client.Client) (zettaIngressProject
 				hostOwner[host] = ingress.Namespace + "/" + secretName
 				projection.Files[host+".crt"] = secret.Data[corev1.TLSCertKey]
 				projection.Files[host+".key"] = secret.Data[corev1.TLSPrivateKeyKey]
+				// The edge's client-certificate requirement goes with the host, so the gateway
+				// refuses a caller without it exactly as ingress-nginx does (operator#1152).
+				if clientCA, protected := clientCAs[host]; protected {
+					entry.ClientCA = zettaIngressClientCAFile(host)
+					projection.Files[entry.ClientCA] = clientCA.pem
+				}
 			}
 			entry.Routes = append(entry.Routes, routes...)
 		}
