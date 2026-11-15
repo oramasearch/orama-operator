@@ -75,7 +75,7 @@ and renew 15 days before expiry. Preserve the CA Secret in disaster recovery to 
 
 ## Storage and reconciliation
 
-Zetta remains the deployment intake and audit store from liquid-bridge decisions 22 and 34. A create or
+Zetta is the deployment intake and audit store. A create or
 rollback appends two records:
 
 1. a full immutable response/history row in `orama_control.deployment_records`; and

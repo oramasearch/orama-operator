@@ -3,7 +3,7 @@
 Walks through provisioning **every external dependency** so the full Orama Cloud v1
 stack runs and *works* in-cluster from one `OramaCloudV1` CR — not just boots. Companion
 to [`../README.md`](../README.md) (what the operator is) and the bridge's
-[`build/images/RUNBOOK.md`](https://github.com/oramasearch/orama-cloud-v1-bridge/blob/main/build/images/RUNBOOK.md)
+`build/images/RUNBOOK.md`
 (build → push → pull-secret → deploy). Read this once top-to-bottom, then use the
 [dependency matrix](#dependency-matrix) as the checklist.
 
@@ -96,7 +96,7 @@ For each, mint the token at the provider and put it in a Secret on the managing 
 is created or edited by hand on the stack's own cluster: the `OramaCloudV1Set` copies each Secret
 in its `secrets` list into the member's namespace and keeps it in step, and the stack's spec
 references it (for the LLM providers, `spec.llm.providers[].apiKeySecretRef`). Creating a Secret
-on the managing cluster is a cluster write and needs Steve's consent.
+on the managing cluster is a cluster write and needs the cluster owner's consent.
 
 | Service | Component(s) | Env key | Get it from |
 |---|---|---|---|
@@ -144,11 +144,8 @@ exec'd by hand.
 
 ### Ably deployment progress (#747)
 
-Juan's latest decision on 2026-10-23 is to leave Ably on its current placeholder and accept
-that provider functionality is deferred. This supersedes the earlier plan to reuse Prod 1's Ably
-keys. Both committed set files leave `components.ingestion.ablyKeySecretRef` unset; no new Ably
-source Secret, source mirror or member reference is declared, and no credential is staged or
-installed. There is no pending account-restoration action or request for user input.
+Ably is optional. A stack without `components.ingestion.ablyKeySecretRef` keeps its placeholder,
+and index-builder's deployment progress is not published.
 
 The operator supports a future `components.ingestion.ablyKeySecretRef: {name, key}` for
 index-builder's deployment progress. It supplies a required explicit `ABLY_API_KEY` environment
@@ -211,7 +208,7 @@ The operator generates these and points components at in-cluster service DNS.
   DB or a read region, or without the engine. The row is written once and never updated, so:
   - **Rotating the master key does not update the row.** The row keeps the key it was inserted with.
     After changing the Secret behind `spec.masterAPIKeySecretRef`, the row's `master_api_key` still
-    holds the old value; updating it is a database write that needs Steve's consent, and the
+    holds the old value; updating it is a database write that needs the cluster owner's consent, and the
     dashboard and engine must agree on the key.
   - **`ClusterRowReady=True` reports the Job, not the table.** A succeeded Job is never re-run, so
     after a restore that empties `oramacore_clusters` it still shows `True` with no row. Read the

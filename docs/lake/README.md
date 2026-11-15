@@ -1,9 +1,8 @@
 # The `Lake` CR
 
-Nonprod source preparation, 2026-10-23 ([operator#884](https://github.com/oramasearch/orama-operator/issues/884)):
-OpenAI remains the provider. Juan chose the existing Prod1 OpenAI key for the separate
-`lake-nonprod-openai` source; the Azure preparation was cancelled. This key remains shared with
-Prod1 and must be retained or replaced before revocation. The member-specific test payments set
+Model provider keys ([operator#884](https://github.com/oramasearch/orama-operator/issues/884)):
+OpenAI is the provider; nonprod members read their key from their own source Secret, never
+production's. The member-specific test payments set
 still needs reviewed apply and live acceptance; no provider code or release change is required.
 
 What the operator does for a `Lake`, how it is deployed, and how to run it. Field reference:
@@ -130,7 +129,7 @@ Settings > Edit besides DNS Edit. See [`origin-tls.md`](origin-tls.md) (operator
 
 ## Every Lake runs every feature
 
-Steve, 2026-10-17: *"all features should be enabled on all environments"* ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)).
+Every feature is on in every environment ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)).
 A `Lake` has **no feature switch**: apps, builds, methodology runs and deployments, the whole
 Agent Library and user-created agents, managed services and stores, workspaces, connections,
 egress rules, tunnels, peers and volume snapshots are reconciled on every Lake, dev to prod. The
@@ -154,13 +153,11 @@ leaves it off), and every Lake runs the same features whatever its value
 
 ### Default images
 
-`internal/controller/lake_defaults.go`, pinned to what the managing cluster's `Lake/prod` ran on
-2026-10-17, apart from Zetta, which is the v0.3.0 release (`main-d7551c75`) pinned by digest
-([operator#588](https://github.com/oramasearch/orama-operator/issues/588)). The `lake-nonprod` and
-`lake-prod` sets still name `oramasearch/zetta:main-4015ef76` (v0.2.0) in `spec.zetta.image`, so
-the new default reaches a member only when its set file moves too, environment by environment.
+`internal/controller/lake_defaults.go`, pinned to the versions this operator release is tested with, apart from Zetta, which is the v0.3.0 release (`main-d7551c75`) pinned by digest
+([operator#588](https://github.com/oramasearch/orama-operator/issues/588)). A set that names
+`spec.zetta.image` keeps it: the default reaches a member only when its set file stops naming one.
 v0.3.0 refuses to start a node that cannot create the network record collections, so the first
-start on `lake-dev` is the check:
+start in a development environment is the check:
 
 | What | Spec field that overrides it | Default |
 |---|---|---|
@@ -208,7 +205,7 @@ namespace, empty when there are none, and never taken from the spec
 ([#882](https://github.com/oramasearch/orama-operator/issues/882),
 [connector destinations](../infrastructure/egress-rules.md#a-workspace-zettas-approved-connector-destinations)). The agent model defaults to `gpt-6.1-sol` (`spec.agents.model`). An app without its own host
 is `<app>.<spec.apps.wildcard>`, and an empty wildcard uses the Lake's `spec.host`
-(`myapp.lake-dev.oramadev.net`); HTTPS on those two-level names needs a certificate per zone
+(`myapp.lake-dev.nonprod.example.com`); HTTPS on those two-level names needs a certificate per zone
 ([#515](https://github.com/oramasearch/orama-operator/issues/515)).
 
 ## What a Lake reconciles into
@@ -316,7 +313,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 15. **Managed services** — once the schema has applied, the operator polls the `services`
     table in the control Postgres (pgx, Secret `lake-<name>-controldb-app` key `uri`) every
     `spec.deploySync.interval`. Each present service becomes `<name>-<slug>`: an `OramaZettaCluster`,
-    a CloudNativePG `Cluster`, or, for the catalog kinds (liquid-bridge decision 47), a Strimzi
+    a CloudNativePG `Cluster`, or, for the catalog kinds, a Strimzi
     `Kafka`, Altinity `ClickHouseInstallation`, `TidbCluster`, `K8ssandraCluster` or `ValkeyCluster`,
     or, for `sqlite`, `duckdb` and `polars`, a `StatefulSet` and `Service` of
     [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or [lake-polars](lake-polars.md),
@@ -472,7 +469,7 @@ the Lake it runs against, as its own test people, and deletes what it made where
 Every file in [`config/clusters/`](../../config/clusters/README.md) is applied to the managing
 cluster, but a `LakeE2ETest` runs on the cluster of the Lake it tests. So the `testing-gate` entry
 lives in `config/clusters/sets/lake-nonprod.yaml` under `spec.e2eTests`, and the managing cluster's
-operator applies it as a `LakeE2ETest` on `orama-nonprod-cluster-01` with `spec.member` filled in:
+operator applies it as a `LakeE2ETest` on `example-nonprod` with `spec.member` filled in:
 
 ```yaml
 spec:
@@ -493,9 +490,9 @@ a run; to run it again for the next release, change `runID`, apply the set file 
 the result from the managing cluster, and the reasons on the member's cluster:
 
 ```sh
-kubectl --context orama-production-cluster-01 get lset lake-nonprod     # E2E column: testing-gate Failed 311/22/3
-kubectl --context orama-production-cluster-01 get lset lake-nonprod -o jsonpath='{.status.e2eTests}'
-# on orama-nonprod-cluster-01 (its kubeconfig is Secret orama-system/orama-nonprod-cluster-01-kubeconfig):
+kubectl --context example-management get lset lake-nonprod     # E2E column: testing-gate Failed 311/22/3
+kubectl --context example-management get lset lake-nonprod -o jsonpath='{.status.e2eTests}'
+# on example-nonprod (its kubeconfig is Secret orama-system/example-nonprod-kubeconfig):
 kubectl get lakee2e testing-gate -o jsonpath='{.status.failed}'
 kubectl logs -n lake-testing job/testing-gate-e2e-<generation>
 ```
@@ -615,7 +612,7 @@ spec:
     - name: LAKE_LOG_MODE
       value: air-gapped
     - name: LAKE_PUBLIC_HOST
-      value: lake.oramadev.net
+      value: lake.nonprod.example.com
   postgres: { instances: 1, storageSize: 50Gi }
   zetta:
     replicas: 1
@@ -626,9 +623,9 @@ spec:
       - { name: MALLOC_ARENA_MAX, value: "2" }
     reachability: dial-out-only
   ingressEnabled: true
-  host: lake.oramadev.net
+  host: lake.nonprod.example.com
   tls: { secretName: lake-origin-tls }
-  previewWildcard: preview.lake.oramadev.net
+  previewWildcard: preview.lake.nonprod.example.com
   deploySync: { interval: 15s }
   dnsSecretRef: { name: cloudflare-api-token }
 Y
@@ -755,7 +752,7 @@ once and that three more reconciles leave the template and generation unchanged.
 | Store | Strategy |
 |---|---|
 | ReadWriteMany (the default), or more than one replica | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0`: the new pod starts beside the old one, and the old pod stops only after the new one is ready. No gap. |
-| ReadWriteOnce, one replica (the AKS `Lake/prod` store, `managed-csi`) | `Recreate` by default: the old pod stops, then the new one starts. There is a restart gap. With `spec.rollout.overlapOnSharedStore: true` the Lake surges like the row above, with the co-location described below. |
+| ReadWriteOnce, one replica (a Lake's store on AKS, `managed-csi`) | `Recreate` by default: the old pod stops, then the new one starts. There is a restart gap. With `spec.rollout.overlapOnSharedStore: true` the Lake surges like the row above, with the co-location described below. |
 | ReadWriteOncePod | Always `Recreate`. A second pod can never mount the claim, so a surge would never finish. |
 
 **Why `overlapOnSharedStore` is an opt-in, and when it is safe.** A surge on a single-replica
@@ -767,7 +764,7 @@ waits (bounded, `LAKE_STORE_OWNER_WAIT_SECONDS`, default 90 s) for the old one t
 than answering 503; the old process drains (`LAKE_DRAIN_SECONDS`, default 20 s) and releases both.
 Older lake images refuse to start beside a running lake, so the surge would never finish: set the
 opt-in only on a Lake whose image includes lake#479. It stays opt-in so a Lake on an older image keeps
-`Recreate`. Dev (`Lake/prod`) runs with it on since 2026-10-03; a rollout restart there answered 129
+`Recreate`. A development Lake has run with it on; a rollout restart there answered 129
 of 129 one-second polls with 200 (slowest held request 29.5 s; the successor waited 23 s and opened
 the store in 13 s).
 
@@ -829,12 +826,6 @@ and the replacement must mount the store without a persistent `Multi-Attach` err
   pod's node. The PDB still has `maxUnavailable: 1` when the Lake has multiple
 replicas.
 
-## Current production instance
-
-`Lake/prod`, namespace `lake`, 3 replicas, 50Gi Postgres, schema `0001_identity_and_customers`
-applied, https://lake.oramadev.net; operator helm revision 8, `lake-crd-8058ab5` (2026-09-02).
-Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs/deployment/aks.md.
-
 ## Open
 
 - #126 incremental migrations in `PostgresSchema`.
@@ -847,10 +838,9 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 
 ## Regions
 
-Decision 64 ([liquid-bridge#39](https://github.com/oramasearch/liquid-bridge/issues/39),
-[operator#512](https://github.com/oramasearch/orama-operator/issues/512)): production Lake runs one
-Lake per region, each at its own host (`eu.lake.live`, `us.lake.live`), with a region picker at the
-apex (`lake.live`). A workspace belongs to the region it was created in; nothing joins the regions
+Regions ([operator#512](https://github.com/oramasearch/orama-operator/issues/512)): production Lake runs one
+Lake per region, each at its own host (`eu.lake.example.com`, `us.lake.example.com`), with a region picker at the
+apex (`lake.example.com`). A workspace belongs to the region it was created in; nothing joins the regions
 yet. One `LakeSet` manages them all, and the operator supplies everything lake's picker needs:
 
 | Field | Env var lake reads | Set by |
@@ -860,9 +850,8 @@ yet. One `LakeSet` manages them all, and the operator supplies everything lake's
 | `spec.regions` | `LAKE_REGIONS` (JSON `[{name, label, host, latitude, longitude}]`) | the LakeSet: one entry per member with a region label, written into each such member; stating it in a set is refused |
 | `spec.apexHost` | `LAKE_APEX_HOST` | stated on one member; a second is refused. Adds the Ingress rule and DNS record above |
 
-**One environment per picker** (Steve, 2026-10-17: *"pickers only work within a single
-environment, not across multiple environments"*). The regions a picker offers are the regions of
-one environment: production's `eu.lake.live` and `us.lake.live`. Nonprod is one region and has no
+**One environment per picker**. The regions a picker offers are the regions of
+one environment: production's `eu.lake.example.com` and `us.lake.example.com`. Nonprod is one region and has no
 picker. A set whose labelled members name the same cloud region twice is refused (#532), because
 two members in one region are two environments, not two regions.
 

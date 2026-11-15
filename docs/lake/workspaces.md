@@ -97,7 +97,7 @@ remain reconciled normally.
 
 Lake's `workspaces.storage_gi` (migration `0069`, default 5, never decreasing: lake's trigger
 refuses a smaller value, and `set_workspace_storage` advances the row's generation) is the desired
-size of each of the workspace Zetta's volumes. Decision 54 puts the workspace's liquid store,
+size of each of the workspace Zetta's volumes. Lake puts the workspace's liquid store,
 tenant images and search index on that volume, so it has to grow with the workspace.
 
 - **On create** the child `OramaZettaCluster` gets `storage.size` = `storage_gi` GiB.
@@ -278,12 +278,12 @@ on every reconcile, so a moved API server address follows within one poll. If th
 address, the policies are not written and the workspace retries: an egress rule with no destination
 would allow every destination.
 
-On the dev AKS cluster (`orama-production-cluster-01`, read 2026-10-03), the `kubernetes` Service is
-`10.0.0.1:443` and its Endpoints hold one address, `20.237.72.161:443`, the public address of the
+On the dev AKS cluster (`example-management`, read 2026-10-03), the `kubernetes` Service is
+`10.0.0.1:443` and its Endpoints hold one address, `203.0.113.10:443`, the public address of the
 AKS-managed control plane. There is no API Server VNet integration and the cluster is not private.
 `konnectivity-agent` in `kube-system` carries traffic from the control plane to nodes (logs, exec,
-webhooks), not from pods to the API, so pods reach the API directly at `20.237.72.161:443`. The
-rule is therefore `10.0.0.1/32` and `20.237.72.161/32` on TCP 443. The network data plane is Azure
+webhooks), not from pods to the API, so pods reach the API directly at `203.0.113.10:443`. The
+rule is therefore `10.0.0.1/32` and `203.0.113.10/32` on TCP 443. The network data plane is Azure
 CNI powered by Cilium 1.18 with kube-proxy replacement, which translates `10.0.0.1` to the endpoint
 at connect time. Cilium gives an API server outside the cluster an identity that keeps its CIDR
 labels (`resolveLabels` in `pkg/ipcache/metadata.go` drops them only for nodes and other in-cluster

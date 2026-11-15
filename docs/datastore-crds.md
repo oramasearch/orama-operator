@@ -146,7 +146,7 @@ both SQL and its latest migration guard
 refinement + principle #4) is also a separate slice. The first is in: the `migration` role of
 [#653](https://github.com/oramasearch/orama-operator/issues/653), which the Prod 1 migration tool
 signs in as, with row grants on `public` applied by the last control DB `PostgresSchema`
-([`cloud-v1-migration.md`](cloud-v1-migration.md#what-the-stack-provides)).
+(`cloud-v1-migration.md`).
 
 ## Deferred / tracked separately
 

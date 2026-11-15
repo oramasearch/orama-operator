@@ -7,7 +7,7 @@ is fatal, and the pod crash-loops with every other controller down with it.
 That is not a theoretical risk. On 2026-09-09 the operator was down for roughly twelve hours
 ([#166](https://github.com/oramasearch/orama-operator/issues/166)) because two CRDs had quietly
 accumulated un-applied: `lakee2etests`, then — after the first was fixed — `clerkapplications`.
-`Lake/prod` kept serving throughout, so nothing paged; the control plane simply stopped
+a development Lake kept serving throughout, so nothing paged; the control plane simply stopped
 reconciling, and the only symptom was a pod nobody was looking at.
 
 ## Why they were missing
@@ -47,8 +47,8 @@ The test also fails on the reverse — a chart CRD nothing reconciles — which 
 dropped without its CRD.
 
 ```sh
-make check-crds CONTEXT=orama-production-cluster-01     # report, exit 1 if any are missing
-./hack/check-cluster-crds.sh orama-production-cluster-01 --apply   # apply what is missing
+make check-crds CONTEXT=example-management     # report, exit 1 if any are missing
+./hack/check-cluster-crds.sh example-management --apply   # apply what is missing
 ```
 
 Run it **after** the upgrade as well as before. The chart can gain a CRD in the same change that
@@ -63,7 +63,7 @@ every removal visible to the old operator first.
 
 That happened on 2026-10-17 ([#543](https://github.com/oramasearch/orama-operator/issues/543)):
 rolling #542, which removed the Lake feature switches (`spec.apps.enabled`,
-`spec.services.enabled`, ...), the old operator (`dev-cb98230`) read `Lake/prod` with the switches
+`spec.services.enabled`, ...), the old operator (`dev-cb98230`) read a development Lake with the switches
 pruned, took that as "apps and services off", and for about 30 seconds rendered a Deployment
 without `LAKE_APPS_WILDCARD`, `LAKE_APPS_RUNTIME_IMAGE`, `LAKE_SERVICE_DIR` or the services
 volume. The pod restarted twice. Nothing was deleted only because the old controllers treated
@@ -85,7 +85,7 @@ The widening is [`internal/crdrollout`](../../internal/crdrollout/crdrollout.go)
 implementation for both paths:
 
 - **Managing cluster** (`build-operator.sh`, outside this repository in
-  `codex-work/build/scripts/`): `kubectl get crd -o json`, then
+  build scripts): `kubectl get crd -o json`, then
   [`go run ./hack/crdunion`](../../hack/crdunion/main.go) writes the widened CRDs, which are
   applied; then `helm upgrade` and `kubectl rollout status`; then `kubectl apply --server-side -f
   chart/crds/`. If the rollout fails the script stops with the widened CRDs in place, which is a
@@ -162,7 +162,7 @@ If this is ever revisited, revisit it here, with the reasoning — do not let it
 
 ## Every cluster gets every CRD
 
-Steve, 2026-10-12: *"install the same operator everywhere... all crds"*, *"no differences"*.
+
 
 There is one chart and one CRD directory, `chart/crds`, and every cluster gets all of it: the
 cluster-management kinds (`KubernetesCluster`, `KubernetesClusterProvider`, `AksCluster`,

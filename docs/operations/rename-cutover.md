@@ -23,7 +23,7 @@ Run from a clean checkout of the reviewed operator revision with `helm`, `kubect
 production values available. Replace `<immutable-tag>` with the published image for that revision.
 
 ```sh
-export CUTOVER_CONTEXT=orama-production-cluster-01
+export CUTOVER_CONTEXT=example-management
 export CUTOVER_NAMESPACE=orama-system
 export FORMER_RELEASE=orama-cloud-v1-operator
 export CURRENT_RELEASE=orama-operator
@@ -127,7 +127,7 @@ check in the production change record.
 ## Rollback
 
 Before the former release is retired, rollback is `helm uninstall orama-operator -n
-orama-system --kube-context orama-production-cluster-01`; the former manager remains leader.
+orama-system --kube-context example-management`; the former manager remains leader.
 
 After the handoff, read the former revision from `former-release.json`, restore it from Helm's kept
 history, move control-plane callers back to the former Service, and then retire the renamed release.

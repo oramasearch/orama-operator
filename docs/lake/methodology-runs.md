@@ -149,7 +149,7 @@ policies stay. Status is written only when it changes.
 
 A run's and a served model's pods count against the workspace's own `ResourceQuota` and
 `LimitRange`, the same as its apps and services
-([orama-operator#799](https://github.com/oramasearch/orama-operator/issues/799), LSR-137). They
+([orama-operator#799](https://github.com/oramasearch/orama-operator/issues/799)). They
 cannot run in the workspace's namespace: its policies allow every pod lake, DNS, the internet and
 the workspace's services, and NetworkPolicies only add what they allow, so the code that is not
 trusted could not be kept off the network there. Kubernetes counts a pod only in its own namespace,

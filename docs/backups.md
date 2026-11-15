@@ -2,13 +2,7 @@
 
 [operator#453](https://github.com/oramasearch/orama-operator/issues/453). Every datastore the
 operator runs is backed up through **one backup system in the operator**, with one shape for every
-datastore, to a bucket the operator provisions itself. Steve, 2026-10-13: *"build an in-operator,
-native backup system for each store"*, *"create a backup schedule crd and a backup crd"*, *"the
-operator can spin up its own job for each backup type (still use the operator image, but different
-invocation method)"* and *"we should be using the cloudflare s3 bucket cr too"*.
-
-What backs up today, per datastore, and the research behind each mechanism, are in
-[`research/backups/`](research/backups/README.md).
+datastore, to a bucket the operator provisions itself, through the `CloudflareR2Bucket` kind.
 
 ## What is built, and what is not
 
@@ -19,7 +13,7 @@ What backs up today, per datastore, and the research behind each mechanism, are 
 | `CloudflareR2Bucket.spec.deletionPolicy` (`Retain` keeps the bucket) | **Implemented.** Required, no default. |
 | `CloudflareR2Bucket.spec.credentials` (a token scoped to the bucket, its S3 keys in a Secret) | **Implemented.** Needs an account token that may create API tokens (below). |
 | **ClickHouse** mechanism (`BACKUP ... TO S3`) | **Implemented.** The first datastore with a mechanism. |
-| **Postgres** mechanism (Lake's control plane, Cloud v1's control DB, Lake `postgres` services) | **Not built: waiting on Steve's choice** of tool ([research](research/backups/README.md#postgres-the-decision-that-is-open)). A Postgres `BackupSchedule` reports `Ready=False`, `MechanismNotAvailable`. |
+| **Postgres** mechanism (Lake's control plane, Cloud v1's control DB, Lake `postgres` services) | **Not built: the tool is not chosen yet.** A Postgres `BackupSchedule` reports `Ready=False`, `MechanismNotAvailable`. |
 | Zetta, Kafka, Cassandra, TiDB, Valkey, SQLite, DuckDB, Polars | Not built; each is filed (see [Follow-ups](#follow-ups)). Refused the same way. |
 | Owners creating schedules (a Lake for its services, an `OramaCloudV1` for its datastores) and showing a late backup on themselves | Not built; filed. Today a schedule is a resource you write. |
 | Restore and the scheduled restore rehearsal | Not built; their kinds are settled after these two (issue body). |
@@ -113,7 +107,7 @@ backups:
 **What the account token needs.** Creating the bucket needs *Workers R2 Storage: Edit* (as before).
 `spec.credentials` also needs the token to be allowed to create account API tokens (*Account API
 Tokens: Edit*) and to grant the R2 bucket permission group. Without it the bucket reports
-`Ready=false` with Cloudflare's refusal. Issuing or widening that token is Steve's.
+`Ready=false` with Cloudflare's refusal. Issuing or widening that token is the account owner's.
 
 A second provider (Azure Blob through the cluster's identity, S3) would be another concrete bucket
 kind named by `spec.bucket.kind`; only `CloudflareR2Bucket` exists.
@@ -153,7 +147,7 @@ spec:
   keep: 7
 ```
 
-Nothing like this is applied to any cluster yet: applying a resource is Steve's consent.
+Nothing like this is applied to any cluster yet: applying a resource is the cluster owner's consent.
 
 ## Platform
 
@@ -167,14 +161,14 @@ Filed from [#453](https://github.com/oramasearch/orama-operator/issues/453), eac
 
 | Issue | What |
 |---|---|
-| [#731](https://github.com/oramasearch/orama-operator/issues/731) | **Postgres** through CNPG-I, and Lake and Cloud v1 off `barmanObjectStore` before CloudNativePG 1.31. Waits on Steve's tool choice. |
+| [#731](https://github.com/oramasearch/orama-operator/issues/731) | **Postgres** through CNPG-I, and Lake and Cloud v1 off `barmanObjectStore` before CloudNativePG 1.31. Waits on the maintainers' tool choice. |
 | [#732](https://github.com/oramasearch/orama-operator/issues/732) | Zetta, built into the engine. |
-| [#733](https://github.com/oramasearch/orama-operator/issues/733) | Kafka: mirroring or no backup, stated on the kind. Waits on Steve. |
+| [#733](https://github.com/oramasearch/orama-operator/issues/733) | Kafka: mirroring or no backup, stated on the kind. Waits on a decision. |
 | [#734](https://github.com/oramasearch/orama-operator/issues/734) | Cassandra through Medusa. |
 | [#735](https://github.com/oramasearch/orama-operator/issues/735) | TiDB through BR. |
 | [#736](https://github.com/oramasearch/orama-operator/issues/736) | Valkey RDB snapshots. |
 | [#737](https://github.com/oramasearch/orama-operator/issues/737) | SQLite, DuckDB and Polars. |
 | [#738](https://github.com/oramasearch/orama-operator/issues/738) | The Lake store volume to a bucket. |
-| [#739](https://github.com/oramasearch/orama-operator/issues/739) | Escrow of the Lake instance key. Waits on Steve. |
+| [#739](https://github.com/oramasearch/orama-operator/issues/739) | Escrow of the Lake instance key. Waits on a decision. |
 | [#740](https://github.com/oramasearch/orama-operator/issues/740) | Owners create schedules and show a late or failed backup on themselves; the datastore's egress to the bucket. |
 | [#741](https://github.com/oramasearch/orama-operator/issues/741) | Restore and the scheduled restore rehearsal. |

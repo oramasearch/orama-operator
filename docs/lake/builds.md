@@ -135,7 +135,7 @@ every port, ahead of any allowance. On AKS-managed Cilium the `ipBlock` exclusio
 stop a pod reaching the metadata service ([network-sandbox.md](../infrastructure/network-sandbox.md#mandatory-cloud-metadata-deny)).
 The policy is controlled by the Lake; one of that name controlled by anything else is refused and
 the build waits. The security review of this path, with the open findings, is
-[`../security/deep-search-712-tenant-builds.md`](../security/deep-search-712-tenant-builds.md).
+the security review of tenant builds.
 
 The builder uses size-limited `emptyDir` volumes for source/workspace, BuildKit state, temporary
 files, and Docker configuration. It has `backoffLimit: 0`, a one-hour

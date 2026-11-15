@@ -1,6 +1,6 @@
 # Applying node-pool sysctls to an existing AKS cluster (design, not implemented)
 
-Status: **design awaiting Steve's approval**. Nothing here is implemented. Tracked in
+Status: **design awaiting the maintainers' approval**. Nothing here is implemented. Tracked in
 [operator#579](https://github.com/oramasearch/orama-operator/issues/579), from
 [#454](https://github.com/oramasearch/orama-operator/issues/454). It changes the `AksCluster`
 controller's "create, observe and delete only" principle, which is why it needs approval first.
@@ -42,7 +42,7 @@ clusters the drain cannot finish without downtime:
   budget stands, by design.
 - Readers have no node placement (no `nodeSelector` or affinity on the reader Deployment (a StatefulSet once #550 lands)), so
   readers, the writer and the data stores share `agentpool` and `userpool` on
-  `orama-nonprod-cluster-01`, `orama-production-cluster-02` and `-03`. Every pool readers can
+  `example-nonprod`, `example-production-eu` and `-03`. Every pool readers can
   use also holds zero-budget pods.
 
 A drain that respects the budgets therefore stops on the writer and the data stores of every
@@ -82,7 +82,7 @@ Failure and recovery:
 
 What it changes: `AksCluster` would add, cordon, drain and delete pools on an existing cluster.
 Production clusters are `deletionPolicy: Retain`, and the replacement starts only from a
-committed edit to their `cluster.yaml`, applied with Steve's consent.
+committed edit to their `cluster.yaml`, applied with the cluster owner's consent.
 
 ## Option B: add a reader pool and place the readers on it (recommended)
 
@@ -110,7 +110,7 @@ can stay.
 
 Microsoft's guide points to a DaemonSet for settings outside the supported subset. A privileged
 DaemonSet could write `vm.max_map_count` on every node of an existing pool with no new pool. It
-was not chosen because Steve's review of #406 placed the setting on the node pool, and a
+was not chosen because the review of #406 placed the setting on the node pool, and a
 privileged host-writing container is what that review moved away from.
 
 ## Recommendation

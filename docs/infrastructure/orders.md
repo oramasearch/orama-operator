@@ -1,16 +1,13 @@
-# Paid lake.live orders: `LakeOrderSource`
+# Paid orders: `LakeOrderSource`
 
-> **Where the files this page names are.** Orama's own cluster resources, named on this page as
-> `config/clusters/...`, are in the private [`orama-infra`](https://github.com/oramasearch/orama-infra) repository, at the
-> same paths. This repository's [`config/clusters/`](../../config/clusters/README.md) is an example of the same shape, with
-> placeholder values.
+> **Where the files this page names are.** A deployment keeps its own cluster resources in its own
+> repository, at the paths this page names as `config/clusters/...`. This repository's
+> [`config/clusters/`](../../config/clusters/README.md) is an example of the same shape, with placeholder values.
 
-Steve, 2026-10-18: *"this should be hooked into stripe and will deploy with the mgmt server
-(operator) upon successful purchase"*
-([operator#634](https://github.com/oramasearch/orama-operator/issues/634), part of
-[lake#831](https://github.com/oramasearch/lake/issues/831), the lake.live order sheet).
+[operator#634](https://github.com/oramasearch/orama-operator/issues/634), part of
+[lake#831](https://github.com/oramasearch/lake/issues/831), lake's order sheet.
 
-When a customer pays for a **private warehouse** or a **dedicated cluster** on lake.live, the
+When a customer pays for a **private warehouse** or a **dedicated cluster** on a hosted Lake, the
 management cluster's operator provisions it, with no step done by hand. This page is the design:
 where the orders are read, how they reach the management cluster, what each offer becomes, how an
 order is provisioned exactly once, and what is still open.
@@ -24,8 +21,8 @@ a real leaf. The open questions are at the end.
 
 Lake records each order in its control-plane PostgreSQL, in `cloud_orders` (lake's migration,
 lake#831), and each change of state in `cloud_order_events`. Orders are multitenancy and billing, so
-they live in the control plane (bridge decision 56), and the operator talks only to the control
-plane, never to a workspace Zetta (decision 51): the same rule the managed-services poll follows
+they live in the control plane, and the operator talks only to the control
+plane, never to a workspace Zetta: the same rule the managed-services poll follows
 (`ServiceStores` in `lake_controller.go`).
 
 The contract, as the operator uses it:
@@ -46,10 +43,10 @@ and claims nothing.
 
 ## How the management cluster's operator reaches a leaf's orders
 
-lake.live runs as the `lake-prod` `LakeSet`: member `shared` on `orama-production-cluster-02`
-(`eu.lake.live`) and `shared-us` on `orama-production-cluster-03` (`us.lake.live`). **Each member is
+lake.example.com runs as the `lake-prod` `LakeSet`: member `shared` on `example-production-eu`
+(`eu.lake.example.com`) and `shared-us` on `example-production-us` (`us.lake.example.com`). **Each member is
 its own Lake with its own control Postgres**, so an order is in whichever region's Lake the customer
-used. The management cluster (`orama-production-cluster-01`) runs neither.
+used. The management cluster (`example-management`) runs neither.
 
 The management cluster's operator already holds each leaf's admin kubeconfig: the
 `KubernetesCluster` controller writes it to `orama-system/<cluster>-kubeconfig`, and the set and
@@ -81,7 +78,7 @@ The alternatives considered:
 | Each leaf's operator polls its own Lake (it can reach Postgres directly, like `ServiceStores`) | A leaf has no cloud identity, so it could never create a dedicated cluster, and an order placed in Europe for a private warehouse in the United States would need the other leaf. The management cluster must act; this would only move the hand-off. |
 | The leaf's operator mirrors orders into a resource on the leaf that the management operator reads | Two hops and a second copy of the order state; the atomic claim still has to be in Postgres. |
 | Expose each control Postgres to the management cluster (a private endpoint or a peering) | New network surface on a production database for one poll, and per-cluster network setup that a recreated cluster must repeat. |
-| Lake calls the management cluster when an order is paid | The operator learns desired state from the control plane, not from calls (decision 51), and a lost call would lose a paid order. |
+| Lake calls the management cluster when an order is paid | The operator learns desired state from the control plane, not from calls, and a lost call would lose a paid order. |
 
 The cost of the port-forward: a pass depends on the leaf's API server and the kubelet that serves
 the primary. When either is down, that member's orders wait (the source reports the member as not
@@ -100,7 +97,7 @@ metadata:
   name: lake-live
 spec:
   lakeSetRef: lake-prod            # read cloud_orders from every member; ordered Lakes copy its template and secrets
-  hostDomain: lake.live            # an ordered Lake is served at <lake name>.lake.live
+  hostDomain: lake.example.com            # an ordered Lake is served at <lake name>.lake.example.com
   member:                          # every ordered Lake's own settings, as a set member's spec
     clerk:
       secretKeySecretRef: {name: clerk-secret-key}
@@ -110,7 +107,7 @@ spec:
     - {name: clerk-lake-prod, namespace: lake, as: clerk-secret-key}
   dedicatedCluster:
     providerRef: azure-orama                         # the cloud identity
-    templateClusterRef: orama-production-cluster-03  # node pools, version, platform and operator to copy
+    templateClusterRef: example-production-us  # node pools, version, platform and operator to copy
   pollInterval: 30s
 ```
 
@@ -215,7 +212,7 @@ So `kubectl diff -R -f config/clusters/` stays empty with ordered resources pres
 those files, and they are found by their label:
 
 ```sh
-kubectl --context orama-production-cluster-01 get lset,kcluster,chr,ooperator -l orama.cloud/order-id
+kubectl --context example-management get lset,kcluster,chr,ooperator -l orama.cloud/order-id
 ```
 
 **Nothing is deleted.** The operator never deletes an ordered resource, and the `LakeSet` and
@@ -223,13 +220,13 @@ kubectl --context orama-production-cluster-01 get lset,kcluster,chr,ooperator -l
 and cluster running. Removal is only ever a change of the order's state, and the operator does not
 act on `cancelled` yet (below).
 
-## Open questions for Steve
+## Open questions
 
 1. **Cancellation.** What a `cancelled` order (or a lapsed Stripe subscription) does to a running
    private warehouse or dedicated cluster: delete it at once, after a grace period, after a final
    backup, or only on a person's approval. Today nothing is removed; the resources stay, labelled.
-2. **The host.** Ordered Lakes are served at `order-<id prefix>.lake.live`. Should the customer
-   choose a name (`acme.lake.live`), and does a dedicated cluster in a region get a regional name?
+2. **The host.** Ordered Lakes are served at `order-<id prefix>.lake.example.com`. Should the customer
+   choose a name (`acme.lake.example.com`), and does a dedicated cluster in a region get a regional name?
 3. **Stuck orders.** An order waiting on our side (a cluster that never becomes `Ready`) stays
    `provisioning` indefinitely, with the reason in the source's status. Should it be failed after a
    bound, and should support be told while it waits (lake#831 says a failure goes to support)?
@@ -239,11 +236,11 @@ act on `cancelled` yet (below).
 5. **Regions for dedicated clusters.** The operator creates them only in regions it has a location
    for (`cloudRegionLocations`: North America and Europe today). Asia, named on the order sheet,
    needs entries there, and a quota check in each region first.
-6. **Clerk and billing for ordered Lakes.** `spec.member` gives every ordered Lake lake.live's own
+6. **Clerk and billing for ordered Lakes.** `spec.member` gives every ordered Lake lake.example.com's own
    Clerk instance and the set's Stripe and model-provider keys. Whether a customer's private
-   warehouse should share lake.live's sign-in and Orama's Stripe account, or get its own, is open.
+   warehouse should share lake.example.com's sign-in and Orama's Stripe account, or get its own, is open.
 7. **Upgrades.** An ordered Lake follows the source set's template on every pass, so a lake release
-   reaches it when it reaches lake.live. A dedicated cluster's operator, Kubernetes version, node
+   reaches it when it reaches lake.example.com. A dedicated cluster's operator, Kubernetes version, node
    pools and platform do not follow the template after it is made, so nothing upgrades them yet.
    Should customers' instances and clusters follow the dev, testing, staging, prod pipeline as a
    stage of their own, or be pinned per customer?

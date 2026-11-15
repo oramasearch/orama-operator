@@ -7,12 +7,12 @@ keys. No key is copied by hand.
 
 ## Two Clerk applications, four environments
 
-Steve, 2026-10-17: *"two clerk apps, four environments"*.
+
 
 | Clerk application | Development instance | Production instance |
 |---|---|---|
-| **`lake`** (`app_3JpNNpVUwgRgnkItIPbzzRWa2BP`, the existing one) | **dev** (`ins_3JpNNvZd4jnehvW6XsKWcMq6MKx`, `above-seahorse-7535`) | **testing** (domain `lake-testing.oramadev.net`) |
-| **`lake-live`** | **staging** | **prod** (domain `lake.live`, serving `eu.lake.live` and `us.lake.live`) |
+| **`lake`** (`app_3JpNNpVUwgRgnkItIPbzzRWa2BP`, the existing one) | **dev** (`ins_3JpNNvZd4jnehvW6XsKWcMq6MKx`, `above-seahorse-7535`) | **testing** (domain `lake-testing.nonprod.example.com`) |
+| **`lake-live`** | **staging** | **prod** (domain `lake.example.com`, serving `eu.lake.example.com` and `us.lake.example.com`) |
 
 **One secret key belongs to one instance.** A Lake names the Secret holding its instance's key.
 Both production Lakes (`shared` and `shared-us`) hold the same key, so they share the instance:
@@ -90,8 +90,8 @@ Each target in the domain's `dns_targets` becomes a CloudflareDNSRecord owned by
 - **CNAME or TXT**: `clerk.`, `accounts.`, and the email records.
 - **Not proxied.** Clerk has to see its own targets.
 - **Written with `spec.dnsSecretRef`.** That Secret's zone must be the domain's zone:
-  - the `lake.live` zone for prod;
-  - the `oramadev.net` zone for testing.
+  - the `lake.example.com` zone for prod;
+  - the `nonprod.example.com` zone for testing.
 - **Set to `deletionPolicy: Retain`.** Every Lake sharing the instance writes the same records, so
   deleting one Lake must not take them from the others.
 - **Owned by the instance, with `sharedOwner: clerk/<instance ID>`.** The first Lake's resource
@@ -108,7 +108,7 @@ A target Clerk marks `manual_resolution_required` is not written. The pass repor
 
 | Status | Reason | Message |
 |---|---|---|
-| `True` | `Configured` | For example *"production instance on lake.live, webhook ep_…, 3 DNS record(s)"* |
+| `True` | `Configured` | For example *"production instance on lake.example.com, webhook ep_…, 3 DNS record(s)"* |
 | `False` | `SecretKeyMissing` | |
 | `False` | `ClerkAPIError` | Clerk's error |
 
@@ -139,8 +139,8 @@ person, in the [Clerk dashboard](https://dashboard.clerk.com). The operator does
 1. **Create the application `lake-live`** with a development instance (staging). Application
    `lake` already exists.
 2. **Create the production instances**:
-   - `lake` on `lake-testing.oramadev.net`;
-   - `lake-live` on `lake.live`.
+   - `lake` on `lake-testing.nonprod.example.com`;
+   - `lake-live` on `lake.example.com`.
 
    Clone the settings from the development instance. The operator writes the DNS records Clerk asks
    for once the Lake has the instance's key.
@@ -153,9 +153,9 @@ person, in the [Clerk dashboard](https://dashboard.clerk.com). The operator does
 4. **Copy each instance's secret key** (*API keys*, `sk_test_…` or `sk_live_…`) into the Secrets
    below.
 
-## The Secrets Steve creates
+## The Secrets the cluster owner creates
 
-These go on the managing cluster (`orama-production-cluster-01`), in namespace **`lake`**. There is
+These go on the managing cluster (`example-management`), in namespace **`lake`**. There is
 one per environment, each with key **`secretKey`**:
 
 | Secret (namespace `lake`) | Key | Value |
@@ -166,7 +166,7 @@ one per environment, each with key **`secretKey`**:
 | `clerk-lake-prod` | `secretKey` | the `lake-live` app's production instance key (`sk_live_…`) |
 
 ```sh
-kubectl --context orama-production-cluster-01 -n lake create secret generic clerk-lake-dev \
+kubectl --context example-management -n lake create secret generic clerk-lake-dev \
   --from-literal=secretKey='sk_test_…'
 ```
 
@@ -187,17 +187,17 @@ spec:
     clerk:
       secretKeySecretRef: {name: clerk-secret-key}
   clusters:
-  - clusterRef: orama-nonprod-cluster-01
+  - clusterRef: example-nonprod
     name: dev
     secrets:
     - {name: clerk-lake-dev, namespace: lake, as: clerk-secret-key}
-  - clusterRef: orama-nonprod-cluster-01
+  - clusterRef: example-nonprod
     name: testing
     secrets:
     - {name: clerk-lake-testing, namespace: lake, as: clerk-secret-key}
     spec:
-      dnsSecretRef: {name: <the oramadev.net zone Secret testing already uses>}
-  - clusterRef: orama-nonprod-cluster-01
+      dnsSecretRef: {name: <the nonprod.example.com zone Secret testing already uses>}
+  - clusterRef: example-nonprod
     name: staging
     secrets:
     - {name: clerk-lake-staging, namespace: lake, as: clerk-secret-key}
@@ -211,18 +211,17 @@ spec:
   template:
     clerk:
       secretKeySecretRef: {name: clerk-secret-key}
-    dnsSecretRef: {name: <the lake.live zone Secret>}
+    dnsSecretRef: {name: <the lake.example.com zone Secret>}
 ```
 
 The `clerk` block is the same in a template and in a member's `spec`. A member's `dnsSecretRef`
-must be the zone of its instance's domain: testing's is `oramadev.net`, prod's is `lake.live`.
+must be the zone of its instance's domain: testing's is `nonprod.example.com`, prod's is `lake.example.com`.
 The set files are changed and applied separately from this operator change.
 
 ## Rolling it out
 
-Steve, 2026-10-17. The pipeline runs **dev, then testing, then staging, then prod.**
+The pipeline runs **dev, then testing, then staging, then prod.**
 
 On `dev`, the gate is: an invited user signs in through Clerk and lands on `/`.
 
-`Lake/prod` (`lake.oramadev.net`) keeps the hand-set `LAKE_CLERK_PUBLISHABLE_KEY` in `spec.env`
-until it is given `spec.clerk`.
+A Lake without `spec.clerk` keeps a hand-set `LAKE_CLERK_PUBLISHABLE_KEY` in `spec.env`.

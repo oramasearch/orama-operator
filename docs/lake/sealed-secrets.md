@@ -185,8 +185,8 @@ live in the shared Lake namespace, so it does not bind the workspace, and lake's
 `mint_sealed_secret` does not check that the mount belongs to the workspace the projection is for:
 the only workspace check is when the reference is written (`check_secret_references`,
 `create_store`). Binding it at delivery is
-[lake#950](https://github.com/oramasearch/lake/issues/950). The security review is
-[`docs/security/deep-search-714-workspace-services.md`](../security/deep-search-714-workspace-services.md).
+[lake#950](https://github.com/oramasearch/lake/issues/950). It was found in the
+security review of workspace services.
 
 #### The operator's Kubernetes token never reaches Lake (orama-operator#791)
 
@@ -194,7 +194,7 @@ The mint request carries no `attestation`. Until 2026-10-21 it carried the opera
 service-account token, read from `/var/run/secrets/kubernetes.io/serviceaccount/token`, which Lake
 never verified. That token is the operator's own Kubernetes credential, with cluster-wide Secret and
 workload rights, so anyone who could read a mint request inside Lake could act as the operator
-against the cluster (finding LSR-042 of the Lake pre-launch security review). The reconciler no
+against the cluster (finding of the Lake pre-launch security review). The reconciler no
 longer reads any service-account token, and the admin bearer is the only credential in the request.
 
 If Lake ever needs to know which cluster identity is calling, beyond the admin bearer, the

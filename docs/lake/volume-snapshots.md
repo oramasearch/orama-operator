@@ -1,8 +1,7 @@
 # Lake volume snapshots
 
 Scheduled CSI snapshots of lake's store volume and of every workspace Zetta's volumes
-([operator#260](https://github.com/oramasearch/orama-operator/issues/260), decision 54 S13 in
-liquid-bridge `docs/decisions.md`). After lake#380 a workspace Zetta's volume holds that
+([operator#260](https://github.com/oramasearch/orama-operator/issues/260)). After lake#380 a workspace Zetta's volume holds that
 workspace's repositories, Drive, models, datasets and tenant images, and on a one-node workspace it
 is the only copy. Lake's store volume holds the transparency log, TUF metadata and the instance
 registry, and nothing else backs it up. This is separate from
@@ -12,7 +11,7 @@ object storage, and from the control-plane Postgres backups ([backups.md](backup
 ## Desired state
 
 Lake owns it, in its control Postgres (lake migration `0069_workspace_volumes`). The operator reads
-it there and never talks to a workspace Zetta (decision 51).
+it there and never talks to a workspace Zetta.
 
 | Table | Written by | Columns |
 |---|---|---|
@@ -220,7 +219,7 @@ The envtests (`TestVolumeSnapshots*` in `internal/controller/lake_volume_snapsho
 run against the upstream snapshot CRDs (external-snapshotter v8.2.0, the version on the dev
 cluster). They cover class creation, scheduled creation, pruning to `keep`, one-off requests, status
 reporting, a refused `Delete` class and snapshots outliving their workspace. On dev, after the
-operator and lake `0069` are deployed on `Lake/prod`:
+operator and lake `0069` are deployed on a development Lake:
 
 1. `request_volume_snapshot` for `store` and for one workspace; `volume_snapshots` until both are
    `ready_to_use` (`kubectl get volumesnapshot -A -l app.kubernetes.io/managed-by=orama-operator`).

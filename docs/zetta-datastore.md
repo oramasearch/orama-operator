@@ -4,8 +4,8 @@ The operator uses an **Orama Zetta** node as its own datastore. Once an `OramaZe
 operator provisions its **control-plane** and **data-plane** databases + tables on that node and can
 read/write them over Zetta's SQL surface.
 
-This is **stage 2** of [One Orama](https://github.com/oramasearch/orama-bridge/tree/main/docs/projects/one-orama)
-(epic [orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)) — the *symbiotic*
+This is **stage 2** of One Orama
+(epic) — the *symbiotic*
 half of "operator ↔ Zetta": the operator provisions Zetta ([`OramaZettaCluster`](crd-reference.md)),
 and Zetta becomes the operator's store. The endgame is to retire v1's Postgres / ClickHouse / Typesense
 and keep everything in Zetta.
@@ -74,7 +74,7 @@ operator). Retrieve it with `kubectl get secret <name>-zetta-admin -o jsonpath='
 
 ```sh
 # Browser / HTTP (GET; auth is mandatory — send the admin bearer):
-curl -sG -H "Authorization: Bearer $TOKEN" https://zetta.oramadev.net/v1/sql \
+curl -sG -H "Authorization: Bearer $TOKEN" https://zetta.nonprod.example.com/v1/sql \
   --data-urlencode "statement=select * from orama_control.components"
 
 # In-cluster (from any pod):
@@ -98,7 +98,7 @@ Two different kinds of state, two homes — this is the key design point:
 
 - **Reconciled desired state = the CRs** (`OramaCloudV1`, `OramaZettaCluster`, `LakeEnvironment`, …).
   Kubernetes remains the reconcile API and source of truth after materialization. Deployment intake is
-  the explicit exception from liquid-bridge decision 22: liquid's deployment request becomes a desired row
+  the explicit exception from : liquid's deployment request becomes a desired row
   in `orama_control.deployments` (lake's environment values and domains are rows of `environment_env` and
   `domains`), and the operator deterministically creates or updates the corresponding `LakeEnvironment` CR. All subsequent workload reconciliation derives from that CR.
 - **Observed / derived state** — what is actually running, per-component status, reconcile history,
