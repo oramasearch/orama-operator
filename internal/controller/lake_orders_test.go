@@ -701,7 +701,7 @@ func scenarioWarehouseStaysPlaced(h *orderHarness) {
 	}
 
 	count := int32(1)
-	if err := h.c.Create(ctx, &oramav1alpha1.KubernetesCluster{ObjectMeta: metav1.ObjectMeta{Name: "orama-production-cluster-04"},
+	if err := h.c.Create(ctx, &oramav1alpha1.KubernetesCluster{ObjectMeta: metav1.ObjectMeta{Name: "example-production-asia"},
 		Spec: oramav1alpha1.KubernetesClusterSpec{ProviderRef: "azure-orama", Region: "swedencentral", KubernetesVersion: "1.35",
 			NodePools:      []oramav1alpha1.ClusterNodePool{{Name: "agentpool", Role: oramav1alpha1.ClusterNodePoolSystem, MachineSize: "Standard_D8as_v7", Count: &count}},
 			DeletionPolicy: oramav1alpha1.ClusterDeletionRetain}}); err != nil {
@@ -709,7 +709,7 @@ func scenarioWarehouseStaysPlaced(h *orderHarness) {
 	}
 	var prod oramav1alpha1.LakeSet
 	h.get("lake-prod", &prod)
-	prod.Spec.Clusters = append([]oramav1alpha1.SetMember{{ClusterRef: "orama-production-cluster-04", Name: "shared-2", Spec: rawJSON(`{"host":"eu2.lakelive.example"}`)}}, prod.Spec.Clusters...)
+	prod.Spec.Clusters = append([]oramav1alpha1.SetMember{{ClusterRef: "example-production-asia", Name: "shared-2", Spec: rawJSON(`{"host":"eu2.lakelive.example"}`)}}, prod.Spec.Clusters...)
 	if err := h.c.Update(ctx, &prod); err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +728,7 @@ func scenarioWarehouseStaysPlaced(h *orderHarness) {
 	eu.mu.Unlock()
 	h.reconcile()
 	var placed oramav1alpha1.LakeSet
-	if !h.get(orderResourceName(second), &placed) || placed.Spec.Clusters[0].ClusterRef != "orama-production-cluster-04" {
+	if !h.get(orderResourceName(second), &placed) || placed.Spec.Clusters[0].ClusterRef != "example-production-asia" {
 		t.Fatalf("a new order is placed on the region's first cluster: %+v", placed.Spec.Clusters)
 	}
 }

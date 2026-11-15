@@ -318,7 +318,7 @@ func TestLakeIssuerChoosesTheSolverPerHost(t *testing.T) {
 			t.Errorf("%s is not solved by DNS-01", host)
 		}
 	}
-	if dnsZoneCovers("lakelive.example", "shop.example.com") || dnsZoneCovers("lakelive.example", "notlake.live") {
+	if dnsZoneCovers("lakelive.example", "shop.example.com") || dnsZoneCovers("lakelive.example", "notlakelive.example") {
 		t.Error("a name outside the zone is solved by DNS-01")
 	}
 }
