@@ -436,6 +436,15 @@ type LakeBuildsSpec struct {
 	// +optional
 	Concurrency LakeBuildConcurrencySpec `json:"concurrency,omitempty"`
 
+	// BaseImagePullSecretName names a dockerconfigjson Secret in the Lake namespace that the
+	// builder may use to pull the base images a build starts FROM (the app and methodology
+	// runtimes). It must be a read-only credential scoped to exactly those repositories, and never
+	// the Lake's pullSecretName: tenant code runs in the builder and can read it (orama-operator#758).
+	// Empty: builds pull base images without a credential. The pullSecretName copy pulls only the
+	// builder image itself, through the kubelet, and is never mounted.
+	// +optional
+	BaseImagePullSecretName string `json:"baseImagePullSecretName,omitempty"`
+
 	// CacheEnabled exports and imports a per-space registry cache. The default is true.
 	// +kubebuilder:default=true
 	// +optional

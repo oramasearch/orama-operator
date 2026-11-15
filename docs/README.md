@@ -68,6 +68,7 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`operations/memory.md`](operations/memory.md) — **the operator's memory** (operator#677): the
   chart's limit, the Go soft limit taken from it, the cache that leaves out Helm release Secrets and
   `managedFields`, and the start-up OOM those fixed, measured.
+- [`operations/build-base-image-credential.md`](operations/build-base-image-credential.md) — **human action (Steve, open)**: a read-only Docker Hub token scoped to the build base images, and rotating the platform pull token builders could read before #758.
 - [`operations/rename-cutover.md`](operations/rename-cutover.md) — **one-time AKS rename cutover**: install the `orama-operator` Helm release, preserve CRDs and the production leader-election Lease, move control-plane callers, and retire the former release.
 - [`karpenter-cloud-iam-prerequisite.md`](karpenter-cloud-iam-prerequisite.md) — **operator-owned Karpenter install** ([#75](https://github.com/oramasearch/orama-operator/issues/75)): the cloud IAM identity the operator can't mint (controller IRSA role / node instance profile / Azure role assignment), how it's cloud-gated (EKS self-install, no-op on AKS-NAP / bare-metal), the input validation that keeps the cluster name and role ARN from injecting manifests ([#79](https://github.com/oramasearch/orama-operator/issues/79)), and the `.status` conditions.
 
