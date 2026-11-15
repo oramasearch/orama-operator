@@ -36,8 +36,8 @@ func rowTrustServices(row *LakeAppRow) []LakeService {
 
 func TestLakeAppRowRefusesPlatformHosts(t *testing.T) {
 	for _, tc := range []struct{ wildcard, host string }{
-		// The managing cluster's Lake/prod: apps one label beneath oramadev.net, next to
-		// app.oramadev.net (Cloud v1's dashboard) and lake.oramadev.net (the Lake itself).
+		// The managing cluster's Lake/prod: apps one label beneath nonprod.example, next to
+		// app.nonprod.example (Cloud v1's dashboard) and lake.nonprod.example (the Lake itself).
 		{"example.test", "lake.example.test"},
 		{"example.test", "app.example.test"},
 		{"example.test", "preview.example.test"},

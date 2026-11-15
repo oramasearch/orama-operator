@@ -27,7 +27,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-const leafName = "orama-nonprod-cluster-01"
+const leafName = "example-nonprod"
 
 // fakeLeaf stands in for a managed cluster. It records what it was asked to do.
 type fakeLeaf struct {
@@ -547,7 +547,7 @@ func TestCRDManifestsHoldOnlyCRDs(t *testing.T) {
 
 // A chart's hooks get minutes, not the API timeout: a hook Job on a new cluster pulls its image
 // alongside everything else. With 30 seconds, the ClickHouse operator's release failed 26 times
-// in a row on orama-production-cluster-03.
+// in a row on example-production-us.
 func TestHelmWaitsLongEnoughForAChartsHooks(t *testing.T) {
 	if leafHookTimeout < 5*time.Minute {
 		t.Fatalf("hooks get %s; a hook's image pull on a new cluster needs minutes", leafHookTimeout)

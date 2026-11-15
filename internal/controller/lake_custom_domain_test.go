@@ -83,7 +83,7 @@ func customDomainTestLake(name string) *oramav1alpha1.Lake {
 			Image:          "oramasearch/lake:test",
 			Namespace:      "lake-" + name,
 			IngressEnabled: true,
-			Host:           name + ".lake.live",
+			Host:           name + ".lakelive.example",
 			DNSSecretRef:   &corev1.LocalObjectReference{Name: "cloudflare-lake-live"},
 			CustomDomain:   &oramav1alpha1.LakeCustomDomainSpec{Host: "data.example.com"},
 		},
@@ -93,16 +93,16 @@ func customDomainTestLake(name string) *oramav1alpha1.Lake {
 func TestCustomDomainRecordsAreDerivedFromTheLake(t *testing.T) {
 	lake := customDomainTestLake("acme")
 	lake.UID = "uid-1"
-	if got := lakeCustomDomainOriginName(lake); got != "acme.origin.lake.live" {
+	if got := lakeCustomDomainOriginName(lake); got != "acme.origin.lakelive.example" {
 		t.Errorf("origin name = %q", got)
 	}
 	nested := customDomainTestLake("x")
-	nested.Spec.Host = "dev.lake.oramadev.net"
-	if got := lakeCustomDomainOriginName(nested); got != "dev-lake.origin.oramadev.net" {
+	nested.Spec.Host = "dev.lake.nonprod.example"
+	if got := lakeCustomDomainOriginName(nested); got != "dev-lake.origin.nonprod.example" {
 		t.Errorf("origin name for a nested host = %q", got)
 	}
 	routing, ok := lakeCustomDomainRoutingRecord(lake, "data.example.com", "203.0.113.10")
-	if !ok || routing.Type != "CNAME" || routing.Value != "acme.origin.lake.live" || routing.Name != "data.example.com" {
+	if !ok || routing.Type != "CNAME" || routing.Value != "acme.origin.lakelive.example" || routing.Name != "data.example.com" {
 		t.Errorf("routing record with a DNS credential = %+v", routing)
 	}
 	if _, ok := lakeCustomDomainRoutingRecord(lake, "data.example.com", ""); ok {
@@ -131,13 +131,13 @@ func TestCustomDomainRecordsAreDerivedFromTheLake(t *testing.T) {
 // origin's address.
 func TestCustomDomainRoutingAcceptsAFlattenedCNAME(t *testing.T) {
 	dns := newFakeDNS()
-	record := oramav1alpha1.LakeCustomerDNSRecord{Type: "CNAME", Name: "example.com", Value: "acme.origin.lake.live"}
+	record := oramav1alpha1.LakeCustomerDNSRecord{Type: "CNAME", Name: "example.com", Value: "acme.origin.lakelive.example"}
 	ctx := context.Background()
 	if lakeCustomDomainCheckRouting(ctx, dns, "example.com", record) {
 		t.Fatal("an absent record passed")
 	}
 	dns.set(func(f *fakeDNS) {
-		f.hosts["acme.origin.lake.live"] = []string{"203.0.113.10"}
+		f.hosts["acme.origin.lakelive.example"] = []string{"203.0.113.10"}
 		f.hosts["example.com"] = []string{"203.0.113.10"}
 	})
 	if !lakeCustomDomainCheckRouting(ctx, dns, "example.com", record) {
@@ -153,7 +153,7 @@ func TestCustomDomainRoutingAcceptsAFlattenedCNAME(t *testing.T) {
 // read (DNS-01 alone otherwise) and after.
 func TestTheIssuerSolvesTheCustomerHostWithHTTP01(t *testing.T) {
 	lake := customDomainTestLake("acme")
-	for _, zone := range []string{"", "lake.live"} {
+	for _, zone := range []string{"", "lakelive.example"} {
 		solvers := lakeOriginSolvers(lake, zone)
 		first, _ := solvers[0].(map[string]any)
 		selector, _ := first["selector"].(map[string]any)
@@ -174,9 +174,9 @@ func TestClerkRecordsInTheCustomerZoneAreLeftToTheCustomer(t *testing.T) {
 	ours, customer := splitClerkDNSTargets(lake, []clerkDNSTarget{
 		{Host: "clerk.example.com", Value: "frontend-api.clerk.services", RecordType: "CNAME"},
 		{Host: "clk._domainkey.example.com.", Value: "dkim1.x.clerk.services", RecordType: "CNAME"},
-		{Host: "clerk.acme.lake.live", Value: "frontend-api.clerk.services", RecordType: "CNAME"},
+		{Host: "clerk.acme.lakelive.example", Value: "frontend-api.clerk.services", RecordType: "CNAME"},
 	})
-	if len(ours) != 1 || ours[0].Host != "clerk.acme.lake.live" {
+	if len(ours) != 1 || ours[0].Host != "clerk.acme.lakelive.example" {
 		t.Errorf("records the operator writes = %+v", ours)
 	}
 	if len(customer) != 2 || customer[0].Purpose != "clerk" || customer[1].Name != "clk._domainkey.example.com" {
@@ -190,12 +190,12 @@ func TestClerkRecordsInTheCustomerZoneAreLeftToTheCustomer(t *testing.T) {
 
 func TestClerkAllowsTheCustomerHostOnceVerified(t *testing.T) {
 	lake := customDomainTestLake("acme")
-	if got := lakeClerkOrigins(lake); !reflect.DeepEqual(got, []string{"https://acme.lake.live"}) {
+	if got := lakeClerkOrigins(lake); !reflect.DeepEqual(got, []string{"https://acme.lakelive.example"}) {
 		t.Errorf("origins before verification = %v", got)
 	}
 	verified := metav1.Now()
 	lake.Status.CustomDomain = &oramav1alpha1.LakeCustomDomainStatus{Host: "data.example.com", Phase: lakeCustomDomainVerified, VerifiedTime: &verified}
-	if got := lakeClerkOrigins(lake); !reflect.DeepEqual(got, []string{"https://acme.lake.live", "https://data.example.com"}) {
+	if got := lakeClerkOrigins(lake); !reflect.DeepEqual(got, []string{"https://acme.lakelive.example", "https://data.example.com"}) {
 		t.Errorf("origins once verified = %v", got)
 	}
 }
@@ -335,7 +335,7 @@ func TestCustomDomainLifecycleEnvtest(t *testing.T) {
 	if state.Phase != lakeCustomDomainPending || condition.Status != metav1.ConditionFalse || condition.Reason != "RecordsNotFound" {
 		t.Fatalf("pending: %+v %+v", state, condition)
 	}
-	if len(state.Records) != 2 || state.Records[0].Type != "CNAME" || state.Records[0].Value != "acme.origin.lake.live" ||
+	if len(state.Records) != 2 || state.Records[0].Type != "CNAME" || state.Records[0].Value != "acme.origin.lakelive.example" ||
 		state.Records[1].Type != "TXT" || state.Records[0].Found || state.Records[1].Found {
 		t.Fatalf("pending records = %+v", state.Records)
 	}
@@ -343,7 +343,7 @@ func TestCustomDomainLifecycleEnvtest(t *testing.T) {
 	if err := kube.Get(ctx, client.ObjectKeyFromObject(lakeCustomDomainOriginRecord(lake)), &origin); err != nil {
 		t.Fatalf("origin record: %v", err)
 	}
-	if origin.Spec.Name != "acme.origin.lake.live" || origin.Spec.Content != "203.0.113.10" || origin.Spec.Proxied {
+	if origin.Spec.Name != "acme.origin.lakelive.example" || origin.Spec.Content != "203.0.113.10" || origin.Spec.Proxied {
 		t.Errorf("origin record = %+v, want DNS only to the load balancer", origin.Spec)
 	}
 	if err := kube.Get(ctx, customIngress, &networkingv1.Ingress{}); !apierrors.IsNotFound(err) {
@@ -352,11 +352,11 @@ func TestCustomDomainLifecycleEnvtest(t *testing.T) {
 	if _, err := getCertificate(); !apierrors.IsNotFound(err) {
 		t.Errorf("an unverified host was given a certificate: %v", err)
 	}
-	assertEnvValueOnce(t, deployment, "LAKE_PUBLIC_HOST", "acme.lake.live")
+	assertEnvValueOnce(t, deployment, "LAKE_PUBLIC_HOST", "acme.lakelive.example")
 	assertNoEnv(t, deployment, "LAKE_HOST_ALIASES")
 
 	// Only the CNAME: still pending; ownership is required too.
-	dns.set(func(f *fakeDNS) { f.cnames["data.example.com"] = "acme.origin.lake.live" })
+	dns.set(func(f *fakeDNS) { f.cnames["data.example.com"] = "acme.origin.lakelive.example" })
 	if state, _, _ = reconcile(); state.Phase != lakeCustomDomainPending || !state.Records[0].Found || state.Records[1].Found {
 		t.Fatalf("CNAME alone: %+v", state)
 	}
@@ -390,7 +390,7 @@ func TestCustomDomainLifecycleEnvtest(t *testing.T) {
 	if names, _, _ := unstructured.NestedStringSlice(certificate.Object, "spec", "dnsNames"); !reflect.DeepEqual(names, []string{"data.example.com"}) {
 		t.Errorf("certificate names = %v", names)
 	}
-	assertEnvValueOnce(t, deployment, "LAKE_PUBLIC_HOST", "acme.lake.live")
+	assertEnvValueOnce(t, deployment, "LAKE_PUBLIC_HOST", "acme.lakelive.example")
 
 	// A later failed lookup does not unverify the host.
 	dns.set(func(f *fakeDNS) { delete(f.txts, "_orama-verification.data.example.com") })
@@ -414,9 +414,9 @@ func TestCustomDomainLifecycleEnvtest(t *testing.T) {
 		t.Fatalf("routed: %+v %+v", state, condition)
 	}
 	assertEnvValueOnce(t, deployment, "LAKE_PUBLIC_HOST", "data.example.com")
-	assertEnvValueOnce(t, deployment, "LAKE_HOST_ALIASES", "acme.lake.live")
-	assertEnvValueOnce(t, deployment, "LAKE_CONTROL_HOST", "acme.lake.live")
-	if lakeRowHost(lake) != "acme.lake.live" {
+	assertEnvValueOnce(t, deployment, "LAKE_HOST_ALIASES", "acme.lakelive.example")
+	assertEnvValueOnce(t, deployment, "LAKE_CONTROL_HOST", "acme.lakelive.example")
+	if lakeRowHost(lake) != "acme.lakelive.example" {
 		t.Errorf("the operator's control-row key moved to %q", lakeRowHost(lake))
 	}
 	var stored oramav1alpha1.Lake
@@ -462,7 +462,7 @@ func TestCustomDomainLifecycleEnvtest(t *testing.T) {
 	if err := kube.Get(ctx, client.ObjectKeyFromObject(lakeCustomDomainOriginRecord(lake)), &oramav1alpha1.CloudflareDNSRecord{}); !apierrors.IsNotFound(err) {
 		t.Errorf("origin record after removal: %v", err)
 	}
-	assertEnvValueOnce(t, deployment, "LAKE_PUBLIC_HOST", "acme.lake.live")
+	assertEnvValueOnce(t, deployment, "LAKE_PUBLIC_HOST", "acme.lakelive.example")
 	assertNoEnv(t, deployment, "LAKE_HOST_ALIASES")
 	assertNoEnv(t, deployment, "LAKE_CONTROL_HOST")
 	if err := kube.Get(ctx, client.ObjectKeyFromObject(lake), &stored); err != nil {

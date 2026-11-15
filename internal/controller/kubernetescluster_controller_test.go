@@ -243,10 +243,10 @@ func azureCredentialsSecret(withSecret bool) *corev1.Secret {
 func testAksCluster(policy oramav1alpha1.ClusterDeletionPolicy) *oramav1alpha1.AksCluster {
 	one, five := int32(1), int32(5)
 	return &oramav1alpha1.AksCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "orama-nonprod-cluster-01"},
+		ObjectMeta: metav1.ObjectMeta{Name: "example-nonprod"},
 		Spec: oramav1alpha1.AksClusterSpec{
 			SubscriptionID:       testSubscription,
-			ResourceGroup:        "orama-nonprod-cluster-01_group",
+			ResourceGroup:        "example-nonprod_group",
 			Location:             "westus2",
 			CredentialsSecretRef: oramav1alpha1.ClusterSecretReference{Name: "azure", Namespace: "orama-system"},
 			KubernetesVersion:    "1.35",
@@ -258,7 +258,7 @@ func testAksCluster(policy oramav1alpha1.ClusterDeletionPolicy) *oramav1alpha1.A
 				EnableAutoScaling: true, MinCount: &one, MaxCount: &five, OSDiskSizeGB: 256,
 			}},
 			DeletionPolicy:      policy,
-			KubeconfigSecretRef: oramav1alpha1.ClusterSecretReference{Name: "orama-nonprod-cluster-01-kubeconfig", Namespace: "orama-system"},
+			KubeconfigSecretRef: oramav1alpha1.ClusterSecretReference{Name: "example-nonprod-kubeconfig", Namespace: "orama-system"},
 		},
 	}
 }
@@ -285,7 +285,7 @@ func TestAksClusterIsCreatedObservedAndItsKubeconfigDelivered(t *testing.T) {
 	azure := newFakeAzure(t)
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
 	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 
 	// First pass: the finalizer, the resource group and the create request.
 	if result := reconcileAks(t, r, name); result.RequeueAfter != aksPollInterval {
@@ -318,7 +318,7 @@ func TestAksClusterIsCreatedObservedAndItsKubeconfigDelivered(t *testing.T) {
 
 	// Still creating: nothing is created twice, and no credential is fetched yet.
 	reconcileAks(t, r, name)
-	if got := azure.count("PUT /subscriptions/" + testSubscription + "/resourcegroups/orama-nonprod-cluster-01_group/providers"); got != 1 {
+	if got := azure.count("PUT /subscriptions/" + testSubscription + "/resourcegroups/example-nonprod_group/providers"); got != 1 {
 		t.Fatalf("the cluster was created %d times", got)
 	}
 	if azure.count("POST ") != 1 { // the token request only
@@ -376,7 +376,7 @@ func TestAksClusterDeleteDestroysTheClusterAndTheGroupItCreated(t *testing.T) {
 	azure := newFakeAzure(t)
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
 	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 	reconcileAks(t, r, name)
 	azure.setState(name, "Succeeded")
 	reconcileAks(t, r, name)
@@ -391,7 +391,7 @@ func TestAksClusterDeleteDestroysTheClusterAndTheGroupItCreated(t *testing.T) {
 		t.Fatalf("while Azure deletes: phase %q, finalizers %v", cluster.Status.Phase, cluster.Finalizers)
 	}
 	reconcileAks(t, r, name)
-	if got := azure.count("DELETE /subscriptions/" + testSubscription + "/resourcegroups/orama-nonprod-cluster-01_group/providers"); got != 1 {
+	if got := azure.count("DELETE /subscriptions/" + testSubscription + "/resourcegroups/example-nonprod_group/providers"); got != 1 {
 		t.Fatalf("the delete was sent %d times while Azure was already deleting", got)
 	}
 
@@ -400,7 +400,7 @@ func TestAksClusterDeleteDestroysTheClusterAndTheGroupItCreated(t *testing.T) {
 	delete(azure.clusters, name)
 	azure.mu.Unlock()
 	reconcileAks(t, r, name)
-	if azure.groups["orama-nonprod-cluster-01_group"] {
+	if azure.groups["example-nonprod_group"] {
 		t.Fatal("the resource group the operator created was not deleted")
 	}
 	if len(getAks(t, c, name).Finalizers) != 1 {
@@ -417,7 +417,7 @@ func TestAksClusterRetainLeavesTheClusterRunning(t *testing.T) {
 	azure := newFakeAzure(t)
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionRetain), azureCredentialsSecret(true))
 	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 	reconcileAks(t, r, name)
 	azure.setState(name, "Succeeded")
 	reconcileAks(t, r, name)
@@ -433,18 +433,18 @@ func TestAksClusterRetainLeavesTheClusterRunning(t *testing.T) {
 	if azure.count("DELETE ") != 0 {
 		t.Fatal("Retain sent a delete to Azure")
 	}
-	if azure.clusters[name] == nil || !azure.groups["orama-nonprod-cluster-01_group"] {
+	if azure.clusters[name] == nil || !azure.groups["example-nonprod_group"] {
 		t.Fatal("Retain must leave the cluster and its group in Azure")
 	}
 }
 
 func TestAksClusterDoesNotDeleteAGroupItDidNotCreate(t *testing.T) {
 	azure := newFakeAzure(t)
-	azure.groups["orama-nonprod-cluster-01_group"] = true // made by a person, before the operator
+	azure.groups["example-nonprod_group"] = true // made by a person, before the operator
 	azure.deleteFinishes = true
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
 	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 	reconcileAks(t, r, name)
 	if getAks(t, c, name).Status.CreatedResourceGroup {
 		t.Fatal("an existing resource group was recorded as created by the operator")
@@ -456,7 +456,7 @@ func TestAksClusterDoesNotDeleteAGroupItDidNotCreate(t *testing.T) {
 	}
 	reconcileAks(t, r, name)
 	reconcileAks(t, r, name)
-	if !azure.groups["orama-nonprod-cluster-01_group"] {
+	if !azure.groups["example-nonprod_group"] {
 		t.Fatal("a resource group the operator did not create was deleted")
 	}
 	if azure.clusters[name] != nil {
@@ -468,7 +468,7 @@ func TestAksClusterWaitsForCredentialsAndHoldsADeleteWithoutThem(t *testing.T) {
 	azure := newFakeAzure(t)
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete))
 	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 
 	reconcileAks(t, r, name)
 	cluster := getAks(t, c, name)
@@ -496,7 +496,7 @@ func TestAksClusterReportsWhatTheSpecAsksForThatTheClusterLacks(t *testing.T) {
 	azure := newFakeAzure(t)
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionRetain), azureCredentialsSecret(true))
 	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 	reconcileAks(t, r, name)
 	azure.setState(name, "Succeeded")
 	reconcileAks(t, r, name)
@@ -647,7 +647,7 @@ func testKubernetesCluster() *oramav1alpha1.KubernetesCluster {
 	one, five, zero, hundred := int32(1), int32(5), int32(0), int32(100)
 	two := int32(2)
 	return &oramav1alpha1.KubernetesCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "orama-nonprod-cluster-01"},
+		ObjectMeta: metav1.ObjectMeta{Name: "example-nonprod"},
 		Spec: oramav1alpha1.KubernetesClusterSpec{
 			ProviderRef: "azure-orama", Region: "westus2", KubernetesVersion: "1.35",
 			DeletionPolicy: oramav1alpha1.ClusterDeletionDelete,
@@ -678,7 +678,7 @@ func getKC(t *testing.T, c client.Client, name string) *oramav1alpha1.Kubernetes
 func TestKubernetesClusterProvisionsTheConcreteKindItsProviderNames(t *testing.T) {
 	c := clusterTestClient(t, testKubernetesCluster(), testProvider(), azureCredentialsSecret(true))
 	r := &KubernetesClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 	reconcileKC(t, r, name)
 
 	concrete := getAks(t, c, name)
@@ -687,7 +687,7 @@ func TestKubernetesClusterProvisionsTheConcreteKindItsProviderNames(t *testing.T
 		t.Fatal("the AksCluster is not owned by its KubernetesCluster")
 	}
 	spec := concrete.Spec
-	if spec.SubscriptionID != testSubscription || spec.ResourceGroup != "orama-nonprod-cluster-01_group" ||
+	if spec.SubscriptionID != testSubscription || spec.ResourceGroup != "example-nonprod_group" ||
 		spec.Location != "westus2" || spec.ClusterName != name || spec.KubernetesVersion != "1.35" {
 		t.Fatalf("mapped identity fields: %+v", spec)
 	}
@@ -749,7 +749,7 @@ func TestKubernetesClusterProvisionsTheConcreteKindItsProviderNames(t *testing.T
 func TestKubernetesClusterWaitsForItsProviderAndRefusesAnInvalidSpec(t *testing.T) {
 	c := clusterTestClient(t, testKubernetesCluster())
 	r := &KubernetesClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 	reconcileKC(t, r, name)
 	cluster := getKC(t, c, name)
 	if cluster.Status.Phase != clusterPhasePending || !strings.Contains(cluster.Status.Message, `"azure-orama" does not exist`) {
@@ -795,7 +795,7 @@ func TestKubernetesClusterWaitsForItsProviderAndRefusesAnInvalidSpec(t *testing.
 func TestKubernetesClusterDeletionWaitsForTheConcreteResource(t *testing.T) {
 	c := clusterTestClient(t, testKubernetesCluster(), testProvider(), azureCredentialsSecret(true))
 	r := &KubernetesClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 	reconcileKC(t, r, name)
 
 	// The concrete resource holds its own finalizer until the vendor is done.
@@ -906,7 +906,7 @@ func TestAksClusterReportsAzuresOperationProgressAndErrors(t *testing.T) {
 	azure := newFakeAzure(t)
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
 	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 
 	reconcileAks(t, r, name) // creates
 
@@ -979,7 +979,7 @@ func TestAksClusterReturnsAnErrorWhenTheOperationCannotBeRead(t *testing.T) {
 	azure := newFakeAzure(t)
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
 	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
-	name := "orama-nonprod-cluster-01"
+	name := "example-nonprod"
 	reconcileAks(t, r, name)
 
 	azure.operationsDown = true

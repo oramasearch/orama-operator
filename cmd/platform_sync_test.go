@@ -22,8 +22,8 @@ import (
 // from helmfile.yaml, and every leaf by the management cluster's operator from the
 // ClusterHelmRelease resources in config/clusters/<cluster>/platform.yaml. The two paths must
 // install the same charts at the same versions, in the same namespaces, with the same values, so
-// that a management cluster and a leaf are effectively the same cluster. Steve, 2026-10-13: "both
-// the helmfile and the operator need to be kept in sync".
+// that a management cluster and a leaf are effectively the same cluster: the helmfile and the
+// operator are kept in sync.
 //
 // This test is what keeps them in step. It fails when a chart, a version, a namespace, a value, a
 // dependency or a separately-shipped CRD manifest is in one and not the other.

@@ -24,9 +24,9 @@ import (
 )
 
 const (
-	publicWriterHost    = "writer-dev.oramadev.net"
-	publicReaderHost    = "reader-dev.oramadev.net"
-	publicDashboardHost = "app-dev.oramadev.net"
+	publicWriterHost    = "writer-dev.nonprod.example"
+	publicReaderHost    = "reader-dev.nonprod.example"
+	publicDashboardHost = "app-dev.nonprod.example"
 )
 
 // publicStack is the worked example of #385: v1-dev in a primary region with public writer, reader
@@ -381,7 +381,9 @@ func TestPublicEngineEndpointsNeedAHost(t *testing.T) {
 // deleted with its spec intact, and the replacement waits for its finalizer.
 func TestPublicEngineDNSHostAndSecretEdits(t *testing.T) {
 	for name, edit := range map[string]func(*oramav1alpha1.OramaCloudV1){
-		"host": func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Reader.Host = "search-dev.oramadev.net" },
+		"host": func(o *oramav1alpha1.OramaCloudV1) {
+			o.Spec.Components.Engine.Reader.Host = "search-dev.nonprod.example"
+		},
 		"secret": func(o *oramav1alpha1.OramaCloudV1) {
 			o.Spec.Cloudflare.APITokenSecretRef.Name = "cloudflare-api-token-2"
 		},
@@ -586,7 +588,7 @@ func TestPublicEngineEndpointsLeaveForeignObjects(t *testing.T) {
 	foreignIngress := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: "v1-dev-writer", Namespace: "v1-dev",
 		Annotations: map[string]string{"team": "someone-else"}}}
 	foreignRecord := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: "v1-dev-reader-dns", Namespace: "v1-dev"},
-		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "theirs", Name: "theirs.oramadev.net", Content: "198.51.100.1", Proxied: true}}
+		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "theirs", Name: "theirs.nonprod.example", Content: "198.51.100.1", Proxied: true}}
 	h := newPublicHarness(t, publicStack(nil), foreignIngress, foreignRecord)
 	unchanged := func() {
 		t.Helper()
@@ -674,8 +676,7 @@ func TestPublicEngineEndpointsSandboxRules(t *testing.T) {
 			}
 			namespaces = append(namespaces, peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
 		}
-		// ingress-nginx alone: the zetta-tunnel gateway never serves Cloud v1 (bridge decision 19 of
-		// 2026-10-17).
+		// ingress-nginx alone: the zetta-tunnel gateway never serves Cloud v1.
 		if strings.Join(namespaces, ",") != "ingress-nginx" {
 			t.Errorf("%s admits namespaces %v, want ingress-nginx only (no zetta-tunnel gateway peer)", p.Name, namespaces)
 		}
@@ -742,10 +743,10 @@ func TestPublicWriterHostJWTGuard(t *testing.T) {
 		ok        bool
 	}{
 		"exact":          {[]string{want}, true},
-		"among others":   {[]string{"https://writer.orama.ing", want}, true},
+		"among others":   {[]string{"https://writer.cloudv1.example", want}, true},
 		"trailing slash": {[]string{want + "/"}, false},
 		"http":           {[]string{"http://" + publicWriterHost}, false},
-		"other host":     {[]string{"https://writer.orama.ing"}, false},
+		"other host":     {[]string{"https://writer.cloudv1.example"}, false},
 	} {
 		err := validateWriterJWT(jwtOC(tc.audiences, withHost))
 		if tc.ok && err != nil {

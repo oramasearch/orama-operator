@@ -22,7 +22,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-const testJWTIssuer = "https://app-dev.oramadev.net"
+const testJWTIssuer = "https://app-dev.nonprod.example"
 
 // jwtProvider is a writer_side.jwt provider as OramaCore reads it.
 type jwtProvider struct {
@@ -98,7 +98,7 @@ func TestWriterJWTRendersProvider(t *testing.T) {
 		t.Errorf("writerJWTAudiences = %v, want %v", got, exact)
 	}
 
-	explicit := "https://app.orama.ing/api/.well-known/jwks.json"
+	explicit := "https://app.cloudv1.example/api/.well-known/jwks.json"
 	oc.Spec.Components.Engine.Writer.JWT.JWKSURL = explicit
 	if p, _ := jwtProviders(t, oramacoreWriterConfigYAML(oc)); len(p) != 1 || p[0].JWKSURL != explicit {
 		t.Errorf("explicit jwksURL not rendered as given: %+v", p)
@@ -211,8 +211,8 @@ func TestWriterJWTRefusals(t *testing.T) {
 		{"jwksURL with an empty hostname", jwtOC(valid, withURL("http://:3000/jwks")), "jwt.jwksURL must be"},
 		{"jwksURL with another scheme", jwtOC(valid, withURL("ftp://dashboard/jwks")), "jwt.jwksURL must be"},
 		{"jwksURL that does not parse", jwtOC(valid, withURL("http://dash board%zz/jwks")), "jwt.jwksURL must be"},
-		{"jwksURL with credentials", jwtOC(valid, withURL("https://user:pass@app.orama.ing/api/.well-known/jwks.json")), "jwt.jwksURL must be"},
-		{"jwksURL with a user only", jwtOC(valid, withURL("https://user@app.orama.ing/jwks")), "jwt.jwksURL must be"},
+		{"jwksURL with credentials", jwtOC(valid, withURL("https://user:pass@app.cloudv1.example/api/.well-known/jwks.json")), "jwt.jwksURL must be"},
+		{"jwksURL with a user only", jwtOC(valid, withURL("https://user@app.cloudv1.example/jwks")), "jwt.jwksURL must be"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newEngineHarness(t, tc.oc)
@@ -236,8 +236,8 @@ func TestWriterJWTRefusals(t *testing.T) {
 
 // An explicit HTTP(S) JWKS URL needs no dashboard; a disabled engine is torn down whatever its JWT says.
 func TestWriterJWTAcceptedWithoutDashboardAndIgnoredOnTeardown(t *testing.T) {
-	for _, u := range []string{"https://app.orama.ing/api/.well-known/jwks.json", "http://10.0.0.5:3000/jwks"} {
-		oc := jwtOC([]string{"https://writer.orama.ing"}, func(o *oramav1alpha1.OramaCloudV1) {
+	for _, u := range []string{"https://app.cloudv1.example/api/.well-known/jwks.json", "http://10.0.0.5:3000/jwks"} {
+		oc := jwtOC([]string{"https://writer.cloudv1.example"}, func(o *oramav1alpha1.OramaCloudV1) {
 			o.Spec.Components.Dashboard.Enabled = false
 			o.Spec.Components.Engine.Writer.JWT.JWKSURL = u
 		})
@@ -249,7 +249,7 @@ func TestWriterJWTAcceptedWithoutDashboardAndIgnoredOnTeardown(t *testing.T) {
 	}
 
 	h := newEngineHarness(t)
-	oc := jwtOC([]string{"https://writer.orama.ing"}, nil)
+	oc := jwtOC([]string{"https://writer.cloudv1.example"}, nil)
 	h.reconcile(oc)
 	oc.Spec.Components.Engine.Enabled = false
 	oc.Spec.JWTIssuer = ""
@@ -267,9 +267,9 @@ func TestWriterJWTChangesRollTheWriter(t *testing.T) {
 		name string
 		mut  func(*oramav1alpha1.OramaCloudV1)
 	}{
-		{"issuer", func(o *oramav1alpha1.OramaCloudV1) { o.Spec.JWTIssuer = "https://app.orama.ing" }},
+		{"issuer", func(o *oramav1alpha1.OramaCloudV1) { o.Spec.JWTIssuer = "https://app.cloudv1.example" }},
 		{"jwksURL", func(o *oramav1alpha1.OramaCloudV1) {
-			o.Spec.Components.Engine.Writer.JWT.JWKSURL = "https://app.orama.ing/api/.well-known/jwks.json"
+			o.Spec.Components.Engine.Writer.JWT.JWKSURL = "https://app.cloudv1.example/api/.well-known/jwks.json"
 		}},
 		{"audiences", func(o *oramav1alpha1.OramaCloudV1) {
 			o.Spec.Components.Engine.Writer.JWT.Audiences = append(o.Spec.Components.Engine.Writer.JWT.Audiences, "https://writer.b.example")
@@ -339,12 +339,12 @@ func TestJWTIssuerRollsTheDashboard(t *testing.T) {
 	}
 
 	oc.Spec.Components.Engine.Writer.JWT.Audiences = []string{"https://writer.b.example"}
-	oc.Spec.Components.Engine.Writer.JWT.JWKSURL = "https://app.orama.ing/api/.well-known/jwks.json"
+	oc.Spec.Components.Engine.Writer.JWT.JWKSURL = "https://app.cloudv1.example/api/.well-known/jwks.json"
 	if !reflect.DeepEqual(template(), before) {
 		t.Error("an audience or JWKS URL change changed the dashboard pod template")
 	}
 
-	oc.Spec.JWTIssuer = "https://app.orama.ing"
+	oc.Spec.JWTIssuer = "https://app.cloudv1.example"
 	if template().Annotations[jwtIssuerHashKey] == before.Annotations[jwtIssuerHashKey] {
 		t.Error("an issuer change did not roll the dashboard")
 	}

@@ -79,7 +79,7 @@ func renderReader(t *testing.T, h *engineHarness, env map[string]string) string 
 	return string(b)
 }
 
-// LSR-133 (#795): no reader holds the writer's master key, in either image mode. The reader-only
+// #795: no reader holds the writer's master key, in either image mode. The reader-only
 // config has no writer_side at all; the combined image, which must start a writer in every pod, gets
 // a writer_side whose master key is generated at pod start and known to nothing else. The reader's
 // render-config reads no master key Secret, and masks a MASTER_API_KEY an older engine Secret still
@@ -161,7 +161,7 @@ func TestReaderNeverHoldsTheWriterMasterKey(t *testing.T) {
 	}
 }
 
-// LSR-133: a master key change rolls the writer and the master key's other consumers, never a reader,
+// a master key change rolls the writer and the master key's other consumers, never a reader,
 // because no reader reads it.
 func TestMasterKeyChangeDoesNotRollTheReaders(t *testing.T) {
 	for name, mut := range map[string]func(*oramav1alpha1.OramaCloudV1){"combined image": nil, "side-only images": withSideImages} {
@@ -235,7 +235,7 @@ func TestCombinedReaderCannotPublishToTheReplicationStream(t *testing.T) {
 	}
 }
 
-// LSR-134 (#796, #824): only the broker reads <cr>-broker-admin. The engine signs in as its own users
+// #796, #824: only the broker reads <cr>-broker-admin. The engine signs in as its own users
 // (#99) and harvest-master as harvest, whose password is its own Secret.
 func TestOnlyTheBrokerReadsTheBrokerAdmin(t *testing.T) {
 	for name, mut := range map[string]func(*oramav1alpha1.OramaCloudV1){"combined image": nil, "side-only images": withSideImages} {

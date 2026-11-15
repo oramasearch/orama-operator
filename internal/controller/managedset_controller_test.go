@@ -204,8 +204,8 @@ func nonprodLakeSet() *oramav1alpha1.LakeSet {
 			Template: *rawJSON(`{"image":"oramasearch/lake:v0.1.0","postgres":{"instances":1,"storageSize":"50Gi"},"env":[{"name":"A","value":"1"},{"name":"B","value":"2"}]}`),
 			Secrets:  []oramav1alpha1.SetSecret{{Name: "oramasearch-dockerhub", Namespace: "lake"}, {Name: "lake-prod-openai", Namespace: "lake"}},
 			Clusters: []oramav1alpha1.SetMember{
-				{ClusterRef: "orama-nonprod-cluster-01", Name: "dev", Spec: rawJSON(`{"host":"dev.lake.example"}`)},
-				{ClusterRef: "orama-nonprod-cluster-01", Name: "staging",
+				{ClusterRef: "example-nonprod", Name: "dev", Spec: rawJSON(`{"host":"dev.lake.example"}`)},
+				{ClusterRef: "example-nonprod", Name: "staging",
 					Spec:    rawJSON(`{"host":"staging.lake.example","image":"oramasearch/lake:next","postgres":{"instances":3},"env":[{"name":"C","value":"3"}]}`),
 					Secrets: []oramav1alpha1.SetSecret{{Name: "staging-openai", Namespace: "lake", As: "lake-prod-openai"}}},
 			},
@@ -230,14 +230,13 @@ func getLakeSet(t *testing.T, c client.Client, name string) *oramav1alpha1.LakeS
 }
 
 func nonprodObjects() []client.Object {
-	return append(managedCluster("orama-nonprod-cluster-01", "westus2", "nonprod"),
+	return append(managedCluster("example-nonprod", "westus2", "nonprod"),
 		setSecret("oramasearch-dockerhub", "hub"), setSecret("lake-prod-openai", "shared-key"), setSecret("staging-openai", "staging-key"))
 }
 
 // Members are independent: every one is applied at once, each in its own namespace, with its own
 // settings over the template and its own Secrets over the set's. One that is not Ready does not
-// hold back another (Steve, 2026-10-12: "staging should not need to wait for dev ... they're
-// independent").
+// hold back another: staging does not wait for dev.
 func TestLakeSetAppliesEveryMemberIndependentlyWithItsOwnSettings(t *testing.T) {
 	members := &fakeMembers{ready: map[string]bool{"staging": true}}
 	c := setTestClient(t, append(nonprodObjects(), nonprodLakeSet())...)
@@ -253,7 +252,7 @@ func TestLakeSetAppliesEveryMemberIndependentlyWithItsOwnSettings(t *testing.T) 
 	if dev.Namespace != "lake-dev" || dev.Spec["namespace"] != "lake-dev" || dev.ObjectNamespace != "" || dev.Owner != "LakeSet.lake-nonprod" {
 		t.Fatalf("dev: namespace %q, spec.namespace %v, object namespace %q, owner %q", dev.Namespace, dev.Spec["namespace"], dev.ObjectNamespace, dev.Owner)
 	}
-	if dev.Spec["host"] != "dev.lake.example" || dev.Spec["image"] != "oramasearch/lake:v0.1.0" || members.kubeconfs[0] != "kubeconfig-of-orama-nonprod-cluster-01" {
+	if dev.Spec["host"] != "dev.lake.example" || dev.Spec["image"] != "oramasearch/lake:v0.1.0" || members.kubeconfs[0] != "kubeconfig-of-example-nonprod" {
 		t.Fatalf("dev spec: %+v", dev.Spec)
 	}
 	if len(dev.Secrets) != 2 || string(dev.Secrets[1].Data["key"]) != "shared-key" {
@@ -281,7 +280,7 @@ func TestLakeSetAppliesEveryMemberIndependentlyWithItsOwnSettings(t *testing.T) 
 		got[1].Phase != clusterPhaseReady || got[1].Version != "oramasearch/lake:next" {
 		t.Fatalf("staging is Ready while dev is still starting: %+v", got)
 	}
-	if want := "1 of 2 members are Ready; not Ready: dev on orama-nonprod-cluster-01 (the control database is starting)"; set.Status.Message != want {
+	if want := "1 of 2 members are Ready; not Ready: dev on example-nonprod (the control database is starting)"; set.Status.Message != want {
 		t.Fatalf("message:\n got %q\nwant %q", set.Status.Message, want)
 	}
 
@@ -322,13 +321,13 @@ func TestASetNeverCombinesPurposes(t *testing.T) {
 	for name, tc := range map[string]struct {
 		second, want string
 	}{
-		"mixed":      {"production", "names nonprod (orama-nonprod-cluster-01) and production (orama-production-cluster-02)"},
-		"no purpose": {"", `KubernetesCluster orama-production-cluster-02 has no "purpose" tag`},
+		"mixed":      {"production", "names nonprod (example-nonprod) and production (example-production-eu)"},
+		"no purpose": {"", `KubernetesCluster example-production-eu has no "purpose" tag`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			set := nonprodLakeSet()
-			set.Spec.Clusters[1].ClusterRef = "orama-production-cluster-02"
-			objects := append(nonprodObjects(), managedCluster("orama-production-cluster-02", "swedencentral", tc.second)...)
+			set.Spec.Clusters[1].ClusterRef = "example-production-eu"
+			objects := append(nonprodObjects(), managedCluster("example-production-eu", "swedencentral", tc.second)...)
 			members := &fakeMembers{ready: map[string]bool{"dev": true, "staging": true}}
 			c := setTestClient(t, append(objects, set)...)
 			if _, err := reconcileLakeSet(t, c, members, "lake-nonprod"); err != nil {
@@ -448,13 +447,13 @@ func TestAnOramaCloudV1SetTakesTheRegionFromTheCluster(t *testing.T) {
 		Spec: oramav1alpha1.OramaCloudV1SetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 			Template: *rawJSON(`{"profile":"light","region":{"role":"read"},"images":{"tag":"v1-sandbox"}}`),
 			Clusters: []oramav1alpha1.SetMember{
-				{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"region":{"role":"primary"}}`)},
-				{ClusterRef: "orama-production-cluster-02", Name: "customer-1", Spec: rawJSON(`{"region":{"name":"us-east"}}`)},
+				{ClusterRef: "example-production-eu", Name: "shared", Spec: rawJSON(`{"region":{"role":"primary"}}`)},
+				{ClusterRef: "example-production-eu", Name: "customer-1", Spec: rawJSON(`{"region":{"name":"us-east"}}`)},
 			},
 		}},
 	}
 	members := &fakeMembers{ready: map[string]bool{"shared": true}}
-	c := setTestClient(t, append(managedCluster("orama-production-cluster-02", "swedencentral", "production"), set)...)
+	c := setTestClient(t, append(managedCluster("example-production-eu", "swedencentral", "production"), set)...)
 	r := &OramaCloudV1SetReconciler{Client: c, Scheme: clusterTestScheme(t), Applier: members}
 	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "v1-prod"}})
 
@@ -463,7 +462,7 @@ func TestAnOramaCloudV1SetTakesTheRegionFromTheCluster(t *testing.T) {
 	if region["name"] != "swedencentral" || region["role"] != "primary" || shared.Namespace != "v1-shared" || shared.ObjectNamespace != "v1-shared" {
 		t.Fatalf("shared: region %+v, namespace %q, object namespace %q", region, shared.Namespace, shared.ObjectNamespace)
 	}
-	if err == nil || !strings.Contains(err.Error(), `spec.region.name is "us-east", but the instance runs on orama-production-cluster-02, which is in swedencentral`) {
+	if err == nil || !strings.Contains(err.Error(), `spec.region.name is "us-east", but the instance runs on example-production-eu, which is in swedencentral`) {
 		t.Fatalf("want a stated region that is not the cluster's refused, got %v", err)
 	}
 	if len(members.applied) != 1 {

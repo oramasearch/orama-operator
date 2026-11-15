@@ -73,7 +73,7 @@ func prodDashOC(mut func(*oramav1alpha1.DashboardSpec)) *oramav1alpha1.OramaClou
 	return oc
 }
 
-// LSR-132: a production dashboard whose authentication settings are sandbox defaults, missing, or
+// a production dashboard whose authentication settings are sandbox defaults, missing, or
 // not from the user's Secrets is never rendered. A fresh stack gets no Deployment, a running one keeps
 // its last template, the stack is Ready=False naming each setting, and no value is printed.
 func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T) {
@@ -339,7 +339,7 @@ func TestAnOramaCloudV1SetLabelsEachInstanceWithItsClusterPurpose(t *testing.T) 
 	}
 }
 
-// LSR-140: a production dashboard holds a live-mode restricted Stripe key from its own reference,
+// a production dashboard holds a live-mode restricted Stripe key from its own reference,
 // never the account's full secret key nor a test-mode key. Each refusal leaves no Deployment, names
 // the field, and prints no value.
 func TestProductionDashboardRequiresARestrictedLiveStripeKey(t *testing.T) {

@@ -70,14 +70,14 @@ func tlsTestIngress(hosts ...string) *networkingv1.Ingress {
 }
 
 func TestApplyIngressTLSCoversEveryHostOnce(t *testing.T) {
-	ing := tlsTestIngress("app.oramadev.net", "legacy.oramadev.net", "app.oramadev.net")
+	ing := tlsTestIngress("app.nonprod.example", "legacy.nonprod.example", "app.nonprod.example")
 	if err := applyIngressTLS(ing, "v1-dev-letsencrypt"); err != nil {
 		t.Fatal(err)
 	}
 	assertIngressTLS(t, ing, "v1-dev-letsencrypt")
 	want := []networkingv1.IngressTLS{
-		{Hosts: []string{"app.oramadev.net"}, SecretName: "app.oramadev.net-tls"},
-		{Hosts: []string{"legacy.oramadev.net"}, SecretName: "legacy.oramadev.net-tls"},
+		{Hosts: []string{"app.nonprod.example"}, SecretName: "app.nonprod.example-tls"},
+		{Hosts: []string{"legacy.nonprod.example"}, SecretName: "legacy.nonprod.example-tls"},
 	}
 	if !equality.Semantic.DeepEqual(ing.Spec.TLS, want) {
 		t.Fatalf("TLS = %+v, want %+v (one entry per distinct host, in rule order)", ing.Spec.TLS, want)
@@ -94,7 +94,7 @@ func TestApplyIngressTLSCoversEveryHostOnce(t *testing.T) {
 }
 
 func TestApplyIngressTLSIsIdempotent(t *testing.T) {
-	ing := tlsTestIngress("app.oramadev.net", "docs.oramadev.net")
+	ing := tlsTestIngress("app.nonprod.example", "docs.nonprod.example")
 	if err := applyIngressTLS(ing, "v1-dev-letsencrypt"); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestApplyIngressTLSIsIdempotent(t *testing.T) {
 }
 
 func TestApplyIngressTLSKeepsOtherAnnotationsAndReplacesIssuer(t *testing.T) {
-	ing := tlsTestIngress("app.oramadev.net")
+	ing := tlsTestIngress("app.nonprod.example")
 	ing.Annotations = map[string]string{
 		"nginx.ingress.kubernetes.io/proxy-body-size": "64m",
 		"nginx.ingress.kubernetes.io/server-snippet":  "location = /metrics { return 403; }",
@@ -130,7 +130,7 @@ func TestApplyIngressTLSKeepsOtherAnnotationsAndReplacesIssuer(t *testing.T) {
 		}
 	}
 	// An issuer change keeps the Secret names, so cert-manager reissues into the same Secrets.
-	if ing.Spec.TLS[0].SecretName != "app.oramadev.net-tls" {
+	if ing.Spec.TLS[0].SecretName != "app.nonprod.example-tls" {
 		t.Errorf("issuer change renamed the Secret to %q", ing.Spec.TLS[0].SecretName)
 	}
 }
@@ -140,9 +140,9 @@ func TestApplyIngressTLSRejectsIncompleteInput(t *testing.T) {
 		ing    *networkingv1.Ingress
 		issuer string
 	}{
-		"no issuer":  {tlsTestIngress("app.oramadev.net"), ""},
+		"no issuer":  {tlsTestIngress("app.nonprod.example"), ""},
 		"no rules":   {tlsTestIngress(), "v1-dev-letsencrypt"},
-		"empty host": {tlsTestIngress("app.oramadev.net", ""), "v1-dev-letsencrypt"},
+		"empty host": {tlsTestIngress("app.nonprod.example", ""), "v1-dev-letsencrypt"},
 	} {
 		if err := applyIngressTLS(tc.ing, tc.issuer); err == nil {
 			t.Errorf("%s: applyIngressTLS accepted it; it must fail rather than render HTTP only", name)
@@ -151,10 +151,10 @@ func TestApplyIngressTLSRejectsIncompleteInput(t *testing.T) {
 }
 
 func TestIngressTLSSecretName(t *testing.T) {
-	if got := ingressTLSSecretName("app.oramadev.net"); got != "app.oramadev.net-tls" {
+	if got := ingressTLSSecretName("app.nonprod.example"); got != "app.nonprod.example-tls" {
 		t.Errorf("got %q", got)
 	}
-	if got := ingressTLSSecretName("*.apps.oramadev.net"); got != "wildcard.apps.oramadev.net-tls" {
+	if got := ingressTLSSecretName("*.apps.nonprod.example"); got != "wildcard.apps.nonprod.example-tls" {
 		t.Errorf("wildcard: got %q", got)
 	}
 
@@ -261,37 +261,37 @@ func TestCloudV1IngressesRequestOriginTLS(t *testing.T) {
 	}{
 		"v1-dev-dashboard": {
 			enable: func(o *oramav1alpha1.OramaCloudV1) {
-				o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.oramadev.net"}}
+				o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.nonprod.example"}}
 			},
 			run: func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error {
 				return r.reconcileDashboard(ctx, o)
 			},
-			host: "app-dev.oramadev.net",
+			host: "app-dev.nonprod.example",
 		},
 		"v1-dev-docs": {
 			enable: func(o *oramav1alpha1.OramaCloudV1) {
-				o.Spec.Components.Docs = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "docs-dev.oramadev.net"}
+				o.Spec.Components.Docs = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "docs-dev.nonprod.example"}
 			},
 			run:  func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error { return r.reconcileDocs(ctx, o) },
-			host: "docs-dev.oramadev.net",
+			host: "docs-dev.nonprod.example",
 		},
 		"v1-dev-writer": {
 			enable: func(o *oramav1alpha1.OramaCloudV1) {
-				o.Spec.Components.Engine = oramav1alpha1.EngineSpec{Enabled: true, Writer: oramav1alpha1.WriterSpec{Host: "writer-dev.oramadev.net"}}
+				o.Spec.Components.Engine = oramav1alpha1.EngineSpec{Enabled: true, Writer: oramav1alpha1.WriterSpec{Host: "writer-dev.nonprod.example"}}
 			},
 			run: func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error {
 				return r.reconcileEngineIngresses(ctx, o)
 			},
-			host: "writer-dev.oramadev.net",
+			host: "writer-dev.nonprod.example",
 		},
 		"v1-dev-reader": {
 			enable: func(o *oramav1alpha1.OramaCloudV1) {
-				o.Spec.Components.Engine = oramav1alpha1.EngineSpec{Enabled: true, Reader: oramav1alpha1.ReaderSpec{Host: "reader-dev.oramadev.net"}}
+				o.Spec.Components.Engine = oramav1alpha1.EngineSpec{Enabled: true, Reader: oramav1alpha1.ReaderSpec{Host: "reader-dev.nonprod.example"}}
 			},
 			run: func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error {
 				return r.reconcileEngineIngresses(ctx, o)
 			},
-			host: "reader-dev.oramadev.net",
+			host: "reader-dev.nonprod.example",
 		},
 	}
 	for name, b := range builders {
@@ -337,7 +337,7 @@ func TestCloudV1IngressWithoutIssuerCredentialFails(t *testing.T) {
 	r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
 	oc := originTLSStack(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Cloudflare.APITokenSecretRef = nil
-		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.oramadev.net"}}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.nonprod.example"}}
 	})
 	if err := r.reconcileDashboard(ctx, oc); err == nil || !strings.Contains(err.Error(), "apiTokenSecretRef") {
 		t.Fatalf("err = %v, want the missing DNS-01 credential named", err)

@@ -716,8 +716,8 @@ func TestMethodologyRunImageIsLakesPublicReferenceByDigest(t *testing.T) {
 	if image, err := methodologyRunImage(lake, build); err != nil || image != "lake.example.test/acme/m@"+testBuildDigest {
 		t.Fatalf("image %q, %v", image, err)
 	}
-	lake.Spec.Env = append(lake.Spec.Env, corev1.EnvVar{Name: "LAKE_PUBLIC_HOST", Value: "lake.oramadev.net"})
-	if image, _ := methodologyRunImage(lake, build); image != "lake.oramadev.net/acme/m@"+testBuildDigest {
+	lake.Spec.Env = append(lake.Spec.Env, corev1.EnvVar{Name: "LAKE_PUBLIC_HOST", Value: "lake.nonprod.example"})
+	if image, _ := methodologyRunImage(lake, build); image != "lake.nonprod.example/acme/m@"+testBuildDigest {
 		t.Fatalf("LAKE_PUBLIC_HOST wins: %q", image)
 	}
 	if _, err := methodologyRunImage(lake, &LakeMethodologyRunBuild{Target: build.Target}); err == nil {

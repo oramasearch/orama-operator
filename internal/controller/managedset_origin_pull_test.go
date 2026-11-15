@@ -29,7 +29,7 @@ func zoneTokenSecret(name, zoneID string) *corev1.Secret {
 }
 
 // lakeLiveSet is lake-prod's shape: one Lake on each of two production clusters, both in the
-// lake.live zone through the token the set copies.
+// lakelive.example zone through the token the set copies.
 func lakeLiveSet() *oramav1alpha1.LakeSet {
 	return &oramav1alpha1.LakeSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "lake-prod"},
@@ -37,16 +37,16 @@ func lakeLiveSet() *oramav1alpha1.LakeSet {
 			Template: *rawJSON(`{"image":"oramasearch/lake:v0.4.0","ingressEnabled":true,"dnsSecretRef":{"name":"cloudflare-api-token-lake-live"}}`),
 			Secrets:  []oramav1alpha1.SetSecret{{Name: "cloudflare-api-token-lake-live", Namespace: "lake"}},
 			Clusters: []oramav1alpha1.SetMember{
-				{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"host":"eu.lake.live"}`)},
-				{ClusterRef: "orama-production-cluster-03", Name: "shared-us", Spec: rawJSON(`{"host":"us.lake.live"}`)},
+				{ClusterRef: "example-production-eu", Name: "shared", Spec: rawJSON(`{"host":"eu.lakelive.example"}`)},
+				{ClusterRef: "example-production-us", Name: "shared-us", Spec: rawJSON(`{"host":"us.lakelive.example"}`)},
 			},
 		}},
 	}
 }
 
 func lakeLiveObjects() []client.Object {
-	objects := append(managedCluster("orama-production-cluster-02", "swedencentral", productionPurpose),
-		managedCluster("orama-production-cluster-03", "eastus", productionPurpose)...)
+	objects := append(managedCluster("example-production-eu", "swedencentral", productionPurpose),
+		managedCluster("example-production-us", "eastus", productionPurpose)...)
 	return append(objects, zoneTokenSecret("cloudflare-api-token-lake-live", "zone-1"))
 }
 
@@ -156,13 +156,13 @@ func TestALakeSetNeverReplacesAnUnreadableZoneCA(t *testing.T) {
 // names the same zone.
 func TestAProductionZoneCANeverReachesANonprodMember(t *testing.T) {
 	objects := append(lakeLiveObjects(), lakeLiveSet())
-	objects = append(objects, managedCluster("orama-nonprod-cluster-01", "westus2", "nonprod")...)
+	objects = append(objects, managedCluster("example-nonprod", "westus2", "nonprod")...)
 	objects = append(objects, zoneTokenSecret("cloudflare-api-token", "zone-1"), &oramav1alpha1.LakeSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "lake-nonprod"},
 		Spec: oramav1alpha1.LakeSetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 			Template: *rawJSON(`{"image":"oramasearch/lake:v0.4.0","dnsSecretRef":{"name":"cloudflare-api-token"}}`),
 			Secrets:  []oramav1alpha1.SetSecret{{Name: "cloudflare-api-token", Namespace: "lake"}},
-			Clusters: []oramav1alpha1.SetMember{{ClusterRef: "orama-nonprod-cluster-01", Name: "dev"}},
+			Clusters: []oramav1alpha1.SetMember{{ClusterRef: "example-nonprod", Name: "dev"}},
 		}},
 	})
 	c := setTestClient(t, objects...)
@@ -216,7 +216,7 @@ func pemSubjects(t *testing.T, bundle string) [][]byte {
 }
 
 // twoClusterZone is one zone served by the managing cluster (local Secret) and a member cluster.
-// The member's origins are eu.lake.live and *.eu.lake.live, the managing cluster's lake.live; each
+// The member's origins are eu.lakelive.example and *.eu.lakelive.example, the managing cluster's lakelive.example; each
 // origin requires a client certificate and accepts the bundle its own cluster's policy publishes.
 type twoClusterZone struct {
 	zone                   *fakeCloudflareZone
@@ -237,7 +237,7 @@ func newTwoClusterZone(t *testing.T, distributed bool) *twoClusterZone {
 		return pemSubjects(t, policy.Status.OriginClientCAPEM)
 	}
 	prober := fakeEdgeProber{clientCAs: func(name string) (bool, [][]byte, error) {
-		if strings.Contains(name, "eu.lake.live") {
+		if strings.Contains(name, "eu.lakelive.example") {
 			return true, bundleOf(tz.member), nil
 		}
 		return true, bundleOf(tz.managing), nil

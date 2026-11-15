@@ -45,7 +45,7 @@ var (
 )
 
 // The e2e test kinds. Their CRDs are in chart/crds and their controllers run on every cluster,
-// like every other kind (Steve, 2026-10-12, "no differences").
+// like every other kind: no cluster differs from another.
 var e2eKinds = map[string]bool{
 	"OramaCloudV1E2ETest": true,
 	"ZettaClusterE2ETest": true,
@@ -54,7 +54,7 @@ var e2eKinds = map[string]bool{
 
 // The cluster-management kinds ship in chart/crds and their controllers run on every cluster:
 // there is no difference between a management cluster's operator and a leaf's, and any cluster
-// can manage others (Steve, 2026-10-12; operator#351). This list holds them to that.
+// can manage others (operator#351). This list holds them to that.
 var managementKinds = map[string]bool{
 	"KubernetesCluster":         true,
 	"KubernetesClusterProvider": true,
@@ -360,7 +360,7 @@ func TestTheChartHasOneCRDDirectoryWithEveryKind(t *testing.T) {
 // THE RULE (CLAUDE.md, "One operator: no differences between clusters"): the operator is the same
 // on every cluster. Nothing in the manager or the chart may make one cluster's operator differ
 // from another's in which kinds it has, which controllers it runs, or what it is allowed to do.
-// Steve said it three times on 2026-10-12 before it was done; this test is why it stays done.
+// The rule has no exceptions; this test is why it holds.
 func TestNoClusterDiffersFromAnother(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {

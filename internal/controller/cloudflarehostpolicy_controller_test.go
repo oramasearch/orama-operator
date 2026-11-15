@@ -40,7 +40,7 @@ type fakeRulesets struct {
 
 func newFakeRulesets() *fakeRulesets {
 	return &fakeRulesets{
-		zones:    map[string]string{"orama.ing": "zone-ing", "lake.live": "zone-live"},
+		zones:    map[string]string{"cloudv1.example": "zone-ing", "lakelive.example": "zone-live"},
 		rulesets: map[string]map[string]*cfRuleset{},
 	}
 }
@@ -247,7 +247,7 @@ func (f *hostPolicyFixture) update(mutate func(*oramav1alpha1.CloudflareHostPoli
 
 func TestCloudflareHostPolicyCreatesAMissingEntrypointWithOnlyOurRule(t *testing.T) {
 	api := newFakeRulesets()
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"reader.orama.ing", "app.orama.ing"}, OriginTLS: "strict"})
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"reader.cloudv1.example", "app.cloudv1.example"}, OriginTLS: "strict"})
 	got := f.mustReconcile()
 	if !got.Status.Ready || len(got.Status.Zones) != 1 || got.Status.Zones[0].ConfigRuleID == "" || got.Status.Zones[0].RedirectRuleID != "" {
 		t.Fatalf("status = %+v", got.Status)
@@ -257,7 +257,7 @@ func TestCloudflareHostPolicyCreatesAMissingEntrypointWithOnlyOurRule(t *testing
 	}
 	rules := api.rulesets["zone-ing"][cfPhaseConfig].Rules
 	if len(rules) != 1 || rules[0].Ref != "orama-operator-v1-edge-tls" ||
-		rules[0].Expression != `http.host in {"app.orama.ing" "reader.orama.ing"}` || rules[0].Action != "set_config" ||
+		rules[0].Expression != `http.host in {"app.cloudv1.example" "reader.cloudv1.example"}` || rules[0].Action != "set_config" ||
 		!cfSameJSON(rules[0].ActionParameters, json.RawMessage(`{"ssl":"strict"}`)) {
 		t.Fatalf("rules = %+v", rules)
 	}
@@ -269,14 +269,14 @@ func TestCloudflareHostPolicyCreatesAMissingEntrypointWithOnlyOurRule(t *testing
 func TestCloudflareHostPolicyAddsOurRuleBesideForeignRulesWithoutSendingThem(t *testing.T) {
 	api := newFakeRulesets()
 	foreign := []cfRule{
-		foreignRule("f1", "prod1-a", `http.host eq "dashboard.orama.ing"`, "set_config", `{"ssl":"full"}`),
-		foreignRule("f2", "prod1-b", `http.host eq "docs.orama.ing"`, "set_config", `{"rocket_loader":false}`),
-		foreignRule("f3", "", `http.host eq "status.orama.ing"`, "set_config", `{"ssl":"flexible"}`),
+		foreignRule("f1", "prod1-a", `http.host eq "dashboard.cloudv1.example"`, "set_config", `{"ssl":"full"}`),
+		foreignRule("f2", "prod1-b", `http.host eq "docs.cloudv1.example"`, "set_config", `{"rocket_loader":false}`),
+		foreignRule("f3", "", `http.host eq "status.cloudv1.example"`, "set_config", `{"ssl":"flexible"}`),
 	}
 	api.seed("zone-ing", cfPhaseConfig, foreign...)
 	api.seed("zone-ing", cfPhaseRedirect,
-		foreignRule("r1", "prod1-r", `(http.host eq "old.orama.ing")`, "redirect", `{"from_value":{"status_code":302}}`))
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.orama.ing"}, OriginTLS: "strict", RedirectToHTTPS: true})
+		foreignRule("r1", "prod1-r", `(http.host eq "old.cloudv1.example")`, "redirect", `{"from_value":{"status_code":302}}`))
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.cloudv1.example"}, OriginTLS: "strict", RedirectToHTTPS: true})
 	got := f.mustReconcile()
 	if !got.Status.Ready {
 		t.Fatalf("status = %+v", got.Status)
@@ -286,7 +286,7 @@ func TestCloudflareHostPolicyAddsOurRuleBesideForeignRulesWithoutSendingThem(t *
 		t.Fatalf("writes = %v", writes)
 	}
 	for _, body := range api.bodies {
-		for _, id := range []string{"f1", "f2", "f3", "r1", "prod1", "dashboard.orama.ing", "old.orama.ing"} {
+		for _, id := range []string{"f1", "f2", "f3", "r1", "prod1", "dashboard.cloudv1.example", "old.cloudv1.example"} {
 			if strings.Contains(body, id) {
 				t.Fatalf("a foreign rule (%s) was sent: %s", id, body)
 			}
@@ -300,7 +300,7 @@ func TestCloudflareHostPolicyAddsOurRuleBesideForeignRulesWithoutSendingThem(t *
 	if len(redirect) != 2 || redirect[0].Ref != "orama-operator-v1-edge-https" || redirect[1].ID != "r1" {
 		t.Fatalf("the redirect rule is not first: %+v", redirect)
 	}
-	if redirect[0].Expression != `(http.request.scheme eq "http" and http.host in {"app.orama.ing"})` {
+	if redirect[0].Expression != `(http.request.scheme eq "http" and http.host in {"app.cloudv1.example"})` {
 		t.Fatalf("redirect expression = %s", redirect[0].Expression)
 	}
 	var params map[string]any
@@ -314,7 +314,7 @@ func TestCloudflareHostPolicyAddsOurRuleBesideForeignRulesWithoutSendingThem(t *
 
 func TestCloudflareHostPolicyUnchangedSpecOnlyReads(t *testing.T) {
 	api := newFakeRulesets()
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.orama.ing"}, OriginTLS: "strict", RedirectToHTTPS: true})
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.cloudv1.example"}, OriginTLS: "strict", RedirectToHTTPS: true})
 	first := f.mustReconcile()
 	api.reset()
 	second := f.mustReconcile()
@@ -328,17 +328,17 @@ func TestCloudflareHostPolicyUnchangedSpecOnlyReads(t *testing.T) {
 
 func TestCloudflareHostPolicyHostAddedPatchesSortedExpression(t *testing.T) {
 	api := newFakeRulesets()
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"reader.orama.ing"}, OriginTLS: "strict"})
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"reader.cloudv1.example"}, OriginTLS: "strict"})
 	first := f.mustReconcile()
 	api.reset()
-	f.update(func(s *oramav1alpha1.CloudflareHostPolicySpec) { s.Hosts = append(s.Hosts, "app.orama.ing") })
+	f.update(func(s *oramav1alpha1.CloudflareHostPolicySpec) { s.Hosts = append(s.Hosts, "app.cloudv1.example") })
 	got := f.mustReconcile()
 	writes := api.writes()
 	if len(writes) != 1 || !strings.HasPrefix(writes[0], "PATCH /zones/zone-ing/rulesets/") || !strings.HasSuffix(writes[0], "/rules/"+first.Status.Zones[0].ConfigRuleID) {
 		t.Fatalf("writes = %v", writes)
 	}
 	rule := api.rulesets["zone-ing"][cfPhaseConfig].Rules[0]
-	if rule.Expression != `http.host in {"app.orama.ing" "reader.orama.ing"}` || rule.ID != first.Status.Zones[0].ConfigRuleID {
+	if rule.Expression != `http.host in {"app.cloudv1.example" "reader.cloudv1.example"}` || rule.ID != first.Status.Zones[0].ConfigRuleID {
 		t.Fatalf("rule = %+v", rule)
 	}
 	if !got.Status.Ready || got.Status.ObservedGeneration != 2 {
@@ -349,16 +349,16 @@ func TestCloudflareHostPolicyHostAddedPatchesSortedExpression(t *testing.T) {
 func TestCloudflareHostPolicyOneRulePerZonePerPhase(t *testing.T) {
 	api := newFakeRulesets()
 	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{
-		Hosts: []string{"app.orama.ing", "eu.lake.live", "reader.orama.ing"}, OriginTLS: "strict", RedirectToHTTPS: true,
+		Hosts: []string{"app.cloudv1.example", "eu.lakelive.example", "reader.cloudv1.example"}, OriginTLS: "strict", RedirectToHTTPS: true,
 	})
 	got := f.mustReconcile()
 	if !got.Status.Ready || len(got.Status.Zones) != 2 || got.Status.Zones[0].ZoneID != "zone-ing" || got.Status.Zones[1].ZoneID != "zone-live" {
 		t.Fatalf("status = %+v", got.Status)
 	}
-	if got.Status.Zones[1].ZoneName != "lake.live" {
+	if got.Status.Zones[1].ZoneName != "lakelive.example" {
 		t.Fatalf("zone name = %q", got.Status.Zones[1].ZoneName)
 	}
-	for zone, hosts := range map[string]string{"zone-ing": `{"app.orama.ing" "reader.orama.ing"}`, "zone-live": `{"eu.lake.live"}`} {
+	for zone, hosts := range map[string]string{"zone-ing": `{"app.cloudv1.example" "reader.cloudv1.example"}`, "zone-live": `{"eu.lakelive.example"}`} {
 		for _, phase := range []string{cfPhaseConfig, cfPhaseRedirect} {
 			rules := api.rulesets[zone][phase].Rules
 			if len(rules) != 1 || !strings.Contains(rules[0].Expression, hosts) {
@@ -373,7 +373,7 @@ func TestCloudflareHostPolicyOneRulePerZonePerPhase(t *testing.T) {
 
 func TestCloudflareHostPolicyRedirectOffDeletesOnlyTheRedirectRule(t *testing.T) {
 	api := newFakeRulesets()
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.orama.ing"}, OriginTLS: "strict", RedirectToHTTPS: true})
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.cloudv1.example"}, OriginTLS: "strict", RedirectToHTTPS: true})
 	first := f.mustReconcile()
 	api.reset()
 	f.update(func(s *oramav1alpha1.CloudflareHostPolicySpec) { s.RedirectToHTTPS = false })
@@ -392,12 +392,12 @@ func TestCloudflareHostPolicyRedirectOffDeletesOnlyTheRedirectRule(t *testing.T)
 
 func TestCloudflareHostPolicyNeverTouchesAForeignRuleWithOurExpression(t *testing.T) {
 	api := newFakeRulesets()
-	same := foreignRule("f1", "someone-else-tls", `http.host in {"app.orama.ing"}`, "set_config", `{"ssl":"strict"}`)
+	same := foreignRule("f1", "someone-else-tls", `http.host in {"app.cloudv1.example"}`, "set_config", `{"ssl":"strict"}`)
 	api.seed("zone-ing", cfPhaseConfig, same)
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.orama.ing"}, OriginTLS: "strict"})
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.cloudv1.example"}, OriginTLS: "strict"})
 	f.mustReconcile()
 	f.update(func(s *oramav1alpha1.CloudflareHostPolicySpec) {
-		s.Hosts = []string{"app.orama.ing", "reader.orama.ing"}
+		s.Hosts = []string{"app.cloudv1.example", "reader.cloudv1.example"}
 	})
 	f.mustReconcile()
 	f.update(func(s *oramav1alpha1.CloudflareHostPolicySpec) { s.OriginTLS = "" })
@@ -415,7 +415,7 @@ func TestCloudflareHostPolicyNeverTouchesAForeignRuleWithOurExpression(t *testin
 
 func TestCloudflareHostPolicyDeleteKeepsTheFinalizerOnAServerError(t *testing.T) {
 	api := newFakeRulesets()
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.orama.ing"}, OriginTLS: "strict", RedirectToHTTPS: true})
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.cloudv1.example"}, OriginTLS: "strict", RedirectToHTTPS: true})
 	created := f.mustReconcile()
 	if len(created.Finalizers) != 1 || created.Finalizers[0] != cfHostPolicyFinalizer {
 		t.Fatalf("finalizers = %v", created.Finalizers)
@@ -444,8 +444,8 @@ func TestCloudflareHostPolicyDeleteKeepsTheFinalizerOnAServerError(t *testing.T)
 
 func TestCloudflareHostPolicyDeleteLeavesForeignRules(t *testing.T) {
 	api := newFakeRulesets()
-	api.seed("zone-ing", cfPhaseConfig, foreignRule("f1", "prod1-a", `http.host eq "dashboard.orama.ing"`, "set_config", `{"ssl":"full"}`))
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.orama.ing"}, OriginTLS: "strict"})
+	api.seed("zone-ing", cfPhaseConfig, foreignRule("f1", "prod1-a", `http.host eq "dashboard.cloudv1.example"`, "set_config", `{"ssl":"full"}`))
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.cloudv1.example"}, OriginTLS: "strict"})
 	created := f.mustReconcile()
 	if err := f.c.Delete(context.Background(), &created); err != nil {
 		t.Fatal(err)
@@ -461,20 +461,20 @@ func TestCloudflareHostPolicyDeleteLeavesForeignRules(t *testing.T) {
 
 func TestCloudflareHostPolicyReportsAnOverridingRuleWithoutMovingIt(t *testing.T) {
 	api := newFakeRulesets()
-	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.orama.ing"}, OriginTLS: "strict", RedirectToHTTPS: true})
+	f := newHostPolicyFixture(t, api, oramav1alpha1.CloudflareHostPolicySpec{Hosts: []string{"app.cloudv1.example"}, OriginTLS: "strict", RedirectToHTTPS: true})
 	f.mustReconcile()
 	// Someone appends a config rule after ours that sets the zone's hosts to Flexible, and puts a
 	// redirect before ours.
 	config := api.rulesets["zone-ing"][cfPhaseConfig]
-	config.Rules = append(config.Rules, foreignRule("late", "", `ends_with(http.host, ".orama.ing")`, "set_config", `{"ssl":"flexible"}`))
+	config.Rules = append(config.Rules, foreignRule("late", "", `ends_with(http.host, ".cloudv1.example")`, "set_config", `{"ssl":"flexible"}`))
 	redirect := api.rulesets["zone-ing"][cfPhaseRedirect]
-	redirect.Rules = append([]cfRule{foreignRule("early", "", `http.host eq "app.orama.ing"`, "redirect", `{"from_value":{"status_code":302}}`)}, redirect.Rules...)
+	redirect.Rules = append([]cfRule{foreignRule("early", "", `http.host eq "app.cloudv1.example"`, "redirect", `{"from_value":{"status_code":302}}`)}, redirect.Rules...)
 	api.reset()
 	got := f.mustReconcile()
 	if got.Status.Ready || got.Status.Zones[0].Ready {
 		t.Fatalf("an overridden policy is ready: %+v", got.Status)
 	}
-	for _, want := range []string{"rule late", "rule early", "app.orama.ing"} {
+	for _, want := range []string{"rule late", "rule early", "app.cloudv1.example"} {
 		if !strings.Contains(got.Status.Message, want) {
 			t.Fatalf("message %q does not name %q", got.Status.Message, want)
 		}
@@ -497,19 +497,19 @@ func TestCloudflareHostPolicyNamesTheMissingPermission(t *testing.T) {
 }
 
 func TestCfRuleMayMatch(t *testing.T) {
-	hosts := []string{"app.orama.ing", "reader.orama.ing"}
+	hosts := []string{"app.cloudv1.example", "reader.cloudv1.example"}
 	for expression, want := range map[string]string{
-		`http.host eq "reader.orama.ing"`:                          "reader.orama.ing",
-		`http.host in {"x.orama.ing" "app.orama.ing"}`:             "app.orama.ing",
-		`ends_with(http.host, ".orama.ing")`:                       "app.orama.ing",
-		`http.host eq "orama.ing"`:                                 "",
-		`ends_with(http.host, "orama.ing")`:                        "app.orama.ing",
-		`http.host contains "reader"`:                              "reader.orama.ing",
-		`http.host eq "dashboard.orama.ing"`:                       "",
-		`http.request.uri.path eq "/x"`:                            "app.orama.ing",
-		`true`:                                                     "app.orama.ing",
-		`http.host matches "^.*$"`:                                 "app.orama.ing",
-		`http.request.full_uri eq "https://reader.orama.ing/v1/x"`: "reader.orama.ing",
+		`http.host eq "reader.cloudv1.example"`:                          "reader.cloudv1.example",
+		`http.host in {"x.cloudv1.example" "app.cloudv1.example"}`:       "app.cloudv1.example",
+		`ends_with(http.host, ".cloudv1.example")`:                       "app.cloudv1.example",
+		`http.host eq "cloudv1.example"`:                                 "",
+		`ends_with(http.host, "cloudv1.example")`:                        "app.cloudv1.example",
+		`http.host contains "reader"`:                                    "reader.cloudv1.example",
+		`http.host eq "dashboard.cloudv1.example"`:                       "",
+		`http.request.uri.path eq "/x"`:                                  "app.cloudv1.example",
+		`true`:                                                           "app.cloudv1.example",
+		`http.host matches "^.*$"`:                                       "app.cloudv1.example",
+		`http.request.full_uri eq "https://reader.cloudv1.example/v1/x"`: "reader.cloudv1.example",
 	} {
 		if got := cfRuleMayMatch(expression, hosts); got != want {
 			t.Errorf("cfRuleMayMatch(%q) = %q, want %q", expression, got, want)
@@ -535,7 +535,7 @@ func TestEdgeHostPolicyCreatesItsCloudflareHostPolicy(t *testing.T) {
 	policy := &oramav1alpha1.EdgeHostPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "v1", Generation: 3, Labels: map[string]string{"app": "v1"}},
 		Spec: oramav1alpha1.EdgeHostPolicySpec{
-			ProviderRef: corev1.LocalObjectReference{Name: "cf"}, Hosts: []string{"app.orama.ing"}, OriginTLS: "strict", RedirectToHTTPS: true,
+			ProviderRef: corev1.LocalObjectReference{Name: "cf"}, Hosts: []string{"app.cloudv1.example"}, OriginTLS: "strict", RedirectToHTTPS: true,
 		},
 	}
 	provider := &oramav1alpha1.EdgeProvider{
@@ -584,7 +584,7 @@ func TestEdgeHostPolicyWithoutProviderIsNotReady(t *testing.T) {
 	s := newLakeScheme(t)
 	policy := &oramav1alpha1.EdgeHostPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "v1"},
-		Spec:       oramav1alpha1.EdgeHostPolicySpec{ProviderRef: corev1.LocalObjectReference{Name: "missing"}, Hosts: []string{"app.orama.ing"}},
+		Spec:       oramav1alpha1.EdgeHostPolicySpec{ProviderRef: corev1.LocalObjectReference{Name: "missing"}, Hosts: []string{"app.cloudv1.example"}},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(policy).WithStatusSubresource(policy).Build()
 	r := &EdgeHostPolicyReconciler{Client: c, Scheme: s}
