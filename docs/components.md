@@ -1086,8 +1086,7 @@ the next. A streaming replica receives the primary's schema and owns none.
   password is `<cr>-controldb-migration` (`kubernetes.io/basic-auth`, `username`, `password` and
   `uri`, labelled `cnpg.io/reload`), generated once by the operator and never changed; disabling the
   control DB deletes it with the other `controldb` Secrets. Its grants are schema 4 below. The
-  migration tool uses it instead of the owner (principle 4); see
-  `cloud-v1-migration.md`.
+  migration tool uses it instead of the owner (principle 4).
 - **The dashboard role** ([#99](https://github.com/oramasearch/orama-operator/issues/99),
   `controldb_roles.go`). `spec.managed.roles` also declares `dashboard`: `login: true`, not a
   superuser, no `createdb`, `createrole`, `replication` or `bypassrls`, `connectionLimit: 40` (the
@@ -1128,8 +1127,7 @@ It starts a Job only once no other Job of the migration runs, the stack is `Read
 crons and analytics import suspended, the step is in order, and every Secret it reads exists. It reads
 the outcome from the pod (exit 0, 3, other; the termination message to `status.result`) and writes
 status only on a transition. The stack side, in `controldb.go` and `oramacloudv1_network_sandbox.go`,
-is the `migration` role, its grants and the migration pod's network paths. Detail:
-`cloud-v1-migration.md`. Not run on a cluster yet: it needs a release and
+is the `migration` role, its grants and the migration pod's network paths. Not run on a cluster yet: it needs a release and
 the `cloud-v1-migration` image of.
 
 ## Data stores — cache / broker / analytics / search (`internal/controller/datastore.go`)
@@ -1726,8 +1724,7 @@ template. Legacy index and backup buckets are unchanged.
 
 The consumer is off by default and last in reconciliation. Network policies allow its dashboard
 calls on 3000 and public HTTPS for R2 and the public writer host. Field reference:
-[crd-reference.md](crd-reference.md#speccomponentsimportconsumer); bucket configuration, environment
-mappings and cutover: cloud-v1-import-consumer.md.
+[crd-reference.md](crd-reference.md#speccomponentsimportconsumer).
 
 ## Analytics import (`gaps.go`)
 
@@ -2158,8 +2155,7 @@ is not production (`managedset_secret_scope.go`, [#787](https://github.com/orama
 applies the same rule to the pull Secret it copies to the cluster it installs onto, and counts as
 production for the sets when its cluster is ([#832](https://github.com/oramasearch/orama-operator/issues/832)).
 An `OramaCloudV1Set` also applies its members' team migrations as `OramaCloudV1Migration`s
-(`managedset_migrations.go`, [#654](https://github.com/oramasearch/orama-operator/issues/654);
-`cloud-v1-migration.md`).
+(`managedset_migrations.go`, [#654](https://github.com/oramasearch/orama-operator/issues/654)).
 A `LakeSet` also applies its `spec.e2eTests` as cluster-scoped `LakeE2ETest`s on its members'
 clusters and reads each run's result back into its status (`managedset_e2etests.go`,
 [#589](https://github.com/oramasearch/orama-operator/issues/589)): every file in `config/clusters/`

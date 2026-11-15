@@ -4,6 +4,7 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 [`CLAUDE.md`](../CLAUDE.md) → *Docs discipline*).
 
 - [`../README.md`](../README.md) — the front door: what the operator is, status, build and test, and pointers into these docs.
+- [`releases/README.md`](releases/README.md) — **the release notes**, one page per release, newest first.
 - [`install.md`](install.md) — **install the operator + deploy a v1 stack** (prereqs, helm/helmfile, the CR, multi-region, uninstall).
 - [`install/credentials.md`](install/credentials.md) — **private-image bootstrap**: manager versus application pull-secret settings, render proof, and startup diagnosis.
 - [`install/k0s.md`](install/k0s.md) — **install a private Lake on the liquid k0s distribution**, including the fresh-machine, single-node storage, pull-secret, Ready, and air-gapped paths.

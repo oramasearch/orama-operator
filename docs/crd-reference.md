@@ -169,7 +169,7 @@ an add-on price row is seeded only when listed). `id` is the reference row's UUI
 a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
 Every control DB also declares the CNPG managed role `migration`, which signs in only while an
 [`OramaCloudV1Migration`](#oramacloudv1migration-separate-crd-namespaced--one-prod-1-team-copied-into-a-stack)
-targets the stack; it has no field (`cloud-v1-migration.md`).
+targets the stack; it has no field.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`, and each one's
@@ -227,7 +227,6 @@ Service, ConfigMap and retention Job, and reports no import error.
 
 One Deployment, `<cr>-import-consumer`, runs `deno run -A src/bucket-worker.ts` from the configured
 `oramasearch/airbyte-fargate-consumer` image. It lists the stack's R2 uploads bucket every ten seconds.
-Bucket provisioning, credential mappings and cutover: cloud-v1-import-consumer.md.
 
 | Field | Default | Purpose |
 |---|---|---|
@@ -761,8 +760,7 @@ Every credential stays in a variable; failure messages replace `privateApiKey`, 
 Copies one Prod 1 team into the `OramaCloudV1` named by `spec.targetRef`, in the same namespace
 ([#653](https://github.com/oramasearch/orama-operator/issues/653)). Each step runs the
 `cloud-v1-migration` image's `run-step` as an owned Job, once per `(step, apply, attempt)`, and the
-tool's `status --json` becomes `status.result`. What it checks before a Job, the Job's environment,
-the migration role, the network paths and deletion: `cloud-v1-migration.md`.
+tool's `status --json` becomes `status.result`.
 Short name `ocv1m`. Sample: [`../config/samples/oramacloudv1migration.yaml`](../config/samples/oramacloudv1migration.yaml).
 
 `targetRef`, `teamID`, `projectIDs`, `runID` and `source` cannot change after creation (CEL: *the
@@ -990,7 +988,7 @@ A Cloudflare-enabled stack with the dashboard enabled owns `<cr>-uploads`, with 
 `<cr>-uploads-r2`, PUT CORS for the dashboard host and extra hosts, seven-day expiry, and deletion
 policy `Delete` because these objects are import staging. The dashboard, crawler and import consumer
 share the one bucket-scoped token. The dashboard's references are optional to preserve startup before
-provisioning succeeds; when the Secret appears its credential hash rolls the dashboard onto R2. See cloud-v1-import-consumer.md.
+provisioning succeeds; when the Secret appears its credential hash rolls the dashboard onto R2.
 
 On deletion the finalizer revokes the bucket token whatever the policy, and deletes the bucket only
 with `Delete`.
@@ -1991,7 +1989,7 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). A `LakeSet` also copies one Secret on its own: each member whose `dnsSecretRef` names a Secret the set copies gets its zone's origin-pull Secret `orama-edge-origin-pull-<zone ID>` (CA certificate and client certificate, never the CA key), which the set creates once in the operator's namespace on this cluster and renews; it is labelled with the purpose of the first member that needed it and refused for a member of another purpose ([operator#633](https://github.com/oramasearch/orama-operator/issues/633), [`lake/origin-tls.md`](lake/origin-tls.md#zone-level-authenticated-origin-pulls-the-operators-own-certificate)). A Secret listed under that name is replaced by it. |
 | `spec.clusters[]` | The members, 1 to 64. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). The cap of 64 holds for both kinds because they share this shape: the `OramaCloudV1Set` rule that each migration names one member loops over the members, and the API server refuses a CEL rule over an unbounded list. |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
-| `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members (`cloud-v1-migration.md`). `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |
+| `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members. `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |
 | `spec.e2eTests[]` | `LakeSet` only, at most 16, keyed by `name`: lake's end-to-end suite run against a member, the testing → staging gate of a substantial lake release ([#589](https://github.com/oramasearch/orama-operator/issues/589); [`lake/README.md#service-e2e`](lake/README.md#service-e2e)). Each becomes a cluster-scoped [`LakeE2ETest`](#lakee2etest-separate-crd-cluster-scoped) named `name` (DNS label, at most 52) on the member's cluster, labelled `orama.cloud/managed-by-set=LakeSet.<set>`. `member` names exactly one `clusters[].name` (CEL: *every e2eTests[].member must name exactly one clusters[].name*). `spec` is the `LakeE2ETest`'s spec without `member` and `targetRef`: the set fills in `member` as `{lakeSet: <set>, name: <member>}`, and refuses a `targetRef` or a different `member`. A Secret it names (`LAKE_E2E_CLERK_SECRET_KEY` from `clerk-secret-key`) must be in the member's namespace, which the set's or the member's `secrets` provide; the entry copies none of its own. Applying the entry starts a run; changing its `spec` (`runID`) starts another; removing it deletes the test and its Job there; deleting the set deletes its tests first. |
 | `status.phase` | `Ready` (every member `Ready`), `Progressing`, or `Degraded` (the set was refused, or a member failed). |
 | `status.purpose` | The `purpose` tag all the members' clusters share. A set whose clusters differ in purpose, or lack one, applies nothing. |

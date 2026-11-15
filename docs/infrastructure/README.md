@@ -534,7 +534,7 @@ Further behavior:
   [#654](https://github.com/oramasearch/orama-operator/issues/654)): each is applied as an
   `OramaCloudV1Migration` in its member's namespace, after the member, and reported in the set's
   `status.migrations`. A member leaving the set, or the set being deleted, waits for its migrations
-  to be gone. See `cloud-v1-migration.md`.
+  to be gone.
 
 [`config/samples/lakeset-nonprod.yaml`](../../config/samples/lakeset-nonprod.yaml) is a nonprod set
 with two environments.
