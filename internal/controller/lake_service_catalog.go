@@ -384,6 +384,15 @@ func (r *LakeReconciler) reconcileCatalogService(ctx context.Context, lake *oram
 		return serviceResult{phase: ServicePhaseFailed, endpoint: endpoint, message: distrust}, nil
 	}
 	result.credential = credential
+	// Once the tenant's own user is delivered, its administrator's password is rotated, once
+	// (operator#1172).
+	if credential != nil {
+		tenant, isTenant := kind.(catalogTenantUser)
+		rotation, rotates := kind.(catalogAdminRotation)
+		if isTenant && rotates {
+			result.note = r.rotateServiceAdministrator(ctx, in, tenant, rotation)
+		}
+	}
 	return result, nil
 }
 

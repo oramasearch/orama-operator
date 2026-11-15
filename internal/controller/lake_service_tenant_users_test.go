@@ -19,11 +19,38 @@ type tenantUserCall struct {
 	service, admin, adminPassword, tenantPassword string
 }
 
-// fakeTenantUsers records what the operator would run against TiDB and Cassandra (operator#771).
+// fakeTenantUsers records what the operator would run against TiDB and Cassandra (operator#771,
+// operator#1172).
 type fakeTenantUsers struct {
 	err       error
 	tidb      []tenantUserCall
 	cassandra []tenantUserCall
+	// rotations records each administrator rotation as admin, current and next password;
+	// rotateErr fails them. others is what the user listing finds.
+	rotations []tenantUserCall
+	rotateErr error
+	others    []string
+	listings  int
+}
+
+func (f *fakeTenantUsers) rotateTiDBRoot(_ context.Context, in catalogService, current, next string) error {
+	f.rotations = append(f.rotations, tenantUserCall{in.name, tidbRootUser, current, next})
+	return f.rotateErr
+}
+
+func (f *fakeTenantUsers) rotateCassandraSuperuser(_ context.Context, in catalogService, superuser, current, next string) error {
+	f.rotations = append(f.rotations, tenantUserCall{in.name, superuser, current, next})
+	return f.rotateErr
+}
+
+func (f *fakeTenantUsers) otherTiDBUsers(context.Context, catalogService, string) ([]string, error) {
+	f.listings++
+	return f.others, nil
+}
+
+func (f *fakeTenantUsers) otherCassandraRoles(context.Context, catalogService, string, string) ([]string, error) {
+	f.listings++
+	return f.others, nil
 }
 
 func (f *fakeTenantUsers) ensureTiDB(_ context.Context, in catalogService, rootPassword, tenantPassword string) error {
@@ -59,15 +86,17 @@ func catalogCaseOf(t *testing.T, kind string) catalogCase {
 func TestTiDBDeliversTheTenantUserNeverRoot(t *testing.T) {
 	c := catalogCaseOf(t, serviceKindTiDB)
 	h, _ := readyCatalogService(t, c)
-	root, tenant := h.password(c), h.deliveredPassword(c)
+	tenant := h.deliveredPassword(c)
 	if len(h.tenantUsers.tidb) != 1 {
 		t.Fatalf("tenant user calls = %+v, want one", h.tenantUsers.tidb)
 	}
-	if call := h.tenantUsers.tidb[0]; call.service != c.name() || call.adminPassword != root || call.tenantPassword != tenant {
+	// Signed in with root's first password, which the same pass then rotated (operator#1172).
+	root := h.tenantUsers.tidb[0].adminPassword
+	if call := h.tenantUsers.tidb[0]; call.service != c.name() || len(root) != 32 || call.tenantPassword != tenant {
 		t.Fatalf("tenant user call = %+v", call)
 	}
 	credential := string(h.credentials()[c.slug+".json"])
-	if !strings.Contains(credential, `"user":"app"`) || strings.Contains(credential, root) || strings.Contains(credential, `"root"`) {
+	if !strings.Contains(credential, `"user":"app"`) || strings.Contains(credential, root) || strings.Contains(credential, h.password(c)) || strings.Contains(credential, `"root"`) {
 		t.Fatalf("delivered credential is not the tenant user's: %s", credential)
 	}
 	h.poll()
@@ -267,4 +296,102 @@ func (h *serviceHarness) servicesSecret() *corev1.Secret {
 		h.t.Fatalf("get secret %s: %v", lakeServicesSecret("prod"), err)
 	}
 	return secret
+}
+
+// Once the tenant user is delivered, the administrator's password is rotated once, the store first
+// and then its Secret, and the rotation is recorded on the tenant Secret (operator#1172).
+func TestTheAdministratorPasswordIsRotatedOnceTheTenantUserIsDelivered(t *testing.T) {
+	for _, kind := range []string{serviceKindTiDB, serviceKindCassandra} {
+		t.Run(kind, func(t *testing.T) {
+			c := catalogCaseOf(t, kind)
+			h, store := readyCatalogService(t, c)
+			if len(h.tenantUsers.rotations) != 1 {
+				t.Fatalf("rotations = %+v, want one", h.tenantUsers.rotations)
+			}
+			rotation := h.tenantUsers.rotations[0]
+			adminSecret, adminKey, wantAdmin, wantCurrent := c.passwordSecret, c.passwordKey, tidbRootUser, h.tenantUsers.tidb[0].adminPassword
+			if kind == serviceKindCassandra {
+				adminSecret, adminKey, wantAdmin, wantCurrent = c.slug+"-superuser", "password", c.slug+"-superuser", "cql-secret"
+			}
+			if rotation.admin != wantAdmin || rotation.adminPassword != wantCurrent || len(rotation.tenantPassword) != 32 || rotation.tenantPassword == wantCurrent {
+				t.Fatalf("rotation = %+v", rotation)
+			}
+			if got := string(h.secret(adminSecret).Data[adminKey]); got != rotation.tenantPassword {
+				t.Fatal("the administrator's Secret does not hold the rotated password")
+			}
+			tenant := h.secret(c.tenantSecret)
+			if tenant.Annotations[serviceAdminRotatedAnnotation] == "" {
+				t.Fatal("the rotation is not recorded")
+			}
+			if _, found := tenant.Data[serviceAdminNextKey]; found {
+				t.Fatal("the pending password was left on the tenant Secret")
+			}
+			expectStatus(t, store.status(t, c.id), ServicePhaseReady, "service ready", c.endpoint)
+			h.poll()
+			h.poll()
+			if len(h.tenantUsers.rotations) != 1 || h.tenantUsers.listings != 1 {
+				t.Fatalf("a rotated service called its store again: %d rotations, %d listings", len(h.tenantUsers.rotations), h.tenantUsers.listings)
+			}
+		})
+	}
+}
+
+// A rotation that fails keeps the administrator's password and the pending one, holds back nothing,
+// and finishes with the same new password on a later pass.
+func TestAFailedAdministratorRotationIsFinishedLater(t *testing.T) {
+	c := catalogCaseOf(t, serviceKindTiDB)
+	store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, c.spec(`{"instances":3,"storage_gi":15}`), false)}}
+	h := newServiceHarness(t, serviceTestLake(), store)
+	h.tenantUsers.rotateErr = errors.New("connection refused")
+	h.poll()
+	h.giveUIDs(c)
+	c.markPartlyReady(h, c)
+	c.markReady(h, c)
+	h.poll()
+	root := h.password(c)
+	expectStatus(t, store.status(t, c.id), ServicePhaseReady, "service ready", c.endpoint)
+	pending := string(h.secret(c.tenantSecret).Data[serviceAdminNextKey])
+	if len(pending) != 32 || h.secret(c.tenantSecret).Annotations[serviceAdminRotatedAnnotation] != "" {
+		t.Fatalf("pending = %q, annotations %v", pending, h.secret(c.tenantSecret).Annotations)
+	}
+
+	h.tenantUsers.rotateErr = nil
+	h.poll()
+	if last := h.tenantUsers.rotations[len(h.tenantUsers.rotations)-1]; last.adminPassword != root || last.tenantPassword != pending {
+		t.Fatalf("retry = %+v, want %s -> %s", last, root, pending)
+	}
+	if h.password(c) != pending {
+		t.Fatal("root's Secret does not hold the rotated password")
+	}
+}
+
+// Users and roles the operator did not make are reported in the status message and kept.
+func TestUnmanagedUsersAreReportedNotDropped(t *testing.T) {
+	c := catalogCaseOf(t, serviceKindCassandra)
+	store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, c.spec(`{"instances":3,"storage_gi":15}`), false)}}
+	h := newServiceHarness(t, serviceTestLake(), store)
+	h.tenantUsers.others = []string{"analytics", "backdoor"}
+	h.poll()
+	h.giveUIDs(c)
+	c.markPartlyReady(h, c)
+	c.markReady(h, c)
+	c.upstreamSecret(h, c)
+	h.poll()
+	expectStatus(t, store.status(t, c.id), ServicePhaseReady,
+		"service ready; users and roles the operator did not make: analytics, backdoor", c.endpoint)
+	if got := h.secret(c.tenantSecret).Annotations[serviceUnmanagedUsersAnnotation]; got != "analytics,backdoor" {
+		t.Fatalf("recorded users = %q", got)
+	}
+	h.poll()
+	expectStatus(t, store.status(t, c.id), ServicePhaseReady,
+		"service ready; users and roles the operator did not make: analytics, backdoor", c.endpoint)
+}
+
+func TestOtherUsersExcludeTheAdministratorAndTheTenant(t *testing.T) {
+	if got := tidbOtherUsers([][2]string{{"root", "%"}, {"app", "%"}, {"shop", "%"}, {"app", "10.%"}, {"etl", "localhost"}}); !reflect.DeepEqual(got, []string{"etl@localhost", "shop@%"}) {
+		t.Fatalf("TiDB others = %v", got)
+	}
+	if got := cassandraOtherRoles([]string{"svc-1-superuser", "app", "cassandra", "backdoor"}, "svc-1-superuser"); !reflect.DeepEqual(got, []string{"backdoor"}) {
+		t.Fatalf("Cassandra others = %v", got)
+	}
 }

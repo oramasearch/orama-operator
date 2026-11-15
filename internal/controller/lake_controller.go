@@ -67,6 +67,9 @@ type LakeReconciler struct {
 	ServiceEvents <-chan event.GenericEvent
 	// APIReader lists lake pods without a cache (no cluster-wide pod informer). Nil uses Client.
 	APIReader client.Reader
+	// Recorder records events on the Lake, such as a service's administrator password being
+	// rotated (operator#1172). Nil records none.
+	Recorder record.EventRecorder
 	// workloadResources throttles the workload resources pass per Lake (lake#643), and the app
 	// transfer pass with it (lake#661).
 	workloadResources workloadResourcesClock
