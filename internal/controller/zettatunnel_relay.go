@@ -7,6 +7,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -48,11 +50,45 @@ func zettaTunnelRelayLabels() map[string]string {
 }
 
 // zettaTunnelGrant is one entry of the relay's grants file (zetta-tunnel docs/tunnel.md).
+// ClientCASHA256 binds the grant to its own customer's CA (LSR-074, zetta-tunnel#35): the relay,
+// from zetta-tunnel v0.2.0, refuses a client certificate for this grant unless a CA listed here
+// signed it, so one customer's CA can never open another customer's grant.
 type zettaTunnelGrant struct {
-	ID        string `json:"id"`
-	Workspace string `json:"workspace"`
-	Endpoint  string `json:"endpoint"`
-	ExpiresAt string `json:"expires_at"`
+	ID             string   `json:"id"`
+	Workspace      string   `json:"workspace"`
+	Endpoint       string   `json:"endpoint"`
+	ExpiresAt      string   `json:"expires_at"`
+	ClientCASHA256 []string `json:"client_ca_sha256"`
+}
+
+// zettaTunnelMaxClientCAs is the relay's limit on client_ca_sha256 entries per grant.
+const zettaTunnelMaxClientCAs = 16
+
+// zettaTunnelClientCAFingerprints is the lowercase-hex SHA-256 of the DER of each distinct
+// certificate in clientCAPEM, sorted. The relay refuses a grant with none, more than 16, or a
+// repeated one, so an empty result, or one over the limit, is an error here.
+func zettaTunnelClientCAFingerprints(clientCAPEM string) ([]string, error) {
+	certs, err := pemCertificates([]byte(clientCAPEM))
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	var fingerprints []string
+	for _, cert := range certs {
+		sum := sha256.Sum256(cert.Raw)
+		fingerprint := hex.EncodeToString(sum[:])
+		if _, dup := seen[fingerprint]; dup {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		fingerprints = append(fingerprints, fingerprint)
+	}
+	if len(fingerprints) > zettaTunnelMaxClientCAs {
+		return nil, fmt.Errorf("clientCAPEM holds %d distinct CA certificates; the relay accepts at most %d",
+			len(fingerprints), zettaTunnelMaxClientCAs)
+	}
+	sort.Strings(fingerprints)
+	return fingerprints, nil
 }
 
 type zettaTunnelGrantsDocument struct {
@@ -93,11 +129,18 @@ func liveZettaTunnelGrants(tunnels []oramav1alpha1.ZettaTunnel, now time.Time) (
 		if validateZettaTunnel(tunnel) != "" {
 			continue
 		}
+		fingerprints, err := zettaTunnelClientCAFingerprints(tunnel.Spec.ClientCAPEM)
+		if err != nil {
+			// validateZettaTunnel refuses the same input; a grant without fingerprints would make
+			// the relay refuse the whole snapshot, so it is left out instead.
+			continue
+		}
 		grants = append(grants, zettaTunnelGrant{
-			ID:        tunnel.Spec.GrantID,
-			Workspace: tunnel.Namespace,
-			Endpoint:  zettaTunnelEndpointAddress(tunnel),
-			ExpiresAt: tunnel.Spec.ExpiresAt.UTC().Format(time.RFC3339),
+			ID:             tunnel.Spec.GrantID,
+			Workspace:      tunnel.Namespace,
+			Endpoint:       zettaTunnelEndpointAddress(tunnel),
+			ExpiresAt:      tunnel.Spec.ExpiresAt.UTC().Format(time.RFC3339),
+			ClientCASHA256: fingerprints,
 		})
 		cas = append(cas, []byte(tunnel.Spec.ClientCAPEM))
 		if nextExpiry.IsZero() || tunnel.Spec.ExpiresAt.Time.Before(nextExpiry) {

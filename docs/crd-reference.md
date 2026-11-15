@@ -1511,7 +1511,7 @@ allowance admitting only the relay. Every `ZettaTunnel` feeds the cluster's one 
 | Field | Meaning |
 |---|---|
 | `spec.lakeRef`, `.grantId`, `.customerId`, `.workspaceId`, `.targetKind`, `.targetId`, `.port`, `.expiresAt` | The grant, copied from the `Tunnel`. |
-| `spec.clientCAPEM` | The CA(s) the relay trusts for this grant's developer certificates. |
+| `spec.clientCAPEM` | The CA(s) the relay trusts for this grant's developer certificates: 1 to 16 distinct CA certificates. Each is projected as its SHA-256 fingerprint in the grant's `client_ca_sha256`, and the relay accepts only a certificate one of them signed (#844). More than 16 is invalid. |
 | `status.phase` / `.message` | `Pending \| Ready \| Expired \| Failed`. |
 | `status.endpoint` / `.relayCAPEM` | The relay's public `host:443` and its server CA, while `Ready`. |
 | `status.target` | The in-cluster `host:port` the endpoint is fixed to. |
