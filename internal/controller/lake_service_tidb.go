@@ -4,9 +4,12 @@ package controller
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // mysql_native_password is defined over SHA-1.
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -16,6 +19,9 @@ import (
 // TiDB services run on TiDB Operator v1.6.6, the stable 1.x API pingcap.com/v1alpha1. Field names
 // follow that release's manifests/crd.yaml and its controller source.
 var tidbClusterGVK = schema.GroupVersionKind{Group: "pingcap.com", Version: "v1alpha1", Kind: "TidbCluster"}
+
+// configMapGVK is the ConfigMap holding a TiDB service's bootstrap SQL.
+var configMapGVK = schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
 
 const (
 	// tidbVersion is the TiDB release the operator's own v1.6.6 examples run.
@@ -29,6 +35,10 @@ const (
 	// does not), so that is the name the Orama operator creates it under.
 	tidbInitSecretSuffix = "-init"
 	tidbNormal           = "Normal"
+	// tidbBootstrapSuffix names the ConfigMap <cluster>-bootstrap whose key tidbBootstrapKey TiDB
+	// Operator mounts as TiDB's initialize-sql-file (spec.tidb.bootstrapSQLConfigMapName).
+	tidbBootstrapSuffix = "-bootstrap"
+	tidbBootstrapKey    = "bootstrap-sql"
 	// Labels TiDB Operator puts on every PD and TiKV claim.
 	tidbInstanceLabel  = "app.kubernetes.io/instance"
 	tidbManagedByLabel = "app.kubernetes.io/managed-by"
@@ -43,10 +53,27 @@ type tidbServiceKind struct{}
 func (tidbServiceKind) title() string { return "TiDB" }
 
 func (tidbServiceKind) objects(in catalogService) []catalogObject {
-	return []catalogObject{{gvk: tidbClusterGVK, name: in.name}}
+	return []catalogObject{{gvk: tidbClusterGVK, name: in.name}, {gvk: configMapGVK, name: in.name + tidbBootstrapSuffix}}
 }
 
-func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
+// tidbNativePasswordHash is the mysql_native_password hash of password: "*" and the upper-case hex
+// of SHA-1(SHA-1(password)), the form TiDB stores and accepts in IDENTIFIED WITH ... AS.
+func tidbNativePasswordHash(password string) string {
+	stage1 := sha1.Sum([]byte(password)) //nolint:gosec // the plugin's own definition.
+	stage2 := sha1.Sum(stage1[:])        //nolint:gosec // the plugin's own definition.
+	return "*" + strings.ToUpper(hex.EncodeToString(stage2[:]))
+}
+
+// tidbBootstrapSQL sets root's password while TiDB bootstraps its first start, before it accepts a
+// connection (operator#774). TiDB runs initialize-sql-file once, inside bootstrap, so there is no
+// window in which root has an empty password. The ConfigMap holds only the password's hash, never
+// the password. TiDB Operator's initializer (createPassword) then finds root already protected
+// ("Access denied" with an empty password) and records passwordInitialized.
+func tidbBootstrapSQL(password string) string {
+	return fmt.Sprintf("ALTER USER 'root'@'%%' IDENTIFIED WITH 'mysql_native_password' AS '%s';\n", tidbNativePasswordHash(password))
+}
+
+func (k tidbServiceKind) build(in catalogService, password string) []catalogResource {
 	replicas := int64(in.spec.Instances)
 	storage := map[string]interface{}{"storage": serviceStorage(in.spec)}
 	fields := []serviceField{
@@ -95,6 +122,9 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 		// password initializer waits for its endpoints.
 		{path: []string{"spec", "tidb", "service"}, value: map[string]interface{}{"type": "ClusterIP"}},
 		{path: []string{"spec", "tidb", "initializer"}, value: map[string]interface{}{"createPassword": true}},
+		// TiDB reads the bootstrap SQL only on its first start, and TiDB Operator asks for the
+		// field to be set only when the cluster is created (operator#774).
+		{path: []string{"spec", "tidb", "bootstrapSQLConfigMapName"}, createOnly: true, value: in.name + tidbBootstrapSuffix},
 		// Storage cannot be changed, so the requests are written once; they carry the sizes too.
 		{path: []string{"spec", "pd", "requests"}, createOnly: true, value: map[string]interface{}{"storage": storage["storage"], "cpu": "50m", "memory": "256Mi"}},
 		{path: []string{"spec", "tikv", "requests"}, createOnly: true, value: map[string]interface{}{"storage": storage["storage"], "cpu": "100m", "memory": "512Mi"}},
@@ -107,7 +137,13 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 			serviceField{path: []string{"spec", component, "securityContext"}, value: restrictedContainerSecurityContext()},
 		)
 	}
-	return []catalogResource{{catalogObject: k.objects(in)[0], fields: fields}}
+	objects := k.objects(in)
+	return []catalogResource{
+		{catalogObject: objects[0], fields: fields},
+		{catalogObject: objects[1], fields: []serviceField{
+			{path: []string{"data"}, value: map[string]interface{}{tidbBootstrapKey: tidbBootstrapSQL(password)}},
+		}},
+	}
 }
 
 func (tidbServiceKind) passwordSecret(name string) (string, string) {

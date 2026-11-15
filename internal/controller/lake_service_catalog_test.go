@@ -168,7 +168,7 @@ func catalogCases() []catalogCase {
 		},
 		{
 			kind: serviceKindTiDB, id: "88888888-8888-4888-8888-888888888888", slug: "svc-888888888888", group: "pingcap.com",
-			objects: []string{"TidbCluster/prod-svc-888888888888"},
+			objects: []string{"TidbCluster/prod-svc-888888888888", "ConfigMap/prod-svc-888888888888-bootstrap"},
 			checkBuild: func(h *serviceHarness, c catalogCase) {
 				tc := h.upstream(tidbClusterGVK, c.name())
 				for _, component := range tidbComponents {
@@ -190,8 +190,22 @@ func catalogCases() []catalogCase {
 				if version != tidbVersion || !create || service != "ClusterIP" || maxReplicas != 3 || tc.GetLabels()["app.kubernetes.io/instance"] != c.name() {
 					h.t.Fatalf("tidb cluster = %v %v", tc.GetLabels(), tc.Object["spec"])
 				}
-				if len(h.secret(c.name() + "-init").Data["root"]) != 32 {
+				root := string(h.secret(c.name() + "-init").Data["root"])
+				if len(root) != 32 {
 					h.t.Fatal("no generated root password in <cluster>-init")
+				}
+				// operator#774: root's password is set while TiDB bootstraps, from a hash only.
+				bootstrapName, _, _ := unstructured.NestedString(tc.Object, "spec", "tidb", "bootstrapSQLConfigMapName")
+				if bootstrapName != c.name()+"-bootstrap" {
+					h.t.Fatalf("bootstrapSQLConfigMapName = %q", bootstrapName)
+				}
+				bootstrap := h.upstream(configMapGVK, bootstrapName)
+				sqlText, _, _ := unstructured.NestedString(bootstrap.Object, "data", "bootstrap-sql")
+				if sqlText != "ALTER USER 'root'@'%' IDENTIFIED WITH 'mysql_native_password' AS '"+tidbNativePasswordHash(root)+"';\n" {
+					h.t.Fatalf("bootstrap SQL = %q", sqlText)
+				}
+				if strings.Contains(sqlText, root) {
+					h.t.Fatal("the bootstrap ConfigMap carries the root password itself")
 				}
 			},
 			waiting: "waiting for TiDB pd",
@@ -305,7 +319,7 @@ func catalogCases() []catalogCase {
 
 func catalogGVK(kind string) schema.GroupVersionKind {
 	for _, gvk := range []schema.GroupVersionKind{strimziKafkaGVK, strimziNodePoolGVK, strimziKafkaUserGVK, clickHouseInstallationGVK,
-		clickHouseKeeperGVK, tidbClusterGVK, k8ssandraClusterGVK, valkeyClusterGVK, statefulSetGVK, serviceGVK} {
+		clickHouseKeeperGVK, tidbClusterGVK, configMapGVK, k8ssandraClusterGVK, valkeyClusterGVK, statefulSetGVK, serviceGVK} {
 		if gvk.Kind == kind {
 			return gvk
 		}
