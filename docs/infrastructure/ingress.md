@@ -35,8 +35,36 @@ Pod Security, its own `NetworkSandbox`):
 | NetworkSandbox | The public reaches only 8443; the gateway reaches only the served backends' pods on their target ports, and DNS. |
 
 Every backend that admitted ingress-nginx now admits the gateway beside it: the Lake API
-(`allow-ingress-nginx`), Orama Cloud v1's dashboard and docs, and Lake environments. Lake apps do not
-(below).
+(`allow-ingress-nginx`) and Lake environments. Lake apps do not (below), and no Orama Cloud v1 pod
+does: Cloud v1 has its own controller (next section).
+
+## Orama Cloud v1: each stack runs its own ingress-nginx
+
+Bridge decision 5b of 2026-10-16, [#573](https://github.com/oramasearch/orama-operator/issues/573)
+(LSR-210, [#805](https://github.com/oramasearch/orama-operator/issues/805)). Cloud v1 shares neither
+the platform's ingress-nginx nor the gateway with Lake, so a flood on a v1 host does not land on the
+replicas that serve `lake.live`, and no misrouted gateway host reaches a v1 pod. For every
+`OramaCloudV1` that serves a host (an enabled dashboard or docs with a host, or a published writer or
+reader), `oramacloudv1_stack_ingress.go` renders, in the stack's namespace unless noted:
+
+| Object | What it is |
+|---|---|
+| `IngressClass/orama-v1-<namespace>-<name>` (cluster-scoped; cut to 63 characters with a hash when longer) | Controller `orama.cloud/<class>`. Not the default. Labelled with the stack's namespace and name; deleted when the stack serves no host, when it is deleted, and by a sweep in every v1 reconcile for a stack deleted while the operator was down. |
+| ServiceAccount and RoleBinding `<cr>-ingress-nginx` | The account mounts its token; the binding, in the stack's namespace only, is to the chart's ClusterRole `orama-v1-ingress-nginx`, upstream's namespace-scoped Role (read Ingresses, Services, endpoints, Secrets and ConfigMaps; write Ingress status, its lease and events). No cluster-wide binding. |
+| ConfigMap `<cr>-ingress-nginx` | `allow-snippet-annotations: "false"`; the client address from `CF-Connecting-IP` only from Cloudflare's ranges, the same list as the platform's (`TestStackIngressTrustsTheSameProxiesAsThePlatform`). |
+| Deployment `<cr>-ingress-nginx` | Upstream's controller, `v1.15.1` by digest (the version the platform's chart 4.15.1 runs), or `spec.images.overrides["ingress-nginx"]`. `--watch-namespace` its namespace, `--ingress-class` and `--controller-class` its own, `--ingress-class-by-name`, `--publish-service` its Service, ports 8080 and 8443 so it drops every capability, no admission webhook. Replicas follow the profile (1, 2 or 3). |
+| Service `<cr>-ingress-nginx` | `LoadBalancer`, 80 and 443 to 8080 and 8443, `externalTrafficPolicy: Local`. One public address per stack. |
+| NetworkSandbox allowances | `allow-ingress-nginx-public` (8080 and 8443 from any address), `allow-ingress-nginx-egress` (only the dashboard and docs on 3000 and the published writer and reader ports), `allow-ingress-nginx-apiserver-egress`. The dashboard, docs, writer and reader admit this controller alone. |
+
+Every Ingress the stack writes (`ingressSpec`, the `/metrics` deny companions, extra hosts) names the
+stack's class; `spec.components.ingressClassName` is ignored. Nothing for it is in `helmfile.yaml` or
+any `platform.yaml`: the stacks are made by their resources, and the platform ingress-nginx stays for
+everything else.
+
+**Rolling it moves each stack's DNS.** On the operator roll every Cloud v1 Ingress changes class, the
+platform controller drops it, the stack's controller takes it and publishes its new LoadBalancer
+address, and each `CloudflareDNSRecord` follows that address. Roll on `v1-dev` first and check its
+hosts, then the production members (`v1-prod`, Juan approves its applies).
 
 ## Interim ingress-nginx hardening (LSR-268)
 
@@ -123,7 +151,7 @@ that runs on that cluster:
 | Resource | Field |
 |---|---|
 | `Lake` | `spec.ingressClassName` (its Ingress and its environments') |
-| `OramaCloudV1` | `spec.components.ingressClassName` |
+| `OramaCloudV1` | none: always its own class ([above](#orama-cloud-v1-each-stack-runs-its-own-ingress-nginx)); `spec.components.ingressClassName` is ignored |
 | `OramaZettaCluster` | `spec.ingressClassName` |
 
 Each is `nginx` (the default) or `zetta-tunnel`. No operator flag or chart value changes, so no

@@ -255,10 +255,9 @@ type CloudflareSpec struct {
 // ComponentsSpec toggles + configures each part of v1.
 type ComponentsSpec struct {
 	Engine EngineSpec `json:"engine,omitempty"` // OramaCore writer + readers + Envoy
-	// IngressClassName is the ingress controller that serves this resource's Ingresses: "nginx"
-	// (ingress-nginx, the default until a cluster's cutover) or "zetta-tunnel" (zetta-tunnel's
-	// ingress gateway, docs/infrastructure/ingress.md). Changing it moves the hosts' DNS, because DNS
-	// follows the Ingress's load-balancer address.
+	// IngressClassName is ignored. Every Ingress of the stack is served by the stack's own
+	// ingress-nginx, whose IngressClass the operator derives from the stack (operator#573); it is
+	// never the platform's ingress-nginx or zetta-tunnel's gateway. Kept so stored objects stay valid.
 	// +kubebuilder:validation:Enum=nginx;zetta-tunnel
 	// +optional
 	IngressClassName string `json:"ingressClassName,omitempty"`

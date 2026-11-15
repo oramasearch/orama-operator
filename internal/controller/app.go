@@ -273,9 +273,8 @@ func ingressSpec(oc *oramav1alpha1.OramaCloudV1, name, host string, extraHosts [
 		})
 	}
 	return networkingv1.IngressSpec{
-		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
-		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
-		// spec.components.ingressClassName (default "nginx").
+		// Bind to the stack's own ingress-nginx (operator#573, oramacloudv1_stack_ingress.go), never
+		// the platform's or zetta-tunnel's gateway. spec.components.ingressClassName is ignored.
 		IngressClassName: strPtr(ingressClassName(oc)),
 		Rules:            rules,
 		TLS:              originTLS(rules),

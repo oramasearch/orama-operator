@@ -256,7 +256,7 @@ func TestNoExtraHostsRendersTheSingleHostIngress(t *testing.T) {
 	}
 	pathType := networkingv1.PathTypePrefix
 	want := networkingv1.IngressSpec{
-		IngressClassName: strPtr(defaultIngressClassName),
+		IngressClassName: strPtr(stackIngressClassFor("v1-dev", "v1-dev")),
 		TLS:              []networkingv1.IngressTLS{{Hosts: []string{publicDashboardHost}, SecretName: publicDashboardHost + "-tls"}},
 		Rules: []networkingv1.IngressRule{{Host: publicDashboardHost, IngressRuleValue: networkingv1.IngressRuleValue{
 			HTTP: &networkingv1.HTTPIngressRuleValue{Paths: []networkingv1.HTTPIngressPath{{

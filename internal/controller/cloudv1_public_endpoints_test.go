@@ -245,8 +245,8 @@ func TestPublicEngineEndpointsPublishIngressesAndDNS(t *testing.T) {
 		if !metav1.IsControlledBy(ing, h.oc) {
 			t.Errorf("%s Ingress is not controlled by the CR", component)
 		}
-		if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != defaultIngressClassName {
-			t.Errorf("%s class = %v, want the stack's default", component, ing.Spec.IngressClassName)
+		if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != stackIngressClassName(h.oc) {
+			t.Errorf("%s class = %v, want the stack's own (#573)", component, ing.Spec.IngressClassName)
 		}
 		if _, ok := h.record(component); ok {
 			t.Errorf("%s record exists before its Ingress has an address", component)
@@ -666,18 +666,13 @@ func TestPublicEngineEndpointsSandboxRules(t *testing.T) {
 		if len(rule.Ports) != 1 || rule.Ports[0].Port.IntVal != port {
 			t.Errorf("%s ports = %+v, want TCP %d", p.Name, rule.Ports, port)
 		}
-		var namespaces []string
-		for _, peer := range rule.From {
-			if peer.NamespaceSelector == nil || peer.PodSelector == nil || peer.IPBlock != nil {
-				t.Errorf("%s peer %+v is not a namespaced pod peer", p.Name, peer)
-				continue
-			}
-			namespaces = append(namespaces, peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
+		// The stack's own ingress-nginx alone (#573): never the platform's, never the zetta-tunnel
+		// gateway (bridge decision 19 of 2026-10-17).
+		if len(rule.From) != 1 || rule.From[0].NamespaceSelector != nil || rule.From[0].IPBlock != nil || rule.From[0].PodSelector == nil {
+			t.Fatalf("%s peers = %+v, want one same-namespace pod peer", p.Name, rule.From)
 		}
-		// ingress-nginx alone: the zetta-tunnel gateway never serves Cloud v1 (bridge decision 19 of
-		// 2026-10-17).
-		if strings.Join(namespaces, ",") != "ingress-nginx" {
-			t.Errorf("%s admits namespaces %v, want ingress-nginx only (no zetta-tunnel gateway peer)", p.Name, namespaces)
+		if got := rule.From[0].PodSelector.MatchLabels; got["app.kubernetes.io/component"] != stackIngressComponent || got["app.kubernetes.io/instance"] != "v1-dev" {
+			t.Errorf("%s admits %v, want this stack's ingress-nginx pods", p.Name, got)
 		}
 	}
 

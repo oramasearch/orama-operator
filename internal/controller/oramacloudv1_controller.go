@@ -15,6 +15,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -54,7 +56,11 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	var oc oramav1alpha1.OramaCloudV1
 	if err := r.Get(ctx, req.NamespacedName, &oc); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			// The stack's IngressClass is cluster-scoped, so no owner reference removes it (#573).
+			return ctrl.Result{}, r.deleteStackIngressClass(ctx, req.Namespace, req.Name)
+		}
+		return ctrl.Result{}, err
 	}
 
 	l.Info("reconciling OramaCloudV1", "region", oc.Spec.Region.Name, "role", oc.Spec.Region.Role, "profile", oc.Spec.Profile)
@@ -120,6 +126,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"ephemeral-storage", r.reconcileV1StorageDefaults},
 		{"bootstrap", r.reconcileBootstrap},    // shared config + generated credentials first
 		{"originTLS", r.reconcileOriginIssuer}, // the Issuer every Ingress below requests from (#457)
+		{"ingress", r.reconcileStackIngress},   // the stack's own ingress-nginx, whose class every Ingress names (#573)
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},
 		{"pgadmin", r.reconcilePgAdmin}, // pgAdmin4 web (admin UI for the control-DB)
@@ -199,6 +206,7 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Owns(&batchv1.Job{}).
 		Owns(&batchv1.CronJob{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
