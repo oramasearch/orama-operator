@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -135,6 +136,22 @@ func lakeAgentBusSecret(lake string) string { return "lake-" + lake + "-agent-bu
 func libraryAgentName(lake, key string) string { return lake + "-" + key }
 
 func agentLaunchName(lake, slug string) string { return lake + "-" + slug }
+
+// agentLaunchServiceTokenSecret holds a service launch's own service token (agent-runtime#14).
+func agentLaunchServiceTokenSecret(lake, slug string) string {
+	return agentLaunchName(lake, slug) + "-service-token"
+}
+
+// launchServiceToken is the bearer lake presents to one service launch, and the only one that
+// launch's agent-runtime accepts: HMAC-SHA256 of "agent-launch:<launch id>" keyed by the Lake's agent
+// service token, in hex. Lake computes the same value from LAKE_AGENT_SERVICE_TOKEN and the launch
+// id, so no copy of the Lake's token reaches the launch, and the person's code that runs in it
+// holds a token no library agent accepts (agent-runtime#14).
+func launchServiceToken(lakeToken, launchID string) string {
+	mac := hmac.New(sha256.New, []byte(lakeToken))
+	mac.Write([]byte("agent-launch:" + launchID))
+	return hex.EncodeToString(mac.Sum(nil))
+}
 
 func agentLaunchCredentialSecret(lake, slug string) string {
 	return agentLaunchName(lake, slug) + "-credential"
@@ -440,18 +457,60 @@ func (r *LakeReconciler) reconcileAgentWorkspaceSecrets(
 	namespace string,
 	labels map[string]string,
 	workspaceID string,
-	serviceMode bool,
 ) error {
 	// Orama's provider key is not copied (orama-operator#779): the pods here run a tenant's agent,
 	// which reaches models through lake's model gateway. removeWorkspaceProviderKeyCopies deletes
 	// copies an earlier operator made.
-	names := []string{lake.Spec.PullSecretName}
-	if serviceMode {
-		names = append(names, lakeAgentServiceTokenSecret(lake.Name))
+	// The Lake's agent service token is never copied here: a service launch gets its own token
+	// (reconcileAgentLaunchServiceToken), because the person's code runs in the same pod
+	// (agent-runtime#14). removeWorkspaceServiceTokenCopies deletes copies an earlier operator made.
+	return reconcileLakeSecretCopy(ctx, r.Client, r.Scheme, lake, workspaceID, namespace, lake.Spec.PullSecretName, labels)
+}
+
+// reconcileAgentLaunchServiceToken keeps Secret <lake>-<slug>-service-token (key `token`) in the
+// launch's namespace holding launchServiceToken for this launch, labelled with the launch id and
+// controlled by the Lake (agent-runtime#14).
+func (r *LakeReconciler) reconcileAgentLaunchServiceToken(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, launch *LakeAgentLaunch) error {
+	var source corev1.Secret
+	if err := r.Get(ctx, client.ObjectKey{Namespace: lakeNamespace(lake), Name: lakeAgentServiceTokenSecret(lake.Name)}, &source); err != nil {
+		return fmt.Errorf("read the agent service token: %w", err)
 	}
-	for _, name := range names {
-		if err := reconcileLakeSecretCopy(ctx, r.Client, r.Scheme, lake, workspaceID, namespace, name, labels); err != nil {
-			return err
+	lakeToken := string(source.Data[agentServiceTokenKey])
+	if lakeToken == "" {
+		return fmt.Errorf("Secret %s has no %q", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey)
+	}
+	name := agentLaunchServiceTokenSecret(lake.Name, launch.Slug)
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if secret.ResourceVersion != "" && (secret.Labels[agentLaunchIDLabel] != launch.ID || !metav1.IsControlledBy(secret, lake)) {
+			return fmt.Errorf("Secret %s/%s exists and is not this launch's service token", namespace, name)
+		}
+		secret.Labels = withLabels(labels, map[string]string{agentLaunchIDLabel: launch.ID})
+		secret.Data = map[string][]byte{agentServiceTokenKey: []byte(launchServiceToken(lakeToken, launch.ID))}
+		return controllerutil.SetControllerReference(lake, secret, r.Scheme)
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile the launch's service token %s: %w", name, err)
+	}
+	return nil
+}
+
+// removeWorkspaceServiceTokenCopies deletes every copy of the Lake's agent service token an earlier
+// operator made in a workspace namespace for a service launch (agent-runtime#14). Only a Secret of
+// that name, outside the Lake's namespace, controlled by this Lake and labelled with a workspace.
+func (r *LakeReconciler) removeWorkspaceServiceTokenCopies(ctx context.Context, lake *oramav1alpha1.Lake) error {
+	name := lakeAgentServiceTokenSecret(lake.Name)
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.HasLabels{workspaceLabel}); err != nil {
+		return fmt.Errorf("list workspace Secrets: %w", err)
+	}
+	for i := range secrets.Items {
+		secret := &secrets.Items[i]
+		if secret.Name != name || secret.Namespace == lakeNamespace(lake) || !metav1.IsControlledBy(secret, lake) {
+			continue
+		}
+		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("remove the agent service token copy from %s: %w", secret.Namespace, err)
 		}
 	}
 	return nil
@@ -521,12 +580,14 @@ func credentialDigest(credential string) string {
 
 func (launch *LakeAgentLaunch) env(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 	return agentRunEnv(lake, agentLaunchCredentialSecret(lake.Name, launch.Slug),
+		agentLaunchServiceTokenSecret(lake.Name, launch.Slug),
 		launch.CustomerID, launch.WorkspaceID, launch.AgentID, launch.Mode, launch.Input)
 }
 
 // agentRunEnv is what a run of a user-created agent is told: the base env, its credential, whose
 // agent it is, and for a job what it is asked to do.
-func agentRunEnv(lake *oramav1alpha1.Lake, credentialSecret, customerID, workspaceID, agentID, mode, input string) []corev1.EnvVar {
+// serviceTokenSecret is a service launch's own token Secret; a job gets none.
+func agentRunEnv(lake *oramav1alpha1.Lake, credentialSecret, serviceTokenSecret, customerID, workspaceID, agentID, mode, input string) []corev1.EnvVar {
 	env := agentBaseEnv(lake, lakeNamespace(lake))
 	for i := range env {
 		if env[i].Name == "LAKE_URL" {
@@ -546,7 +607,7 @@ func agentRunEnv(lake *oramav1alpha1.Lake, credentialSecret, customerID, workspa
 		}
 		env = append(env, corev1.EnvVar{Name: "AGENT_INPUT", Value: input})
 	} else {
-		env = append(env, secretEnv("AGENT_SERVICE_TOKEN", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey))
+		env = append(env, secretEnv("AGENT_SERVICE_TOKEN", serviceTokenSecret, agentServiceTokenKey))
 	}
 	return env
 }
@@ -612,7 +673,6 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 		namespace,
 		labels,
 		launch.WorkspaceID,
-		launch.Mode == agentLaunchModeService,
 	); err != nil {
 		return status, true, err
 	}
@@ -621,6 +681,11 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 		return status, true, err
 	}
 	status.CredentialSHA256 = credentialDigest(credential)
+	if launch.Mode == agentLaunchModeService {
+		if err := r.reconcileAgentLaunchServiceToken(ctx, lake, namespace, labels, launch); err != nil {
+			return status, true, err
+		}
+	}
 	name := agentLaunchName(lake.Name, launch.Slug)
 	launchLabels := agentLabels(labels, "agent-runtime", name, map[string]string{
 		agentLaunchIDLabel:     launch.ID,
@@ -716,6 +781,7 @@ func (r *LakeReconciler) stopAgentLaunch(ctx context.Context, lake *oramav1alpha
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentLaunchCredentialSecret(lake.Name, launch.Slug), Namespace: namespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: agentLaunchServiceTokenSecret(lake.Name, launch.Slug), Namespace: namespace}},
 	}
 	for _, object := range objects {
 		if err := r.Get(ctx, client.ObjectKeyFromObject(object), object); apierrors.IsNotFound(err) {

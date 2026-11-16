@@ -384,6 +384,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeLibraryAgents(ctx, &lake, ns, labels); err != nil {
 		log.Error(err, "library agents deferred")
 	}
+	// The Lake's agent service token never stays in a workspace namespace (agent-runtime#14).
+	if err := r.removeWorkspaceServiceTokenCopies(ctx, &lake); err != nil {
+		log.Error(err, "removing agent service token copies from workspace namespaces deferred")
+	}
 	// Orama's provider key never stays in a workspace namespace (orama-operator#779).
 	if err := r.removeWorkspaceProviderKeyCopies(ctx, &lake); err != nil {
 		log.Error(err, "removing provider key copies from workspace namespaces deferred")
