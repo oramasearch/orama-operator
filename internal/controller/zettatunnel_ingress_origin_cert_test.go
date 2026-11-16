@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// TestIngressGatewayNeverServesAHostThatRequiresOriginClientCertificates proves LSR-136
+// TestIngressGatewayNeverServesAHostThatRequiresOriginClientCertificates proves the rule
 // (operator#798). A Lake host whose zone has authenticated origin pulls carries
 // nginx's auth-tls annotations (applyLakeEdgeAnnotations): ingress-nginx refuses a caller without
 // the edge's client certificate. The zetta-tunnel gateway verifies no client certificate, so

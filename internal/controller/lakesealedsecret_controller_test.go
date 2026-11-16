@@ -733,7 +733,7 @@ func TestLakeSourceNeedsTheLakesAdminSecret(t *testing.T) {
 	}
 }
 
-// TestMintRequestNeverCarriesTheOperatorsKubernetesBearer is LSR-042 (orama-operator#791): the
+// TestMintRequestNeverCarriesTheOperatorsKubernetesBearer is orama-operator#791: the
 // operator's own service-account token authorizes cluster-wide Secret and workload access, so it
 // must never reach Lake, in the body or a header. Lake authenticates the mint with its own admin
 // bearer, which the operator minted for it, and nothing else.
@@ -794,7 +794,7 @@ func TestMintRequestNeverCarriesTheOperatorsKubernetesBearer(t *testing.T) {
 	}
 }
 
-// TestSealedSecretReconcilerReadsNoServiceAccountToken keeps LSR-042 fixed at the source: the
+// TestSealedSecretReconcilerReadsNoServiceAccountToken keeps it fixed at the source: the
 // sealed-secret reconciler has no reason to read the pod's Kubernetes token, so it must not name it.
 func TestSealedSecretReconcilerReadsNoServiceAccountToken(t *testing.T) {
 	source, err := os.ReadFile("lakesealedsecret_controller.go")

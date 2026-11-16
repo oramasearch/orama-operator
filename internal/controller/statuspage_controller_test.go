@@ -145,7 +145,7 @@ func newStatusFixture(t *testing.T, mutate func(*oramav1alpha1.StatusPage)) *sta
 	page := &oramav1alpha1.StatusPage{
 		ObjectMeta: metav1.ObjectMeta{Name: "lake-live", Namespace: "orama-system", Generation: 1},
 		Spec: oramav1alpha1.StatusPageSpec{
-			Title: "lake.live status", IntervalSeconds: 60, TimeoutSeconds: 5, FailureThreshold: 3,
+			Title: "lakelive.example status", IntervalSeconds: 60, TimeoutSeconds: 5, FailureThreshold: 3,
 			Components: []oramav1alpha1.StatusPageComponent{{
 				Name: "eu-api", Title: "API", Group: "Europe",
 				Checks: []oramav1alpha1.StatusPageCheck{
@@ -157,7 +157,7 @@ func newStatusFixture(t *testing.T, mutate func(*oramav1alpha1.StatusPage)) *sta
 						SecretRef: "probe-eu", BearerTokenKey: "token"},
 				},
 			}},
-			Publish: &oramav1alpha1.StatusPagePublish{BucketSecretRef: "status-bucket-s3", PublicURL: "https://status.lake.live"},
+			Publish: &oramav1alpha1.StatusPagePublish{BucketSecretRef: "status-bucket-s3", PublicURL: "https://status.lakelive.example"},
 			Alerts: oramav1alpha1.StatusPageAlerts{
 				Webhook: &oramav1alpha1.StatusPageWebhookAlert{SecretRef: "alerts-webhook"},
 			},
@@ -233,7 +233,7 @@ func TestStatusPageAllPassingIsOperationalAndPublished(t *testing.T) {
 	if doc.Phase != statusOperational || len(doc.Components) != 1 || doc.Components[0].Group != "Europe" || doc.Generated != f.now.Format(time.RFC3339) {
 		t.Fatalf("status.json %+v", doc)
 	}
-	if !strings.Contains(string(f.bucket.objects["index.html"]), "<title>lake.live status</title>") {
+	if !strings.Contains(string(f.bucket.objects["index.html"]), "<title>lakelive.example status</title>") {
 		t.Fatal("index.html has no title")
 	}
 	if f.webhook.count() != 0 {
@@ -275,7 +275,7 @@ func TestStatusPageOutageAfterThresholdAlertsOnceAndRecoversOnOnePass(t *testing
 	}
 	alert := f.webhook.bodies[0]
 	if alert["to"] != statusOutage || alert["from"] != statusOperational || !strings.Contains(alert["text"].(string), "Europe API is Outage") ||
-		alert["text"] != alert["content"] || !strings.Contains(alert["text"].(string), "https://status.lake.live") {
+		alert["text"] != alert["content"] || !strings.Contains(alert["text"].(string), "https://status.lakelive.example") {
 		t.Fatalf("alert %v", alert)
 	}
 	f.run(t)
@@ -378,13 +378,13 @@ func TestStatusPageEmailAlert(t *testing.T) {
 	})
 	if err := f.kube.Create(context.Background(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "alerts-smtp", Namespace: "orama-system"},
 		Data: map[string][]byte{"host": []byte("smtp.example"), "username": []byte("u"), "password": []byte("p"),
-			"from": []byte("Lake status <status@lake.live>"), "to": []byte("oncall@example.com")}}); err != nil {
+			"from": []byte("Lake status <status@lakelive.example>"), "to": []byte("oncall@example.com")}}); err != nil {
 		t.Fatal(err)
 	}
 	f.run(t)
 	f.lake.down.Store(true)
 	f.run(t)
-	if len(f.mails) != 1 || !strings.HasPrefix(f.mails[0], "[lake.live status] Europe API: Outage\n") {
+	if len(f.mails) != 1 || !strings.HasPrefix(f.mails[0], "[lakelive.example status] Europe API: Outage\n") {
 		t.Fatalf("mails %q", f.mails)
 	}
 }
@@ -481,7 +481,7 @@ func TestStatusCheckBodyAndPost(t *testing.T) {
 }
 
 func TestStatusMailMessageRefusesHeaderInjection(t *testing.T) {
-	account := statusMailAccount{From: "Lake status <status@lake.live>", To: []string{"a@example.com", "b@example.com"}}
+	account := statusMailAccount{From: "Lake status <status@lakelive.example>", To: []string{"a@example.com", "b@example.com"}}
 	msg := string(statusMailMessage(account, "subject\r\nBcc: evil@example.com", "line one\nline two", time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)))
 	if strings.Contains(msg, "\r\nBcc:") || !strings.Contains(msg, "To: a@example.com, b@example.com\r\n") || !strings.Contains(msg, "line one\r\nline two") {
 		t.Fatalf("message %q", msg)

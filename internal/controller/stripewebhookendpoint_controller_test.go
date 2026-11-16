@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	testWebhookURL        = "https://eu.lake.live/v1/billing/stripe/webhook"
+	testWebhookURL        = "https://eu.lakelive.example/v1/billing/stripe/webhook"
 	testWebhookAPIVersion = "2024-06-20"
 	testWebhookSecretName = "lake-stripe-webhook"
 )
@@ -269,9 +269,9 @@ func TestStripeWebhookEndpointUpdatesDriftAndReplacesOnANewAPIVersion(t *testing
 		t.Errorf("update key = %q", writes[1].IdempotencyKey)
 	}
 
-	f.edit(func(spec *oramav1alpha1.StripeWebhookEndpointSpec) { spec.URL = "https://eu.lake.live/stripe" })
+	f.edit(func(spec *oramav1alpha1.StripeWebhookEndpointSpec) { spec.URL = "https://eu.lakelive.example/stripe" })
 	f.reconcile()
-	if writes := stripe.writes(); len(writes) != 3 || len(writes[2].Form) != 1 || writes[2].Form.Get("url") != "https://eu.lake.live/stripe" {
+	if writes := stripe.writes(); len(writes) != 3 || len(writes[2].Form) != 1 || writes[2].Form.Get("url") != "https://eu.lakelive.example/stripe" {
 		t.Fatalf("writes = %+v", writes)
 	}
 

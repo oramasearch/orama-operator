@@ -251,7 +251,7 @@ func TestPaymentProviderFallsBackToTheModeWhenTheAccountIsUnreadable(t *testing.
 
 	stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
 	stripe.setFailure("GET /v1/account", forbidden)
-	stripe.endpoints = []fakeStripeEndpoint{{ID: "we_1", URL: "https://eu.lake.live/stripe", Livemode: false}}
+	stripe.endpoints = []fakeStripeEndpoint{{ID: "we_1", URL: "https://eu.lakelive.example/stripe", Livemode: false}}
 	f := newPaymentProviderFixture(t, stripe, false, testStripeKey)
 	provider, result := f.reconcile()
 	condition := wantCredentials(t, provider, metav1.ConditionTrue, "ModeVerified")

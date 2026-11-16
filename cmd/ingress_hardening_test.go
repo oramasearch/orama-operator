@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// LSR-268: both installation paths explicitly disable the admission webhook and per-Ingress
+// Both installation paths explicitly disable the admission webhook and per-Ingress
 // snippets while ingress-nginx remains required; chart defaults must not decide either policy.
 func TestIngressDisablesAdmissionWebhooksAndSnippetAnnotations(t *testing.T) {
 	check := func(where string, releases map[string]platformRelease) {

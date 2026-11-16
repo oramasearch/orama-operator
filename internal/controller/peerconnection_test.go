@@ -166,8 +166,8 @@ func TestPeerConnectionRehearsalBetweenTwoClusters(t *testing.T) {
 	link := &oramav1alpha1.PeerLink{
 		ObjectMeta: metav1.ObjectMeta{Name: "v1-eu-us"},
 		Spec: oramav1alpha1.PeerLinkSpec{PeerID: testPeerID, Ends: []oramav1alpha1.PeerLinkEnd{
-			{Name: "eu", ClusterRef: "orama-production-cluster-02", Namespace: "v1-eu", PeerConnection: "eu-us"},
-			{Name: "us", ClusterRef: "orama-production-cluster-03", Namespace: "v1-us", PeerConnection: "eu-us"},
+			{Name: "eu", ClusterRef: "example-production-eu", Namespace: "v1-eu", PeerConnection: "eu-us"},
+			{Name: "us", ClusterRef: "example-production-us", Namespace: "v1-us", PeerConnection: "eu-us"},
 		}},
 	}
 	management := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&oramav1alpha1.PeerLink{}).
@@ -200,8 +200,8 @@ func TestPeerConnectionRehearsalBetweenTwoClusters(t *testing.T) {
 	if current := reconcileLink(); current.Status.Phase != oramav1alpha1.PeerPhasePending {
 		t.Fatalf("PeerLink with unreachable clusters = %+v", current.Status)
 	}
-	clusters.clusters["orama-production-cluster-02"] = eu.kube
-	clusters.clusters["orama-production-cluster-03"] = us.kube
+	clusters.clusters["example-production-eu"] = eu.kube
+	clusters.clusters["example-production-us"] = us.kube
 	reconcileLink()
 	eu.reconcile(t)
 	us.reconcile(t)

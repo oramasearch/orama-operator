@@ -64,7 +64,7 @@ lake 0.5.2
   LAKE_REGION, LAKE_REGION_LABEL this Lake's region; LAKE_REGIONS the deployment's regions as JSON [{name,label,host,latitude,longitude}]
   LAKE_APEX_HOST the host whose every request gets the region picker
   LAKE_ORDER_SHEET JSON merged over the apex order sheet's default offers, prices and limits (docs/api/orders.md)
-  LAKE_RESEND_API_KEY Orama's Resend key for order email; LAKE_RESEND_FROM the sender (default Lake <orders@lake.live>); LAKE_SUPPORT_EMAIL where orders go (default support@orama.com)
+  LAKE_RESEND_API_KEY Orama's Resend key for order email; LAKE_RESEND_FROM the sender (default Lake <orders@lakelive.example>); LAKE_SUPPORT_EMAIL where orders go (default support@company.example)
   --memory-store an in-memory control plane for local demos and tests
 lake: ZETTA_EGRESS_ALLOW is not set: only Zettas on loopback are reachable
 lake: unknown argument manifest

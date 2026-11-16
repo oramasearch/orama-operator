@@ -108,14 +108,14 @@ func TestLakeDomainNeverTakesAPlatformHost(t *testing.T) {
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "eu", UID: "lake-uid"},
 		Spec: oramav1alpha1.LakeSpec{
-			Namespace: "lake", Host: "eu.lake.live", ApexHost: "lake.live",
-			PreviewWildcard: "preview.lake.live", Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "*.apps.lake.live"},
+			Namespace: "lake", Host: "eu.lakelive.example", ApexHost: "lakelive.example",
+			PreviewWildcard: "preview.lakelive.example", Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "*.apps.lakelive.example"},
 			DNSSecretRef: &corev1.LocalObjectReference{Name: "cloudflare-api-token-lake-live"},
 		},
 	}
 	other := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "nonprod"},
-		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake-nonprod", Host: "lake-dev.oramadev.net"},
+		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake-nonprod", Host: "lake-dev.nonprod.example"},
 	}
 	guard := newLakeDomainGuard(lake, []oramav1alpha1.Lake{*lake, *other},
 		[]oramav1alpha1.LakeApp{{
@@ -135,11 +135,11 @@ func TestLakeDomainNeverTakesAPlatformHost(t *testing.T) {
 			},
 		})
 	refusedHosts := []string{
-		"eu.lake.live", "login.eu.lake.live", // the Lake's host and beneath it
-		"lake.live", "status.lake.live", "login.lake.live", // the apex host, the zone
-		"shop.apps.lake.live", "apps.lake.live", // the apps wildcard
-		"x.preview.lake.live",                                // the preview wildcard
-		"lake-dev.oramadev.net", "app.lake-dev.oramadev.net", // another Lake on the cluster
+		"eu.lakelive.example", "login.eu.lakelive.example", // the Lake's host and beneath it
+		"lakelive.example", "status.lakelive.example", "login.lakelive.example", // the apex host, the zone
+		"shop.apps.lakelive.example", "apps.lakelive.example", // the apps wildcard
+		"x.preview.lakelive.example",                               // the preview wildcard
+		"lake-dev.nonprod.example", "app.lake-dev.nonprod.example", // another Lake on the cluster
 		"billing.customer.example",                      // a LakeApp's host
 		"taken.customer.example", "named.other.example", // another Lake's environment
 		"named.mine.example", // a named environment host of this Lake
@@ -151,7 +151,7 @@ func TestLakeDomainNeverTakesAPlatformHost(t *testing.T) {
 	rows = append(rows,
 		domainClaimRow("tenant", "production", "shop.customer.example", "2026-10-17T10:00:00.000000Z", false),
 		domainClaimRow("own", "e", "kept.customer.example", "2026-10-17T10:00:00.000000Z", false))
-	plan := planLakeDomains(lake, "eu.lake.live", rows, guard)
+	plan := planLakeDomains(lake, "eu.lakelive.example", rows, guard)
 	for _, host := range refusedHosts {
 		if refused := plan.refused["tenant\nproduction\n"+host]; refused == "" {
 			t.Errorf("%s was not refused", host)

@@ -343,7 +343,7 @@ func TestCloudflareTunnelNeverAdoptsARecordItDidNotCreate(t *testing.T) {
 	server := httptest.NewServer(api)
 	defer server.Close()
 	_, run, hostname := cloudflareTunnelRun(t, api, server.URL)
-	api.zone["prod-record"] = map[string]any{"name": hostname, "content": "app.orama.com", "comment": "Prod 1"}
+	api.zone["prod-record"] = map[string]any{"name": hostname, "content": "app.company.example", "comment": "Prod 1"}
 	errs := run()
 	if len(errs) == 0 || !strings.Contains(errs[0].Error(), "operator#585") {
 		t.Fatalf("errors = %v, want a refusal naming operator#585", errs)
@@ -354,7 +354,7 @@ func TestCloudflareTunnelNeverAdoptsARecordItDidNotCreate(t *testing.T) {
 			t.Fatalf("the tunnel changed the zone: %s", call)
 		}
 	}
-	if record := api.zone["prod-record"]; record["content"] != "app.orama.com" || record["comment"] != "Prod 1" {
+	if record := api.zone["prod-record"]; record["content"] != "app.company.example" || record["comment"] != "Prod 1" {
 		t.Fatalf("the existing record changed: %v", record)
 	}
 }

@@ -44,7 +44,7 @@ func bareLake() *oramav1alpha1.Lake {
 		Spec: oramav1alpha1.LakeSpec{
 			Namespace: "lake",
 			Image:     "oramasearch/lake:test",
-			Host:      "lake-dev.oramadev.net",
+			Host:      "lake-dev.nonprod.example",
 		},
 	}
 }
@@ -85,7 +85,7 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 		"LAKE_APPS_RUNTIME_IMAGE":        "oramasearch/app-runtime:976e6a8@sha256:ee7222fbbccdcd9dc4ec88c7ee6856b81aa876366a4abeae2bc6d13fda2146b3",
 		"LAKE_METHODOLOGY_RUNTIME_IMAGE": "oramasearch/methodology-runtime:ac58062@sha256:ee64b81a97a46917cfb278e3db3bf4692794ff3dba47ff9e05c3e436af97d1ed",
 		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892",
-		"LAKE_APPS_WILDCARD":             "lake-dev.oramadev.net",
+		"LAKE_APPS_WILDCARD":             "lake-dev.nonprod.example",
 		"LAKE_AGENT_MODEL":               "gpt-6.1-sol",
 		"LAKE_SERVICE_DIR":               lakeServicesMountPath,
 		"LAKE_AGENT_BUS_DIR":             lakeAgentBusMountPath,
@@ -251,7 +251,7 @@ func TestNothingCanTurnALakeFeatureOff(t *testing.T) {
 	// What a Lake stored before operator#539: the switches off. The CRD prunes them; decoding
 	// without them leaves every feature on.
 	var spec oramav1alpha1.LakeSpec
-	if err := json.Unmarshal([]byte(`{"image":"oramasearch/lake:test","host":"lake-dev.oramadev.net",
+	if err := json.Unmarshal([]byte(`{"image":"oramasearch/lake:test","host":"lake-dev.nonprod.example",
 		"workspaces":{"enabled":false},"services":{"enabled":false},"apps":{"enabled":false},
 		"builds":{"enabled":false},"snapshots":{"enabled":false}}`), &spec); err != nil {
 		t.Fatal(err)
@@ -285,11 +285,11 @@ func TestTheAppsWildcardDefaultsToTheLakeHost(t *testing.T) {
 	lake := bareLake()
 	lake.UID = "lake-uid"
 	lake.Spec.DNSSecretRef = &corev1.LocalObjectReference{Name: "cloudflare"}
-	if got := lakeAppsWildcard(lake); got != "lake-dev.oramadev.net" {
+	if got := lakeAppsWildcard(lake); got != "lake-dev.nonprod.example" {
 		t.Fatalf("wildcard = %q", got)
 	}
 	app := &oramav1alpha1.LakeApp{ObjectMeta: metav1.ObjectMeta{Name: "myapp"}}
-	if got := lakeAppHost(lake, app); got != "myapp.lake-dev.oramadev.net" {
+	if got := lakeAppHost(lake, app); got != "myapp.lake-dev.nonprod.example" {
 		t.Fatalf("app host = %q", got)
 	}
 	class := "nginx"
@@ -311,7 +311,7 @@ func TestTheAppsWildcardDefaultsToTheLakeHost(t *testing.T) {
 	if err := c.List(ctx, &records, client.InNamespace("lake")); err != nil {
 		t.Fatal(err)
 	}
-	if len(records.Items) != 1 || records.Items[0].Spec.Name != "*.lake-dev.oramadev.net" {
+	if len(records.Items) != 1 || records.Items[0].Spec.Name != "*.lake-dev.nonprod.example" {
 		t.Fatalf("apps DNS records: %+v", records.Items)
 	}
 }
@@ -320,9 +320,9 @@ func TestTheAppsWildcardDefaultsToTheLakeHost(t *testing.T) {
 // feature on the operator's defaults.
 func TestALakeSetMemberGetsEveryFeatureAndEveryDefault(t *testing.T) {
 	set := productionLakeSet(
-		oramav1alpha1.SetMember{ClusterRef: "orama-production-cluster-02", Name: "shared",
-			Spec: rawJSON(`{"host":"lake-eu.oramadev.net","args":["--node","shared"],` +
-				`"env":[{"name":"LAKE_PUBLIC_HOST","value":"lake-eu.oramadev.net"}]}`)},
+		oramav1alpha1.SetMember{ClusterRef: "example-production-eu", Name: "shared",
+			Spec: rawJSON(`{"host":"lake-eu.nonprod.example","args":["--node","shared"],` +
+				`"env":[{"name":"LAKE_PUBLIC_HOST","value":"lake-eu.nonprod.example"}]}`)},
 	)
 	members := &fakeMembers{ready: map[string]bool{}}
 	c := setTestClient(t, append(productionClusters(), set)...)
@@ -343,7 +343,7 @@ func TestALakeSetMemberGetsEveryFeatureAndEveryDefault(t *testing.T) {
 	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "shared"}, Spec: spec}
 	assertLakeRunsEveryFeature(t, lake)
 	env := lakeEnvMap(lake)
-	if env["LAKE_APPS_WILDCARD"].Value != "lake-eu.oramadev.net" ||
+	if env["LAKE_APPS_WILDCARD"].Value != "lake-eu.nonprod.example" ||
 		env["LAKE_APPS_RUNTIME_IMAGE"].Value != lakeDefaultAppsRuntimeImage ||
 		env["LAKE_MCP_RUNNER_IMAGE"].Value != lakeDefaultMCPRunnerImage ||
 		len(lakeAgentLibrary(lake)) != len(wantLakeDefaultLibrary) {

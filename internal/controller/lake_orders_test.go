@@ -134,7 +134,7 @@ const (
 	dedicatedOrder = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"
 )
 
-// orderWorld is the management cluster as lake.live has it: two production clusters running the
+// orderWorld is the management cluster as lakelive.example has it: two production clusters running the
 // lake-prod set, the Azure provider, and prod-03's platform and operator as the template.
 func orderWorld(withProvider bool) []client.Object {
 	cluster := func(name, region string) *oramav1alpha1.KubernetesCluster {
@@ -148,42 +148,42 @@ func orderWorld(withProvider bool) []client.Object {
 		}
 	}
 	objects := []client.Object{
-		cluster("orama-production-cluster-02", "swedencentral"),
-		cluster("orama-production-cluster-03", "eastus"),
+		cluster("example-production-eu", "swedencentral"),
+		cluster("example-production-us", "eastus"),
 		&oramav1alpha1.ClusterHelmRelease{ObjectMeta: metav1.ObjectMeta{Name: "prod3-cert-manager"},
-			Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "orama-production-cluster-03", ReleaseName: "cert-manager", Namespace: "cert-manager",
+			Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "example-production-us", ReleaseName: "cert-manager", Namespace: "cert-manager",
 				Chart: oramav1alpha1.ClusterHelmChart{Repository: "https://charts.jetstack.io", Name: "cert-manager", Version: "v1.21.2"}}},
 		&oramav1alpha1.ClusterHelmRelease{ObjectMeta: metav1.ObjectMeta{Name: "prod3-strimzi"},
-			Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "orama-production-cluster-03", ReleaseName: "strimzi", Namespace: "strimzi",
+			Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "example-production-us", ReleaseName: "strimzi", Namespace: "strimzi",
 				Chart:     oramav1alpha1.ClusterHelmChart{Repository: "https://strimzi.io/charts/", Name: "strimzi-kafka-operator", Version: "1.2.0"},
 				DependsOn: []string{"prod3-cert-manager"}}},
 		&oramav1alpha1.ClusterHelmRelease{ObjectMeta: metav1.ObjectMeta{Name: "prod2-cert-manager"},
-			Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "orama-production-cluster-02", ReleaseName: "cert-manager", Namespace: "cert-manager",
+			Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "example-production-eu", ReleaseName: "cert-manager", Namespace: "cert-manager",
 				Chart: oramav1alpha1.ClusterHelmChart{Repository: "https://charts.jetstack.io", Name: "cert-manager", Version: "v1.21.2"}}},
-		&oramav1alpha1.OramaOperator{ObjectMeta: metav1.ObjectMeta{Name: "orama-production-cluster-03"},
-			Spec: oramav1alpha1.OramaOperatorSpec{ClusterRef: "orama-production-cluster-03", Version: "v0.6.1", Namespace: "orama-system",
+		&oramav1alpha1.OramaOperator{ObjectMeta: metav1.ObjectMeta{Name: "example-production-us"},
+			Spec: oramav1alpha1.OramaOperatorSpec{ClusterRef: "example-production-us", Version: "v0.6.1", Namespace: "orama-system",
 				ImagePullSecretRef: oramav1alpha1.ClusterSecretReference{Name: "oramasearch-dockerhub", Namespace: "orama-system"}}},
 		&oramav1alpha1.LakeSet{ObjectMeta: metav1.ObjectMeta{Name: "lake-prod"},
 			Spec: oramav1alpha1.LakeSetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 				Template: *rawJSON(`{"image":"oramasearch/lake:v0.2.0","ingressEnabled":true,"dnsSecretRef":{"name":"cloudflare-api-token-lake-live"}}`),
 				Secrets:  []oramav1alpha1.SetSecret{{Name: "oramasearch-dockerhub", Namespace: "lake"}},
 				Clusters: []oramav1alpha1.SetMember{
-					{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"host":"eu.lake.live"}`)},
-					{ClusterRef: "orama-production-cluster-03", Name: "shared-us", Spec: rawJSON(`{"host":"us.lake.live"}`)},
+					{ClusterRef: "example-production-eu", Name: "shared", Spec: rawJSON(`{"host":"eu.lakelive.example"}`)},
+					{ClusterRef: "example-production-us", Name: "shared-us", Spec: rawJSON(`{"host":"us.lakelive.example"}`)},
 				},
 				DeletionPolicy: oramav1alpha1.SetDeletionRetain,
 			}}},
 		&oramav1alpha1.LakeOrderSource{ObjectMeta: metav1.ObjectMeta{Name: "lake-live"},
-			Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: "lake-prod", HostDomain: "lake.live",
+			Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: "lake-prod", HostDomain: "lakelive.example",
 				Member:           rawJSON(`{"clerk":{"secretKeySecretRef":{"name":"clerk-secret-key"}}}`),
 				MemberSecrets:    []oramav1alpha1.SetSecret{{Name: "clerk-lake-prod", Namespace: "lake", As: "clerk-secret-key"}},
-				DedicatedCluster: &oramav1alpha1.LakeOrderDedicatedCluster{ProviderRef: "azure-orama", TemplateClusterRef: "orama-production-cluster-03"}}},
+				DedicatedCluster: &oramav1alpha1.LakeOrderDedicatedCluster{ProviderRef: "azure-orama", TemplateClusterRef: "example-production-us"}}},
 	}
 	if withProvider {
 		objects = append(objects, &oramav1alpha1.KubernetesClusterProvider{ObjectMeta: metav1.ObjectMeta{Name: "azure-orama"},
 			Spec: oramav1alpha1.KubernetesClusterProviderSpec{Type: oramav1alpha1.KubernetesClusterProviderAKS,
 				CredentialsSecretRef: oramav1alpha1.ClusterSecretReference{Name: "azure-cluster-management", Namespace: "orama-system"},
-				AKS:                  &oramav1alpha1.AksProviderSettings{SubscriptionID: "aff019e7-3b91-47a8-8cd7-4ceef2ddb47e"}}})
+				AKS:                  &oramav1alpha1.AksProviderSettings{SubscriptionID: "22222222-3333-4444-5555-666666666666"}}})
 	}
 	return objects
 }
@@ -380,11 +380,11 @@ func scenarioPrivateWarehouse(h *orderHarness) {
 	if set.Labels[orderIDLabel] != warehouseOrder || set.Labels[orderSourceLabel] != "lake-live" || !strings.Contains(set.Annotations[orderOwnerAnnotation], warehouseOrder) {
 		t.Fatalf("the LakeSet does not say which order it is for: %v %v", set.Labels, set.Annotations)
 	}
-	if len(set.Spec.Clusters) != 1 || set.Spec.Clusters[0].ClusterRef != "orama-production-cluster-02" || set.Spec.Clusters[0].Name != "order-0a1b2c3d4e5f" {
+	if len(set.Spec.Clusters) != 1 || set.Spec.Clusters[0].ClusterRef != "example-production-eu" || set.Spec.Clusters[0].Name != "order-0a1b2c3d4e5f" {
 		t.Fatalf("a private warehouse in swedencentral runs on prod-02 as its own member: %+v", set.Spec.Clusters)
 	}
 	member := string(set.Spec.Clusters[0].Spec.Raw)
-	for _, want := range []string{`"host":"order-0a1b2c3d4e5f.lake.live"`, `"--node","order-0a1b2c3d4e5f"`, `"clerk"`} {
+	for _, want := range []string{`"host":"order-0a1b2c3d4e5f.lakelive.example"`, `"--node","order-0a1b2c3d4e5f"`, `"clerk"`} {
 		if !strings.Contains(member, want) {
 			t.Fatalf("member spec %s lacks %s", member, want)
 		}
@@ -405,7 +405,7 @@ func scenarioPrivateWarehouse(h *orderHarness) {
 
 	h.setReady("order-0a1b2c3d4e5f")
 	h.reconcile()
-	if o := eu.order(warehouseOrder); o.State != cloudOrderReady || o.Host != "order-0a1b2c3d4e5f.lake.live" {
+	if o := eu.order(warehouseOrder); o.State != cloudOrderReady || o.Host != "order-0a1b2c3d4e5f.lakelive.example" {
 		t.Fatalf("a Ready LakeSet makes the order ready with its host, got %+v", o)
 	}
 	expectEvents(t, eu, warehouseOrder, "paid->provisioning", "provisioning->ready")
@@ -461,8 +461,8 @@ func scenarioDedicatedCluster(h *orderHarness) {
 	}
 	h.setReady(name)
 	h.reconcile()
-	if o := us.order(dedicatedOrder); o.State != cloudOrderReady || o.Host != name+".lake.live" {
-		t.Fatalf("order %+v, want ready at %s.lake.live", o, name)
+	if o := us.order(dedicatedOrder); o.State != cloudOrderReady || o.Host != name+".lakelive.example" {
+		t.Fatalf("order %+v, want ready at %s.lakelive.example", o, name)
 	}
 	expectEvents(t, us, dedicatedOrder, "paid->provisioning", "provisioning->ready")
 }
@@ -535,7 +535,7 @@ func scenarioNoCloudIdentity(h *orderHarness) {
 	provider = oramav1alpha1.KubernetesClusterProvider{ObjectMeta: metav1.ObjectMeta{Name: "azure-orama"},
 		Spec: oramav1alpha1.KubernetesClusterProviderSpec{Type: oramav1alpha1.KubernetesClusterProviderAKS,
 			CredentialsSecretRef: oramav1alpha1.ClusterSecretReference{Name: "azure-cluster-management", Namespace: "orama-system"},
-			AKS:                  &oramav1alpha1.AksProviderSettings{SubscriptionID: "aff019e7-3b91-47a8-8cd7-4ceef2ddb47e"}}}
+			AKS:                  &oramav1alpha1.AksProviderSettings{SubscriptionID: "22222222-3333-4444-5555-666666666666"}}}
 	if err := h.c.Create(context.Background(), &provider); err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +615,7 @@ func scenarioNothingClaimed(h *orderHarness) {
 	eu.orders[later] = &CloudOrder{ID: later, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid}
 	eu.mu.Unlock()
 	source := h.source()
-	source.Spec.Member = rawJSON(`{"env":[{"name":"LAKE_PUBLIC_HOST","value":"x.lake.live"}]}`)
+	source.Spec.Member = rawJSON(`{"env":[{"name":"LAKE_PUBLIC_HOST","value":"x.lakelive.example"}]}`)
 	if err := h.c.Update(context.Background(), source); err != nil {
 		t.Fatal(err)
 	}
@@ -647,7 +647,7 @@ func scenarioDedicatedClusterIsCopiedOnce(h *orderHarness) {
 	// Cloud v1 work on the template cluster: a new operator, a Kubernetes upgrade, a node pool and a
 	// chart.
 	var template oramav1alpha1.KubernetesCluster
-	h.get("orama-production-cluster-03", &template)
+	h.get("example-production-us", &template)
 	count := int32(2)
 	template.Spec.KubernetesVersion = "1.36"
 	template.Spec.NodePools = append(template.Spec.NodePools, oramav1alpha1.ClusterNodePool{Name: "readers", Role: oramav1alpha1.ClusterNodePoolUser, MachineSize: "Standard_D16as_v7", Count: &count})
@@ -655,13 +655,13 @@ func scenarioDedicatedClusterIsCopiedOnce(h *orderHarness) {
 		t.Fatal(err)
 	}
 	var operator oramav1alpha1.OramaOperator
-	h.get("orama-production-cluster-03", &operator)
+	h.get("example-production-us", &operator)
 	operator.Spec.Version = "v0.7.0"
 	if err := h.c.Update(ctx, &operator); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.c.Create(ctx, &oramav1alpha1.ClusterHelmRelease{ObjectMeta: metav1.ObjectMeta{Name: "prod3-readers"},
-		Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "orama-production-cluster-03", ReleaseName: "readers", Namespace: "readers",
+		Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "example-production-us", ReleaseName: "readers", Namespace: "readers",
 			Chart: oramav1alpha1.ClusterHelmChart{Repository: "https://charts.example.com", Name: "readers", Version: "1.0.0"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -701,7 +701,7 @@ func scenarioWarehouseStaysPlaced(h *orderHarness) {
 	}
 
 	count := int32(1)
-	if err := h.c.Create(ctx, &oramav1alpha1.KubernetesCluster{ObjectMeta: metav1.ObjectMeta{Name: "orama-production-cluster-04"},
+	if err := h.c.Create(ctx, &oramav1alpha1.KubernetesCluster{ObjectMeta: metav1.ObjectMeta{Name: "example-production-asia"},
 		Spec: oramav1alpha1.KubernetesClusterSpec{ProviderRef: "azure-orama", Region: "swedencentral", KubernetesVersion: "1.35",
 			NodePools:      []oramav1alpha1.ClusterNodePool{{Name: "agentpool", Role: oramav1alpha1.ClusterNodePoolSystem, MachineSize: "Standard_D8as_v7", Count: &count}},
 			DeletionPolicy: oramav1alpha1.ClusterDeletionRetain}}); err != nil {
@@ -709,7 +709,7 @@ func scenarioWarehouseStaysPlaced(h *orderHarness) {
 	}
 	var prod oramav1alpha1.LakeSet
 	h.get("lake-prod", &prod)
-	prod.Spec.Clusters = append([]oramav1alpha1.SetMember{{ClusterRef: "orama-production-cluster-04", Name: "shared-2", Spec: rawJSON(`{"host":"eu2.lake.live"}`)}}, prod.Spec.Clusters...)
+	prod.Spec.Clusters = append([]oramav1alpha1.SetMember{{ClusterRef: "example-production-asia", Name: "shared-2", Spec: rawJSON(`{"host":"eu2.lakelive.example"}`)}}, prod.Spec.Clusters...)
 	if err := h.c.Update(ctx, &prod); err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +718,7 @@ func scenarioWarehouseStaysPlaced(h *orderHarness) {
 	h.reconcile()
 	var set oramav1alpha1.LakeSet
 	h.get(name, &set)
-	if len(set.Spec.Clusters) != 1 || set.Spec.Clusters[0].ClusterRef != "orama-production-cluster-02" {
+	if len(set.Spec.Clusters) != 1 || set.Spec.Clusters[0].ClusterRef != "example-production-eu" {
 		t.Fatalf("the ready warehouse was moved: %+v", set.Spec.Clusters)
 	}
 	// A new order in the region is placed by the set's order as before.
@@ -728,7 +728,7 @@ func scenarioWarehouseStaysPlaced(h *orderHarness) {
 	eu.mu.Unlock()
 	h.reconcile()
 	var placed oramav1alpha1.LakeSet
-	if !h.get(orderResourceName(second), &placed) || placed.Spec.Clusters[0].ClusterRef != "orama-production-cluster-04" {
+	if !h.get(orderResourceName(second), &placed) || placed.Spec.Clusters[0].ClusterRef != "example-production-asia" {
 		t.Fatalf("a new order is placed on the region's first cluster: %+v", placed.Spec.Clusters)
 	}
 }

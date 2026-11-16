@@ -112,7 +112,7 @@ func TestPaymentWebhookEndpointEnvtestOwnsItsStripeEndpoint(t *testing.T) {
 		}
 	})
 	for name, change := range map[string]func(*oramav1alpha1.PaymentWebhookEndpointSpec){
-		"plain HTTP":  func(spec *oramav1alpha1.PaymentWebhookEndpointSpec) { spec.URL = "http://eu.lake.live/stripe" },
+		"plain HTTP":  func(spec *oramav1alpha1.PaymentWebhookEndpointSpec) { spec.URL = "http://eu.lakelive.example/stripe" },
 		"no events":   func(spec *oramav1alpha1.PaymentWebhookEndpointSpec) { spec.Events = nil },
 		"unknown app": func(spec *oramav1alpha1.PaymentWebhookEndpointSpec) { spec.App = "dashboard" },
 	} {

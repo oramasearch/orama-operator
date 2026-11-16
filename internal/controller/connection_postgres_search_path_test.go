@@ -23,7 +23,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// TestConnectionRolesIgnoreTheOwnersSearchPath proves operator#800 (LSR-138) against a real server.
+// TestConnectionRolesIgnoreTheOwnersSearchPath proves operator#800 against a real server.
 // The service's database owner is the tenant: it may set the database's default search_path and
 // create objects in its own schemas. It puts a schema of its own ahead of pg_catalog and fills it
 // with look-alikes of every catalog view, function and operator the operator uses, each of which

@@ -35,11 +35,11 @@ import (
 // with the same backend, origin TLS covers all of them, and only host gets a DNS record.
 
 const (
-	aliasDashboardHost = "app-alias-dev.oramadev.net"
-	aliasDocsHost      = "docs-alias-dev.oramadev.net"
-	aliasWriterHost    = "writer-alias-dev.oramadev.net"
-	aliasReaderHost    = "reader-alias-dev.oramadev.net"
-	publicDocsHost     = "docs-dev.oramadev.net"
+	aliasDashboardHost = "app-alias-dev.nonprod.example"
+	aliasDocsHost      = "docs-alias-dev.nonprod.example"
+	aliasWriterHost    = "writer-alias-dev.nonprod.example"
+	aliasReaderHost    = "reader-alias-dev.nonprod.example"
+	publicDocsHost     = "docs-dev.nonprod.example"
 )
 
 // extraHostsHarness is a fake cluster that counts object writes and status writes apart.
@@ -220,17 +220,17 @@ func assertRoutes(t *testing.T, ing *networkingv1.Ingress, service string, port 
 	assertIngressTLS(t, ing, "v1-dev-letsencrypt")
 }
 
-// The cutover example: the dashboard answers app.orama.ing then app.orama.com, both to its Service
+// The cutover example: the dashboard answers app.cloudv1.example then app.company.example, both to its Service
 // on 3000, with a certificate for each.
 func TestDashboardIngressAnswersExtraHosts(t *testing.T) {
 	oc := publicStack(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.cloudv1.example", ExtraHosts: []string{"app.company.example"}}}
 	})
 	h := newExtraHostsHarness(t)
 	if err := h.r.reconcileDashboard(context.Background(), oc); err != nil {
 		t.Fatal(err)
 	}
-	assertRoutes(t, h.ingress("dashboard"), "v1-dev-dashboard", 3000, "app.orama.ing", "app.orama.com")
+	assertRoutes(t, h.ingress("dashboard"), "v1-dev-dashboard", 3000, "app.cloudv1.example", "app.company.example")
 }
 
 // Docs, writer and reader each forward their own extra hosts to their own Service and port.
@@ -286,13 +286,13 @@ func TestExtraHostsAddAndRemove(t *testing.T) {
 	h.publish(oc)
 	original := h.ingress("dashboard").Spec
 
-	extras := []string{"b.oramadev.net", "a.oramadev.net"}
+	extras := []string{"b.nonprod.example", "a.nonprod.example"}
 	oc.Spec.Components.Dashboard.ExtraHosts = extras
 	oc.Spec.Components.Engine.Writer.ExtraHosts = []string{aliasWriterHost}
 	h.publish(oc)
-	assertRoutes(t, h.ingress("dashboard"), "v1-dev-dashboard", 3000, publicDashboardHost, "b.oramadev.net", "a.oramadev.net")
+	assertRoutes(t, h.ingress("dashboard"), "v1-dev-dashboard", 3000, publicDashboardHost, "b.nonprod.example", "a.nonprod.example")
 	assertRoutes(t, h.ingress("writer"), "v1-dev-writer", oramacorePort, publicWriterHost, aliasWriterHost)
-	if !slices.Equal(extras, []string{"b.oramadev.net", "a.oramadev.net"}) {
+	if !slices.Equal(extras, []string{"b.nonprod.example", "a.nonprod.example"}) {
 		t.Errorf("the CR's extraHosts changed to %v", extras)
 	}
 	before := h.writes
@@ -301,10 +301,10 @@ func TestExtraHostsAddAndRemove(t *testing.T) {
 		t.Errorf("an unchanged reconcile wrote %d times", h.writes-before)
 	}
 
-	oc.Spec.Components.Dashboard.ExtraHosts = []string{"a.oramadev.net"}
+	oc.Spec.Components.Dashboard.ExtraHosts = []string{"a.nonprod.example"}
 	oc.Spec.Components.Engine.Writer.ExtraHosts = nil
 	h.publish(oc)
-	assertRoutes(t, h.ingress("dashboard"), "v1-dev-dashboard", 3000, publicDashboardHost, "a.oramadev.net")
+	assertRoutes(t, h.ingress("dashboard"), "v1-dev-dashboard", 3000, publicDashboardHost, "a.nonprod.example")
 	assertRoutes(t, h.ingress("writer"), "v1-dev-writer", oramacorePort, publicWriterHost)
 
 	oc.Spec.Components.Dashboard.ExtraHosts = []string{}
@@ -351,7 +351,7 @@ func TestExtraHostsGetNoDNSRecord(t *testing.T) {
 	}
 	assertRecords("with extras")
 
-	oc.Spec.Components.Dashboard.ExtraHosts = []string{aliasDashboardHost, "app-alias2-dev.oramadev.net"}
+	oc.Spec.Components.Dashboard.ExtraHosts = []string{aliasDashboardHost, "app-alias2-dev.nonprod.example"}
 	oc.Spec.Components.Engine.Writer.ExtraHosts = nil
 	h.publish(oc)
 	assertRecords("after changing extras")
@@ -385,7 +385,7 @@ func TestExtraHostsKeepLifecycleRules(t *testing.T) {
 			o.Spec.Region.Role = "read"
 		}, []string{"writer"}},
 		"deprecated oramasearchApp": {func(o *oramav1alpha1.OramaCloudV1) {
-			o.Spec.Components.OramasearchApp = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "api.oramadev.net", ExtraHosts: []string{"api-alias.oramadev.net"}}
+			o.Spec.Components.OramasearchApp = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "api.nonprod.example", ExtraHosts: []string{"api-alias.nonprod.example"}}
 		}, []string{"oramasearch-app"}},
 	}
 	for name, c := range cases {
@@ -414,48 +414,48 @@ func TestValidateIngressHosts(t *testing.T) {
 	}{
 		"no hosts": {func(*oramav1alpha1.ComponentsSpec) {}, ""},
 		"an extra host that is not a lowercase DNS name": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"App.Orama.com"}}}
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.cloudv1.example", ExtraHosts: []string{"App.Orama.com"}}}
 		}, `spec.components.dashboard.extraHosts[0] "App.Orama.com" must be a lowercase DNS name with at least one dot`},
 		"distinct hosts and extras": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}}
-			c.Docs = oramav1alpha1.ToggleWithHost{Host: "docs.orama.ing", ExtraHosts: []string{"docs.orama.com"}}
-			c.Engine.Writer.Host, c.Engine.Writer.ExtraHosts = "writer.orama.ing", []string{"writer.orama.com"}
-			c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "reader.orama.ing", []string{"reader.orama.com"}
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.cloudv1.example", ExtraHosts: []string{"app.company.example"}}}
+			c.Docs = oramav1alpha1.ToggleWithHost{Host: "docs.cloudv1.example", ExtraHosts: []string{"docs.company.example"}}
+			c.Engine.Writer.Host, c.Engine.Writer.ExtraHosts = "writer.cloudv1.example", []string{"writer.company.example"}
+			c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "reader.cloudv1.example", []string{"reader.company.example"}
 		}, ""},
 		"primary and primary": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard.Host, c.Docs.Host = "app.orama.ing", "APP.orama.ing"
-		}, `spec.components.dashboard.host and spec.components.docs.host are both "APP.orama.ing"`},
+			c.Dashboard.Host, c.Docs.Host = "app.cloudv1.example", "APP.cloudv1.example"
+		}, `spec.components.dashboard.host and spec.components.docs.host are both "APP.cloudv1.example"`},
 		"primary and its own extra, case variant": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"APP.orama.ing"}}}
-		}, `spec.components.dashboard.host and spec.components.dashboard.extraHosts[0] are both "APP.orama.ing"`},
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.cloudv1.example", ExtraHosts: []string{"APP.cloudv1.example"}}}
+		}, `spec.components.dashboard.host and spec.components.dashboard.extraHosts[0] are both "APP.cloudv1.example"`},
 		"repeated extra in one list": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"alias.oramadev.net", "ALIAS.oramadev.net"}}}
-		}, `spec.components.dashboard.extraHosts[0] and spec.components.dashboard.extraHosts[1] are both "ALIAS.oramadev.net"`},
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.cloudv1.example", ExtraHosts: []string{"alias.nonprod.example", "ALIAS.nonprod.example"}}}
+		}, `spec.components.dashboard.extraHosts[0] and spec.components.dashboard.extraHosts[1] are both "ALIAS.nonprod.example"`},
 		"extra and a disabled component's primary": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}}
-			c.Docs = oramav1alpha1.ToggleWithHost{Enabled: false, Host: "app.orama.com"}
-		}, `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "app.orama.com"`},
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.cloudv1.example", ExtraHosts: []string{"app.company.example"}}}
+			c.Docs = oramav1alpha1.ToggleWithHost{Enabled: false, Host: "app.company.example"}
+		}, `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "app.company.example"`},
 		"extra and extra across components": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Docs = oramav1alpha1.ToggleWithHost{Host: "docs.orama.ing", ExtraHosts: []string{"x.oramadev.net"}}
-			c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "reader.orama.ing", []string{"y.oramadev.net", "X.oramadev.net"}
-		}, `spec.components.docs.extraHosts[0] and spec.components.engine.reader.extraHosts[1] are both "X.oramadev.net"`},
+			c.Docs = oramav1alpha1.ToggleWithHost{Host: "docs.cloudv1.example", ExtraHosts: []string{"x.nonprod.example"}}
+			c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "reader.cloudv1.example", []string{"y.nonprod.example", "X.nonprod.example"}
+		}, `spec.components.docs.extraHosts[0] and spec.components.engine.reader.extraHosts[1] are both "X.nonprod.example"`},
 		"deprecated oramasearchApp": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard.Host = "app.orama.ing"
-			c.OramasearchApp = oramav1alpha1.ToggleWithHost{Host: "api.orama.ing", ExtraHosts: []string{"app.orama.ing"}}
-		}, `spec.components.dashboard.host and spec.components.oramasearchApp.extraHosts[0] are both "app.orama.ing"`},
+			c.Dashboard.Host = "app.cloudv1.example"
+			c.OramasearchApp = oramav1alpha1.ToggleWithHost{Host: "api.cloudv1.example", ExtraHosts: []string{"app.cloudv1.example"}}
+		}, `spec.components.dashboard.host and spec.components.oramasearchApp.extraHosts[0] are both "app.cloudv1.example"`},
 		"writer extra and reader primary with the engine disabled": {func(c *oramav1alpha1.ComponentsSpec) {
 			c.Engine.Enabled = false
-			c.Engine.Writer.Host, c.Engine.Writer.ExtraHosts = "writer.orama.ing", []string{"reader.orama.ing"}
-			c.Engine.Reader.Host = "reader.orama.ing"
-		}, `spec.components.engine.writer.extraHosts[0] and spec.components.engine.reader.host are both "reader.orama.ing"`},
+			c.Engine.Writer.Host, c.Engine.Writer.ExtraHosts = "writer.cloudv1.example", []string{"reader.cloudv1.example"}
+			c.Engine.Reader.Host = "reader.cloudv1.example"
+		}, `spec.components.engine.writer.extraHosts[0] and spec.components.engine.reader.host are both "reader.cloudv1.example"`},
 		"extras without a primary": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Engine.Writer.ExtraHosts = []string{"writer-alias.oramadev.net"}
+			c.Engine.Writer.ExtraHosts = []string{"writer-alias.nonprod.example"}
 		}, "spec.components.engine.writer.extraHosts requires spec.components.engine.writer.host"},
 		"empty extra": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Docs = oramav1alpha1.ToggleWithHost{Host: "docs.orama.ing", ExtraHosts: []string{"docs.orama.com", ""}}
+			c.Docs = oramav1alpha1.ToggleWithHost{Host: "docs.cloudv1.example", ExtraHosts: []string{"docs.company.example", ""}}
 		}, "spec.components.docs.extraHosts[1] must be 1 to 253 characters, got 0"},
 		"too-long extra": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "reader.orama.ing", []string{long}
+			c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "reader.cloudv1.example", []string{long}
 		}, "spec.components.engine.reader.extraHosts[0] must be 1 to 253 characters, got 254"},
 	}
 	for name, c := range cases {
@@ -555,7 +555,7 @@ func TestReconcileRefusesInvalidHostsBeforeAnyChild(t *testing.T) {
 	if got := h.versions(); len(got) != 0 {
 		t.Errorf("children after a refused reconcile: %v", got)
 	}
-	assertInvalidHosts(t, h.stored(), `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "docs-dev.oramadev.net"`)
+	assertInvalidHosts(t, h.stored(), `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "docs-dev.nonprod.example"`)
 
 	h.run()
 	if h.writes != 0 || h.statusWrites != 1 {
@@ -631,9 +631,9 @@ func TestExtraHostsAdmission(t *testing.T) {
 		"engine.reader": {"engine", "reader"},
 	}
 	for name, path := range components {
-		for extra, reject := range map[string]bool{"app.orama.com": false, "App.Orama.com": true, "localhost": true, "app.orama.com:443": true} {
+		for extra, reject := range map[string]bool{"app.company.example": false, "App.Orama.com": true, "localhost": true, "app.company.example:443": true} {
 			t.Run(name+"/"+extra, func(t *testing.T) {
-				leaf := map[string]interface{}{"host": "primary.orama.ing", "extraHosts": []interface{}{extra}}
+				leaf := map[string]interface{}{"host": "primary.cloudv1.example", "extraHosts": []interface{}{extra}}
 				var node interface{} = leaf
 				for i := len(path) - 1; i >= 0; i-- {
 					node = map[string]interface{}{path[i]: node}

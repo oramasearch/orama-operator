@@ -185,7 +185,7 @@ func TestObservabilityPurposeRules(t *testing.T) {
 }
 
 // A production agent reports to the hub on the managing cluster through its own link and key. A
-// nonprod agent may report there too (Steve, 2026-10-31), but production's receivers never reach
+// nonprod agent may report there too, but production's receivers never reach
 // its cluster: it pages only through receivers of its own.
 func TestObservabilityAgentsReportToTheManagingHub(t *testing.T) {
 	ctx := context.Background()

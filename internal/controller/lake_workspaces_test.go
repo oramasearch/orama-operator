@@ -180,7 +180,7 @@ func defaultKubernetesAPIObjects(objects []client.Object) []client.Object {
 		defaults = append(defaults, testKubernetesService())
 	}
 	if !endpoints {
-		defaults = append(defaults, testKubernetesEndpoints("20.237.72.161", 443))
+		defaults = append(defaults, testKubernetesEndpoints("11.2.3.4", 443))
 	}
 	return defaults
 }

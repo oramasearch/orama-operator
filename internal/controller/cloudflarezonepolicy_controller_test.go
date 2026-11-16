@@ -241,9 +241,9 @@ func newZonePolicyFixture(t *testing.T, zone *fakeCloudflareZone, prober edgePro
 
 func zoneRecords() []cfDNSRecord {
 	return []cfDNSRecord{
-		{Type: "A", Name: "eu.lake.live", Content: "74.158.44.177", Proxied: true},
-		{Type: "A", Name: "lake.live", Content: "74.158.44.177", Proxied: true},
-		{Type: "A", Name: "*.eu.lake.live", Content: "74.158.44.177", Proxied: true},
+		{Type: "A", Name: "eu.lakelive.example", Content: "11.2.3.7", Proxied: true},
+		{Type: "A", Name: "lakelive.example", Content: "11.2.3.7", Proxied: true},
+		{Type: "A", Name: "*.eu.lakelive.example", Content: "11.2.3.7", Proxied: true},
 	}
 }
 
@@ -265,8 +265,8 @@ func TestZonePolicyWaitsForOriginCertificatesBeforeStrict(t *testing.T) {
 		records:  zoneRecords(),
 	}
 	prober := fakeEdgeProber{
-		originInvalid: map[string]bool{"orama-edge-probe.eu.lake.live": true},
-		edgeInvalid:   map[string]bool{"orama-edge-probe.eu.lake.live": true},
+		originInvalid: map[string]bool{"orama-edge-probe.eu.lakelive.example": true},
+		edgeInvalid:   map[string]bool{"orama-edge-probe.eu.lakelive.example": true},
 	}
 	_, _, reconcile := newZonePolicyFixture(t, zone, prober)
 	policy := reconcile()
@@ -284,7 +284,7 @@ func TestZonePolicyWaitsForOriginCertificatesBeforeStrict(t *testing.T) {
 	if conditionStatus(policy, edgeConditionOriginTLSStrict) != "False" || conditionStatus(policy, edgeConditionOriginCertificates) != "False" {
 		t.Errorf("conditions = %+v", st.Conditions)
 	}
-	if len(st.Hosts) != 1 || st.Hosts[0].Name != "*.eu.lake.live" || st.Hosts[0].Origin == "" || st.Hosts[0].Edge == "" {
+	if len(st.Hosts) != 1 || st.Hosts[0].Name != "*.eu.lakelive.example" || st.Hosts[0].Origin == "" || st.Hosts[0].Edge == "" {
 		t.Errorf("hosts = %+v", st.Hosts)
 	}
 	// No origin asks for a client certificate yet, so the zone already presents its own, and the
@@ -326,7 +326,7 @@ func TestZonePolicyNeverDowngrades(t *testing.T) {
 		settings: map[string]string{"ssl": "strict", "tls_client_auth": "on", "always_use_https": "on"},
 		records:  zoneRecords(),
 	}
-	prober := fakeEdgeProber{originNoTLS: map[string]bool{"eu.lake.live": true}}
+	prober := fakeEdgeProber{originNoTLS: map[string]bool{"eu.lakelive.example": true}}
 	_, _, reconcile := newZonePolicyFixture(t, zone, prober)
 	policy := reconcile()
 	if len(zone.patches) != 0 {
@@ -422,7 +422,7 @@ func TestEdgeZonePolicyResolvesToCloudflare(t *testing.T) {
 }
 
 func TestEdgeProbeNames(t *testing.T) {
-	for in, want := range map[string]string{"eu.lake.live": "eu.lake.live", "*.eu.lake.live": "orama-edge-probe.eu.lake.live"} {
+	for in, want := range map[string]string{"eu.lakelive.example": "eu.lakelive.example", "*.eu.lakelive.example": "orama-edge-probe.eu.lakelive.example"} {
 		if got := edgeProbeName(in); got != want {
 			t.Errorf("edgeProbeName(%q) = %q, want %q", in, got, want)
 		}
@@ -443,7 +443,7 @@ func TestZonePolicyReportsTheZoneName(t *testing.T) {
 	}
 	_, _, reconcile := newZonePolicyFixture(t, zone, fakeEdgeProber{})
 	policy := reconcile()
-	if policy.Status.Zone != "lake.live" || conditionStatus(policy, edgeConditionZoneName) != "True" || policy.Status.Phase != edgePhaseReady {
+	if policy.Status.Zone != "lakelive.example" || conditionStatus(policy, edgeConditionZoneName) != "True" || policy.Status.Phase != edgePhaseReady {
 		t.Fatalf("status = %+v", policy.Status)
 	}
 
@@ -451,7 +451,7 @@ func TestZonePolicyReportsTheZoneName(t *testing.T) {
 	zone.deny = map[string]bool{"GET zone": true}
 	zone.mu.Unlock()
 	policy = reconcile()
-	if policy.Status.Zone != "lake.live" {
+	if policy.Status.Zone != "lakelive.example" {
 		t.Errorf("a refused read forgot the zone's name: %+v", policy.Status)
 	}
 	if policy.Status.Phase != edgePhaseReady {
@@ -476,7 +476,7 @@ func TestZonePolicyReportsTheZoneName(t *testing.T) {
 	}
 }
 
-// lake#798: an apps wildcard two levels below the apex (*.eu.lake.live) has no Universal SSL
+// lake#798: an apps wildcard two levels below the apex (*.eu.lakelive.example) has no Universal SSL
 // certificate, so the policy orders an Advanced Certificate covering it, once: a pending pack is
 // not ordered again, a host one level below the apex is never ordered, and a zone whose hosts all
 // have edge certificates makes no certificate calls.
@@ -484,24 +484,24 @@ func TestZonePolicyOrdersEdgeCertificatesForDeepHosts(t *testing.T) {
 	zone := &fakeCloudflareZone{
 		settings: map[string]string{"ssl": "full", "tls_client_auth": "on", "always_use_https": "off"},
 		records: append(zoneRecords(),
-			cfDNSRecord{Type: "A", Name: "us.lake.live", Content: "20.0.0.1", Proxied: true},
-			cfDNSRecord{Type: "A", Name: "app.us.lake.live", Content: "20.0.0.1", Proxied: true}),
-		name:  "lake.live",
-		packs: []cfCertificatePack{{ID: "universal", Type: "universal", Hosts: []string{"lake.live", "*.lake.live"}, Status: "active"}},
+			cfDNSRecord{Type: "A", Name: "us.lakelive.example", Content: "20.0.0.1", Proxied: true},
+			cfDNSRecord{Type: "A", Name: "app.us.lakelive.example", Content: "20.0.0.1", Proxied: true}),
+		name:  "lakelive.example",
+		packs: []cfCertificatePack{{ID: "universal", Type: "universal", Hosts: []string{"lakelive.example", "*.lakelive.example"}, Status: "active"}},
 	}
 	prober := fakeEdgeProber{edgeInvalid: map[string]bool{
-		"orama-edge-probe.eu.lake.live": true, "app.us.lake.live": true, "us.lake.live": true,
+		"orama-edge-probe.eu.lakelive.example": true, "app.us.lakelive.example": true, "us.lakelive.example": true,
 	}}
 	_, r, reconcile := newZonePolicyFixture(t, zone, prober)
 	policy := reconcile()
-	want := "[[lake.live *.eu.lake.live eu.lake.live] [lake.live app.us.lake.live]]"
+	want := "[[lakelive.example *.eu.lakelive.example eu.lakelive.example] [lakelive.example app.us.lakelive.example]]"
 	if got := fmt.Sprint(zone.orders); got != want {
 		t.Fatalf("orders = %s, want %s", got, want)
 	}
 	if conditionStatus(policy, edgeConditionEdgeCertificateOrders) != "False" || zone.settings["always_use_https"] != "off" {
 		t.Errorf("status = %+v, settings = %v", policy.Status, zone.settings)
 	}
-	if !strings.Contains(policy.Status.Message, "edge certificate ordered for *.eu.lake.live, app.us.lake.live") {
+	if !strings.Contains(policy.Status.Message, "edge certificate ordered for *.eu.lakelive.example, app.us.lakelive.example") {
 		t.Errorf("message = %q", policy.Status.Message)
 	}
 
@@ -516,7 +516,7 @@ func TestZonePolicyOrdersEdgeCertificatesForDeepHosts(t *testing.T) {
 	zone.packs[1].Status = "validation_timed_out"
 	zone.mu.Unlock()
 	reconcile()
-	if len(zone.orders) != 3 || fmt.Sprint(zone.orders[2]) != "[lake.live *.eu.lake.live eu.lake.live]" {
+	if len(zone.orders) != 3 || fmt.Sprint(zone.orders[2]) != "[lakelive.example *.eu.lakelive.example eu.lakelive.example]" {
 		t.Errorf("orders = %v", zone.orders)
 	}
 
@@ -538,21 +538,21 @@ func TestZonePolicyWildcardOrderCoversItsAppHosts(t *testing.T) {
 	zone := &fakeCloudflareZone{
 		settings: map[string]string{"ssl": "strict", "tls_client_auth": "on", "always_use_https": "off"},
 		records: append(zoneRecords(),
-			cfDNSRecord{Type: "A", Name: "alpha.eu.lake.live", Content: "74.158.44.177", Proxied: true},
-			cfDNSRecord{Type: "A", Name: "beta.eu.lake.live", Content: "74.158.44.177", Proxied: true},
-			cfDNSRecord{Type: "A", Name: "gamma.eu.lake.live", Content: "74.158.44.177", Proxied: true}),
-		name:  "lake.live",
-		packs: []cfCertificatePack{{ID: "universal", Type: "universal", Hosts: []string{"lake.live", "*.lake.live"}, Status: "active"}},
+			cfDNSRecord{Type: "A", Name: "alpha.eu.lakelive.example", Content: "11.2.3.7", Proxied: true},
+			cfDNSRecord{Type: "A", Name: "beta.eu.lakelive.example", Content: "11.2.3.7", Proxied: true},
+			cfDNSRecord{Type: "A", Name: "gamma.eu.lakelive.example", Content: "11.2.3.7", Proxied: true}),
+		name:  "lakelive.example",
+		packs: []cfCertificatePack{{ID: "universal", Type: "universal", Hosts: []string{"lakelive.example", "*.lakelive.example"}, Status: "active"}},
 	}
 	prober := fakeEdgeProber{edgeInvalid: map[string]bool{
-		"orama-edge-probe.eu.lake.live": true, "alpha.eu.lake.live": true, "beta.eu.lake.live": true, "gamma.eu.lake.live": true,
+		"orama-edge-probe.eu.lakelive.example": true, "alpha.eu.lakelive.example": true, "beta.eu.lakelive.example": true, "gamma.eu.lakelive.example": true,
 	}}
 	_, _, reconcile := newZonePolicyFixture(t, zone, prober)
 	policy := reconcile()
-	if got, want := fmt.Sprint(zone.orders), "[[lake.live *.eu.lake.live eu.lake.live]]"; got != want {
+	if got, want := fmt.Sprint(zone.orders), "[[lakelive.example *.eu.lakelive.example eu.lakelive.example]]"; got != want {
 		t.Fatalf("orders = %s, want %s", got, want)
 	}
-	if !strings.Contains(policy.Status.Message, "edge certificate ordered for *.eu.lake.live;") {
+	if !strings.Contains(policy.Status.Message, "edge certificate ordered for *.eu.lakelive.example;") {
 		t.Errorf("message = %q", policy.Status.Message)
 	}
 	// The next pass finds the pending pack covering every host and orders nothing.
@@ -574,10 +574,10 @@ func TestZonePolicyReportsARefusedCertificateOrder(t *testing.T) {
 			zone := &fakeCloudflareZone{
 				settings: map[string]string{"ssl": "flexible", "tls_client_auth": "off", "always_use_https": "off"},
 				records:  zoneRecords(),
-				name:     "lake.live",
+				name:     "lakelive.example",
 				deny:     map[string]bool{tc.deny: true},
 			}
-			_, _, reconcile := newZonePolicyFixture(t, zone, fakeEdgeProber{edgeInvalid: map[string]bool{"orama-edge-probe.eu.lake.live": true}})
+			_, _, reconcile := newZonePolicyFixture(t, zone, fakeEdgeProber{edgeInvalid: map[string]bool{"orama-edge-probe.eu.lakelive.example": true}})
 			policy := reconcile()
 			if conditionStatus(policy, edgeConditionEdgeCertificateOrders) != "False" || !strings.Contains(policy.Status.Message, tc.want) {
 				t.Errorf("message = %q, want %q named", policy.Status.Message, tc.want)
@@ -590,8 +590,8 @@ func TestZonePolicyReportsARefusedCertificateOrder(t *testing.T) {
 }
 
 func TestEdgeCertificateHelpers(t *testing.T) {
-	for name, want := range map[string]int{"lake.live": 0, "eu.lake.live": 1, "*.lake.live": 1, "*.eu.lake.live": 2, "a.b.lake.live": 2, "example.com": -1, "notlake.live": -1} {
-		if got := edgeHostDepth(name, "lake.live"); got != want {
+	for name, want := range map[string]int{"lakelive.example": 0, "eu.lakelive.example": 1, "*.lakelive.example": 1, "*.eu.lakelive.example": 2, "a.b.lakelive.example": 2, "example.com": -1, "notlakelive.example": -1} {
+		if got := edgeHostDepth(name, "lakelive.example"); got != want {
 			t.Errorf("edgeHostDepth(%q) = %d, want %d", name, got, want)
 		}
 	}
@@ -599,11 +599,11 @@ func TestEdgeCertificateHelpers(t *testing.T) {
 		pack, name string
 		want       bool
 	}{
-		{"*.eu.lake.live", "*.eu.lake.live", true},
-		{"*.eu.lake.live", "app.eu.lake.live", true},
-		{"*.lake.live", "*.eu.lake.live", false},
-		{"*.lake.live", "app.eu.lake.live", false},
-		{"eu.lake.live", "*.eu.lake.live", false},
+		{"*.eu.lakelive.example", "*.eu.lakelive.example", true},
+		{"*.eu.lakelive.example", "app.eu.lakelive.example", true},
+		{"*.lakelive.example", "*.eu.lakelive.example", false},
+		{"*.lakelive.example", "app.eu.lakelive.example", false},
+		{"eu.lakelive.example", "*.eu.lakelive.example", false},
 	} {
 		if got := edgeCertificateCovers(tc.pack, tc.name); got != tc.want {
 			t.Errorf("edgeCertificateCovers(%q, %q) = %v", tc.pack, tc.name, got)
