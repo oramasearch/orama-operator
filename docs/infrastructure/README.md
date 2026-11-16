@@ -22,8 +22,9 @@ real cluster has been created with them yet. The first step is one non-productio
 > [`secure-networking.md`](secure-networking.md); what is built is in
 > [`network-sandbox.md`](network-sandbox.md), [`connections.md`](connections.md) and
 > [`egress-rules.md`](egress-rules.md). `egress-rules.md` also carries each Lake Zetta's own
-> `ZETTA_EGRESS_ALLOW` and each workspace Zetta's `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`, the exact
-> endpoints of its namespace's own data services (#882).
+> egress allowlist (a ConfigMap the Zetta re-reads where its image can, #724) and each workspace
+> Zetta's `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`, the exact endpoints of its namespace's own data
+> services (#882).
 >
 > **Status pages** (external checks, alerts, the public lake.live page; liquid-bridge#14) are in
 > [`status-pages.md`](status-pages.md).

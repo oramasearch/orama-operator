@@ -880,6 +880,7 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 	}
 
 	operatorSchema := false
+	var egressAllow string
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		setServiceMetadata(cluster, lake, svc)
 		// Only the fields the service contract owns are written, so server-side defaults on the
@@ -895,7 +896,10 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		cluster.Spec.Image = serviceZettaImage(lake)
 		cluster.Spec.PullSecretName = lake.Spec.PullSecretName
 		cluster.Spec.Resources = serviceZettaResources(lake)
-		egressAllow, egressErr := workspaceZettaEgressAllow(ctx, r.Client, namespace, svc.ID, cluster.Spec.Env)
+		cluster.Spec.EgressAllowConfigMap = lakeZettaEgressConfigMapRef(lake, cluster.Name)
+		current, known := currentZettaEgressAllow(ctx, r.Client, cluster)
+		var egressErr error
+		egressAllow, egressErr = workspaceZettaEgressAllow(ctx, r.Client, namespace, svc.ID, current, known)
 		if egressErr != nil {
 			logf.FromContext(ctx).Error(egressErr, "Zetta egress allowlist kept or denied", "service", svc.ID)
 		}
@@ -903,7 +907,7 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		if connectorErr != nil {
 			logf.FromContext(ctx).Error(connectorErr, "Zetta connector destinations kept or emptied", "service", svc.ID)
 		}
-		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow, connectorAllow)
+		cluster.Spec.Env = serviceZettaEnv(lake, connectorAllow)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.ProvisionOperatorSchema = &operatorSchema
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
@@ -912,6 +916,11 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 	}
 	if creating {
 		*live++
+	}
+	// The egress allowlist file (operator#724): written once the cluster exists, which owns it. The
+	// cluster's StatefulSet waits for it.
+	if err := reconcileZettaEgressConfigMap(ctx, r.Client, r.Scheme, cluster, egressAllow); err != nil {
+		return serviceResult{}, err
 	}
 
 	result := serviceResult{phase: ServicePhaseProvisioning, endpoint: endpoint, message: "waiting for the Zetta nodes"}

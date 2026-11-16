@@ -246,6 +246,18 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              egressAllowConfigMap:
+                description: |-
+                  EgressAllowConfigMap names a ConfigMap in this namespace whose key `allow` is the node's egress
+                  allowlist, in the engine's ZETTA_EGRESS_ALLOW syntax (operator#724, zetta#1332). The Lake
+                  reconcilers set it on every workspace Zetta and managed Zetta service and write the ConfigMap
+                  from the namespace's NetworkSandbox. It is mounted on every node at /etc/zetta/egress/allow,
+                  named by ZETTA_EGRESS_ALLOW_FILE. A Zetta image that re-reads that file (status.imageFeatures
+                  .egressAllowFile) gets ZETTA_EGRESS_ALLOW empty, so a rule change reaches the node without a
+                  restart; any other image gets the ConfigMap's value as ZETTA_EGRESS_ALLOW, which rolls the
+                  nodes as before. A ZETTA_EGRESS_ALLOW in spec.env is kept and wins. Until the ConfigMap exists
+                  the StatefulSet is not created or changed. Empty: no file, and the allowlist is spec.env's.
+                type: string
               env:
                 description: |-
                   Env appends Zetta-specific environment variables after the operator-managed variables.
@@ -665,6 +677,24 @@ spec:
                 items:
                   type: string
                 type: array
+              imageFeatures:
+                description: |-
+                  ImageFeatures is what an image said about itself in `zetta --help`, read once per spec.image
+                  by Job <name>-zetta-features while spec.egressAllowConfigMap is set (operator#724). The operator
+                  acts on it only while its image is spec.image.
+                properties:
+                  egressAllowFile:
+                    description: |-
+                      EgressAllowFile is true when the image's usage lists ZETTA_EGRESS_ALLOW_FILE: it re-reads its
+                      egress allowlist from that file while it runs (zetta#1332).
+                    type: boolean
+                  image:
+                    description: Image is the spec.image the features were read from.
+                    type: string
+                required:
+                - egressAllowFile
+                - image
+                type: object
               message:
                 type: string
               phase:

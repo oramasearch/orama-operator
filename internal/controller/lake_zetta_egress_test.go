@@ -209,12 +209,11 @@ func TestZettaEgressFailsClosedAndNeverFlaps(t *testing.T) {
 			return errors.New("API server unavailable")
 		},
 	}).Build()
-	running := []corev1.EnvVar{{Name: zettaEgressAllowEnv, Value: "api.example.com:443"}}
-	allow, err := workspaceZettaEgressAllow(context.Background(), broken, "workspace", testEgressSourceID, running)
+	allow, err := workspaceZettaEgressAllow(context.Background(), broken, "workspace", testEgressSourceID, "api.example.com:443", true)
 	if err == nil || allow != "api.example.com:443" {
 		t.Fatalf("a failed read gave %q, %v; want the running value and the error", allow, err)
 	}
-	if allow, err = workspaceZettaEgressAllow(context.Background(), broken, "workspace", testEgressSourceID, nil); err == nil || allow != "" {
+	if allow, err = workspaceZettaEgressAllow(context.Background(), broken, "workspace", testEgressSourceID, "", false); err == nil || allow != "" {
 		t.Fatalf("a failed read for a new cluster gave %q, %v; want deny", allow, err)
 	}
 

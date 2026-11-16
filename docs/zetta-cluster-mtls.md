@@ -1,8 +1,9 @@
 # Zetta cluster mTLS — the shared join token
 
 > Source: [`internal/controller/oramazettacluster_controller.go`](../internal/controller/oramazettacluster_controller.go)
-> (`reconcileZettaClusterToken`, `mutateZettaStatefulSet`). Tracks
-> [operator#92](https://github.com/oramasearch/orama-operator/issues/92).
+> (`reconcileZettaClusterToken`, `reconcileZettaConnectionRoot`, `mutateZettaStatefulSet`). Tracks
+> [operator#92](https://github.com/oramasearch/orama-operator/issues/92) and
+> [operator#1166](https://github.com/oramasearch/orama-operator/issues/1166).
 
 Every `OramaZettaCluster` node talks to its peers over **mutual-TLS** on the peer port (`:7777`).
 There is **no plaintext-peer mode** — inter-node replication, the signal plane, and blob transfer are
@@ -60,6 +61,32 @@ on every node indefinitely.
    variable and would otherwise mint their own token and split the cluster. Dropping it, once every image
    in use reads the file, is [operator#721](https://github.com/oramasearch/orama-operator/issues/721).
    Both names are operator-owned: `spec.env` cannot set either.
+
+4. **Keep saved connector credentials off the data volume**
+   ([operator#1166](https://github.com/oramasearch/orama-operator/issues/1166),
+   [zetta#1314](https://github.com/oramasearch/zetta/issues/1314)). Zetta used to seal saved connector
+   credentials under a key derived from the join token it keeps in `/data/security/`, so a copy of the
+   data volume opened every stored source credential. `reconcileZettaConnectionRoot` mints one more
+   Secret per cluster, **`<name>-zetta-connection-root`** (key `root`, 32 random bytes as 64 hex, minted
+   once and never written again while it holds anything), owned by the `OramaZettaCluster`. Every node
+   mounts it read-only at `/run/secrets/zetta-connection-root/root` (mode `0440`, outside `/data`), and
+   `ZETTA_CONNECTION_ROOT_SECRET_FILE` points the engine at it. The engine refuses a file inside
+   `--data-dir`, one writable by group or others, and a secret shorter than 32 characters; this mount
+   meets all three. The variable is operator-owned: `spec.env` cannot set it.
+   - **Every node of the cluster mounts the same Secret**, because each node opens what another sealed.
+     A slice of the same global cluster (`spec.clusterName`) in another Kubernetes cluster mints its own,
+     so a connection saved through one slice opens only on that slice's nodes.
+   - **Roll order.** An image without zetta#1314 ignores the variable and keeps its old sealing. An image
+     with it that starts without the file refuses `create_connection` and shows saved connections as
+     `unreadable` (everything else keeps working). So this operator change rolls **before** that image.
+     When the file is first present, the engine keeps the join tokens as retired secrets and re-seals
+     existing rows under the new one at that start; roll every member together, because a member still
+     on the old image cannot open rows a new member re-sealed.
+   - **Rotation** is by hand and the engine's own: put the new secret on the first line of `root`, keep
+     the old one on the line below, and restart every node (each re-seals at its next start). Drop the
+     old line once every node has restarted. The operator never replaces a value that is there.
+   - **Never delete the Secret** while the data volume is kept: a new value orphans every sealed
+     credential. It is deleted with its `OramaZettaCluster`, like the join token.
 
 ### Why env var, not a `--join-token` flag
 

@@ -1307,6 +1307,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 ) (*oramav1alpha1.OramaZettaCluster, error) {
 	cluster := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: namespace}}
 	operatorSchema := false
+	var egressAllow string
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		if cluster.ResourceVersion != "" && cluster.Labels[workspaceLabel] != row.ID {
 			return fmt.Errorf("OramaZettaCluster %s/%s is not owned by workspace %s", namespace, clusterName, row.ID)
@@ -1324,7 +1325,10 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 		// with the claims the storage reconcile grows (operator#259).
 		cluster.Spec.Storage = workspaceZettaStorage(lake, row, cluster.Spec.Storage, creating)
 		cluster.Spec.Resources = serviceZettaResources(lake)
-		egressAllow, egressErr := workspaceZettaEgressAllow(ctx, r.Client, namespace, row.ZettaServiceID, cluster.Spec.Env)
+		cluster.Spec.EgressAllowConfigMap = lakeZettaEgressConfigMapRef(lake, cluster.Name)
+		current, known := currentZettaEgressAllow(ctx, r.Client, cluster)
+		var egressErr error
+		egressAllow, egressErr = workspaceZettaEgressAllow(ctx, r.Client, namespace, row.ZettaServiceID, current, known)
 		if egressErr != nil {
 			logf.FromContext(ctx).Error(egressErr, "workspace Zetta egress allowlist kept or denied", "workspace", row.ID)
 		}
@@ -1332,7 +1336,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 		if connectorErr != nil {
 			logf.FromContext(ctx).Error(connectorErr, "workspace Zetta connector destinations kept or emptied", "workspace", row.ID)
 		}
-		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow, connectorAllow)
+		cluster.Spec.Env = serviceZettaEnv(lake, connectorAllow)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.Host = ""
 		cluster.Spec.DNSSecretRef = nil
@@ -1343,6 +1347,11 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reconcile workspace Zetta cluster: %w", err)
+	}
+	// The egress allowlist file (operator#724): written once the cluster exists, which owns it. The
+	// cluster's StatefulSet waits for it.
+	if err := reconcileZettaEgressConfigMap(ctx, r.Client, r.Scheme, cluster, egressAllow); err != nil {
+		return nil, err
 	}
 	return cluster, nil
 }
@@ -1430,7 +1439,7 @@ func (r *LakeWorkspacesReconciler) deleteLegacyWorkspace(
 			}
 		}
 	}
-	for _, name := range []string{legacyName + "-zetta-admin", legacyName + "-zetta-cluster"} {
+	for _, name := range []string{legacyName + "-zetta-admin", legacyName + "-zetta-cluster", legacyName + zettaConnectionRootSuffix} {
 		var secret corev1.Secret
 		key := client.ObjectKey{Namespace: legacyNamespace, Name: name}
 		if err := r.Get(ctx, key, &secret); err != nil {

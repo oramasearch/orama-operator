@@ -49,8 +49,13 @@ import (
 //
 // Where the engine's syntax is wider than the policy (it has no "except"): *:443 admits in-cluster
 // names on 443 and a cidr entry keeps the pod, node and API server addresses the policy cuts out.
-// Those addresses change as nodes come and go, and every change of the variable rolls the Zetta's
-// StatefulSet, so the policy alone keeps excluding them.
+// Those addresses change as nodes come and go, and on an image that reads the value from
+// ZETTA_EGRESS_ALLOW every change of it rolls the Zetta's StatefulSet, so the policy alone keeps
+// excluding them.
+//
+// Where the value goes: the cluster's ConfigMap <cluster>-zetta-egress, mounted as the file
+// ZETTA_EGRESS_ALLOW_FILE names, which an image with zetta#1332 re-reads without a restart; any
+// other image gets it as ZETTA_EGRESS_ALLOW (zetta_egress_file.go).
 
 // zettaEgressAllowEnv is the engine's allowlist variable.
 const zettaEgressAllowEnv = "ZETTA_EGRESS_ALLOW"
@@ -94,20 +99,20 @@ func findEnvVar(env []corev1.EnvVar, name string) *corev1.EnvVar {
 }
 
 // workspaceZettaEgressAllow is the allowlist of a Zetta in a workspace namespace, or, when the
-// namespace cannot be read, the value the cluster already runs with (current), so a failed read
-// never rolls the StatefulSet; the error is returned for the caller to log.
+// namespace cannot be read, the value the cluster already runs with (current, when known), so a
+// failed read never changes what it may reach; the error is returned for the caller to log.
 func workspaceZettaEgressAllow(
 	ctx context.Context,
 	reader client.Reader,
 	namespace, serviceID string,
-	current []corev1.EnvVar,
+	current string, known bool,
 ) (string, error) {
 	allow, err := lakeZettaEgressAllow(ctx, reader, namespace, serviceID)
 	if err == nil || errors.Is(err, errZettaEgressTooLong) {
 		return allow, err
 	}
-	if variable := findEnvVar(current, zettaEgressAllowEnv); variable != nil {
-		return variable.Value, err
+	if known {
+		return current, err
 	}
 	return zettaEgressDeny, err
 }

@@ -225,6 +225,8 @@ func main() {
 		APIReader: mgr.GetAPIReader(), // uncached reader for the elastic-capacity node count (operator#69)
 		// Only a CR in the operator's namespace may own the Karpenter install (operator#280).
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		// Reads the features Job's `zetta --help` (the egress allowlist file, operator#724).
+		Clientset: clientset,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaZettaCluster")
 		os.Exit(1)

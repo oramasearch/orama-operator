@@ -118,18 +118,18 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 			t.Errorf("image %q, want %q", image[0], image[1])
 		}
 	}
+	// A service or workspace Zetta's egress allowlist is in its ConfigMap, not its env (operator#724).
 	wantZettaEnv := []corev1.EnvVar{
 		{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
 		{Name: "MALLOC_ARENA_MAX", Value: "2"},
-		{Name: "ZETTA_EGRESS_ALLOW", Value: "api.example.com:443"},
 		{Name: "ZETTA_CONNECTOR_ALLOW_DESTINATIONS", Value: "db-rw.ws.svc.cluster.local:5432"},
 	}
-	if got := serviceZettaEnv(lake, "api.example.com:443", "db-rw.ws.svc.cluster.local:5432"); !reflect.DeepEqual(got, wantZettaEnv) {
+	if got := serviceZettaEnv(lake, "db-rw.ws.svc.cluster.local:5432"); !reflect.DeepEqual(got, wantZettaEnv) {
 		t.Errorf("service and workspace Zetta env = %v", got)
 	}
-	// The data plane is no workspace Zetta: no connector sources live in the Lake namespace.
-	wantZettaEnv = wantZettaEnv[:3]
-	wantZettaEnv[2].Value = ""
+	// The data plane is no workspace Zetta: no connector sources live in the Lake namespace, and its
+	// allowlist is the constant deny, in its env.
+	wantZettaEnv = append(wantZettaEnv[:2:2], corev1.EnvVar{Name: "ZETTA_EGRESS_ALLOW", Value: ""})
 	if got := lakeDataPlaneZettaEnv(lake); !reflect.DeepEqual(got, wantZettaEnv) {
 		t.Errorf("data-plane Zetta env = %v", got)
 	}
@@ -198,43 +198,38 @@ func TestASpecImageOverridesItsDefault(t *testing.T) {
 }
 
 // Lake/prod states every image and both memory variables; the defaults change none of them and add
-// only ZETTA_EGRESS_ALLOW, the engine's own egress allowlist (zetta#75, operator#724), and, on a
-// service or workspace Zetta, ZETTA_CONNECTOR_ALLOW_DESTINATIONS (operator#882).
+// only, on the data plane, ZETTA_EGRESS_ALLOW, the engine's own egress allowlist (zetta#75,
+// operator#724), and, on a service or workspace Zetta, ZETTA_CONNECTOR_ALLOW_DESTINATIONS
+// (operator#882); their allowlist is in their ConfigMap.
 func TestLakeProdIsUnchangedByTheDefaults(t *testing.T) {
 	lake := bareLake()
 	zettaEnv := []corev1.EnvVar{{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"}, {Name: "MALLOC_ARENA_MAX", Value: "2"}}
 	lake.Spec.Zetta.Env = zettaEnv
 	lake.Spec.Services.ZettaEnv = zettaEnv
 	want := append(append([]corev1.EnvVar(nil), zettaEnv...), corev1.EnvVar{Name: "ZETTA_EGRESS_ALLOW", Value: ""})
-	wantService := append(append([]corev1.EnvVar(nil), want...), corev1.EnvVar{Name: "ZETTA_CONNECTOR_ALLOW_DESTINATIONS", Value: ""})
-	if !reflect.DeepEqual(lakeDataPlaneZettaEnv(lake), want) || !reflect.DeepEqual(serviceZettaEnv(lake, "", ""), wantService) {
+	wantService := append(append([]corev1.EnvVar(nil), zettaEnv...), corev1.EnvVar{Name: "ZETTA_CONNECTOR_ALLOW_DESTINATIONS", Value: ""})
+	if !reflect.DeepEqual(lakeDataPlaneZettaEnv(lake), want) || !reflect.DeepEqual(serviceZettaEnv(lake, ""), wantService) {
 		t.Fatalf("stated Zetta env gained more than ZETTA_EGRESS_ALLOW: %v", lakeDataPlaneZettaEnv(lake))
 	}
 }
 
 // Every Zetta a Lake owns carries its own egress allowlist (zetta#75, operator#724): the data plane
-// denies everything (its namespace allows it nothing outside), a service or workspace Zetta gets
-// the list rendered from its namespace, and a spec that names the variable keeps its own.
+// denies everything (its namespace allows it nothing outside) in its env; a service or workspace
+// Zetta names its ConfigMap and has no allowlist in its env; a spec that names the variable keeps
+// its own, and then no ConfigMap is named.
 func TestLakeZettasCarryTheirEgressAllowlist(t *testing.T) {
 	lake := bareLake()
-	for name, check := range map[string]struct {
-		env  []corev1.EnvVar
-		want string
-	}{
-		"data plane":         {lakeDataPlaneZettaEnv(lake), ""},
-		"service, workspace": {serviceZettaEnv(lake, "*:443", ""), "*:443"},
-	} {
-		if got := findEnv(check.env, "ZETTA_EGRESS_ALLOW"); got == nil || got.Value != check.want {
-			t.Errorf("%s Zetta ZETTA_EGRESS_ALLOW = %+v, want %q", name, got, check.want)
-		}
+	if got := findEnv(lakeDataPlaneZettaEnv(lake), "ZETTA_EGRESS_ALLOW"); got == nil || got.Value != "" {
+		t.Errorf("data plane Zetta ZETTA_EGRESS_ALLOW = %+v, want deny", got)
 	}
-	for _, variable := range serviceZettaEnv(lake, "", "") {
-		if variable.Value == "*" {
-			t.Fatalf("a Lake Zetta still turns its egress control off: %+v", variable)
-		}
+	if got := findEnv(serviceZettaEnv(lake, ""), "ZETTA_EGRESS_ALLOW"); got != nil {
+		t.Errorf("a service or workspace Zetta's allowlist belongs in its ConfigMap, not its env: %+v", got)
+	}
+	if got := lakeZettaEgressConfigMapRef(lake, "ws-zetta"); got != "ws-zetta-zetta-egress" {
+		t.Errorf("spec.egressAllowConfigMap = %q, want ws-zetta-zetta-egress", got)
 	}
 	lake.Spec.Services.ZettaEnv = []corev1.EnvVar{{Name: "ZETTA_EGRESS_ALLOW", Value: "*.snowflakecomputing.com:443"}}
-	env := serviceZettaEnv(lake, "*:443", "")
+	env := serviceZettaEnv(lake, "")
 	count := 0
 	for _, variable := range env {
 		if variable.Name == "ZETTA_EGRESS_ALLOW" {
@@ -246,6 +241,9 @@ func TestLakeZettasCarryTheirEgressAllowlist(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("ZETTA_EGRESS_ALLOW appears %d times", count)
+	}
+	if got := lakeZettaEgressConfigMapRef(lake, "ws-zetta"); got != "" {
+		t.Fatalf("a stated allowlist must not be joined by the ConfigMap's, got %q", got)
 	}
 }
 

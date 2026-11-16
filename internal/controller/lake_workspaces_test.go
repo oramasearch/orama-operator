@@ -621,7 +621,8 @@ func TestWorkspaceIsolationVerifierCoversBoundary(t *testing.T) {
 
 // The workspace Zetta's own egress allowlist follows what its NetworkSandbox renders
 // (operator#724): turning internetEgress on adds *:443 once the rule is in the sandbox, and turning
-// it off takes it away again.
+// it off takes it away again. The value lives in the cluster's ConfigMap, so the cluster's spec
+// (and so its StatefulSet, for an image that re-reads the file) does not change with it.
 func TestLakeWorkspaceZettaEgressFollowsTheSandbox(t *testing.T) {
 	ctx := context.Background()
 	lake := testWorkspaceLake()
@@ -641,14 +642,25 @@ func TestLakeWorkspaceZettaEgressFollowsTheSandbox(t *testing.T) {
 		if err := kube.Get(ctx, key, &cluster); err != nil {
 			t.Fatal(err)
 		}
-		variable := findEnv(cluster.Spec.Env, zettaEgressAllowEnv)
-		if variable == nil {
-			t.Fatalf("workspace Zetta has no %s: %+v", zettaEgressAllowEnv, cluster.Spec.Env)
+		// The allowlist is the cluster's ConfigMap, never its env (operator#724).
+		if variable := findEnv(cluster.Spec.Env, zettaEgressAllowEnv); variable != nil {
+			t.Fatalf("workspace Zetta env still carries %s: %+v", zettaEgressAllowEnv, variable)
 		}
-		if variable.Value == "*" {
+		if cluster.Spec.EgressAllowConfigMap != zettaEgressConfigMapName(cluster.Name) {
+			t.Fatalf("spec.egressAllowConfigMap = %q", cluster.Spec.EgressAllowConfigMap)
+		}
+		var configMap corev1.ConfigMap
+		if err := kube.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.EgressAllowConfigMap}, &configMap); err != nil {
+			t.Fatalf("workspace Zetta egress ConfigMap: %v", err)
+		}
+		if !metav1.IsControlledBy(&configMap, &cluster) {
+			t.Fatal("the egress ConfigMap must be controlled by its OramaZettaCluster")
+		}
+		value := configMap.Data[zettaEgressConfigMapKey]
+		if value == "*" {
 			t.Fatal("the workspace Zetta turns its egress control off")
 		}
-		return variable.Value
+		return value
 	}
 	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
 	renderWorkspaceEgressRules(t, kube, testWorkspaceName)
