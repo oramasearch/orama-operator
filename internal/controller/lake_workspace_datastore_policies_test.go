@@ -102,6 +102,10 @@ func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T)
 	}
 	// operator#469: the operator signs in to workspace Postgres to keep credential roles.
 	expected = append(expected, workspaceOperatorPostgresPolicy("orama-system", testWorkspaceName, labels))
+	// operator#771: the operator signs in to TiDB and Cassandra to keep the tenant user.
+	for _, allowance := range workspaceOramaOperatorIngresses {
+		expected = append(expected, workspaceOramaOperatorIngressPolicy(allowance, "orama-system", testWorkspaceName, labels))
+	}
 	for _, apiClient := range workspaceAPIServerClients {
 		expected = append(expected, workspaceAPIServerEgressPolicy(apiClient, target, testWorkspaceName, labels))
 	}
