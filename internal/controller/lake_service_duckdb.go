@@ -17,7 +17,7 @@ import (
 
 // DefaultLakeDuckDBImage is the lake-duckdb image when neither the Lake nor the operator's flag
 // names one. The chart passes its own default (lakeServices.duckdbImage) as the flag.
-const DefaultLakeDuckDBImage = "oramasearch/lake-duckdb:0.1.0"
+const DefaultLakeDuckDBImage = "oramasearch/lake-duckdb:0.2.0"
 
 // duckdbThreads bounds DuckDB's worker threads: the pod has no CPU limit, and DuckDB would
 // otherwise start one thread per node CPU.
