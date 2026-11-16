@@ -166,8 +166,9 @@ The operator keeps its observed state in Orama Zetta. Know the model; see
   UID) so states never collide.
 - **Peer traffic is always mTLS, with one shared cluster join token per cluster.** The join token is
   the cluster identity (the CA is derived from it), so the operator mints **one** token (Secret
-  `<name>-zetta-cluster`) and injects it into **every** node as `ZETTA_CLUSTER_TOKEN`; otherwise each
-  node derives its own CA and forms a cluster of one. There is **no plaintext-peer mode**. See
+  `<name>-zetta-cluster`) and gives it to **every** node as a read-only file
+  (`ZETTA_CLUSTER_TOKEN_FILE`), plus `ZETTA_CLUSTER_TOKEN` only for an image whose `zetta --help` does not
+  list the file variable; otherwise each node derives its own CA and forms a cluster of one. There is **no plaintext-peer mode**. See
   [`docs/zetta-cluster-mtls.md`](docs/zetta-cluster-mtls.md).
 - **Zetta SQL is a Postgres subset**, and all Zetta writes are best-effort and retried. Adding a
   capability to Zetta's MCP surface is a design decision, not a drive-by change.

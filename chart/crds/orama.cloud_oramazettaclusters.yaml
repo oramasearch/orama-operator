@@ -736,6 +736,12 @@ spec:
                       ClusterCASeedFile is true when the image's usage lists ZETTA_CLUSTER_CA_SEED_FILE: a node
                       given the enrollment CA's seed holds the CA and signs enrollments (zetta#1513).
                     type: boolean
+                  clusterTokenFile:
+                    description: |-
+                      ClusterTokenFile is true when the image's usage lists ZETTA_CLUSTER_TOKEN_FILE: it reads the
+                      cluster join token from the mounted file (zetta#770), so the operator stops setting
+                      ZETTA_CLUSTER_TOKEN in its environment (operator#721).
+                    type: boolean
                   egressAllowFile:
                     description: |-
                       EgressAllowFile is true when the image's usage lists ZETTA_EGRESS_ALLOW_FILE: it re-reads its

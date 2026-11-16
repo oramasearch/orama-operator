@@ -164,6 +164,13 @@ func zettaImageRoutesThroughGateway(z *oramav1alpha1.OramaZettaCluster, features
 	return features != nil && features.Image == zettaImage(z) && features.EgressGateway
 }
 
+// zettaImageReadsClusterTokenFile reports whether the answer is for spec.image and says the image
+// reads ZETTA_CLUSTER_TOKEN_FILE (zetta#770). An answer for another image, or none, is false, so a
+// node keeps ZETTA_CLUSTER_TOKEN until its own image is known to read the file (operator#721).
+func zettaImageReadsClusterTokenFile(z *oramav1alpha1.OramaZettaCluster, features *oramav1alpha1.ZettaImageFeatures) bool {
+	return features != nil && features.Image == zettaImage(z) && features.ClusterTokenFile
+}
+
 // zettaImageReadsEgressFile reports whether the answer is for spec.image and says the image re-reads
 // ZETTA_EGRESS_ALLOW_FILE. An answer for another image, or none, is false.
 func zettaImageReadsEgressFile(z *oramav1alpha1.OramaZettaCluster, features *oramav1alpha1.ZettaImageFeatures) bool {
@@ -211,7 +218,8 @@ func (r *OramaZettaClusterReconciler) reconcileZettaImageFeatures(ctx context.Co
 // parseZettaImageFeatures reads `zetta --help`. An image that re-reads the allowlist file lists
 // ZETTA_EGRESS_ALLOW_FILE in its usage and exits 0; one with identity root rotation lists
 // ZETTA_IDENTITY_MIN_EPOCH; one with CTL-2 V2 enrollment lists ZETTA_CLUSTER_CA and
-// ZETTA_CLUSTER_CA_SEED_FILE (operator#1174). Every other answer (an older usage, an unknown option,
+// ZETTA_CLUSTER_CA_SEED_FILE (operator#1174); one that reads the join token from its file lists
+// ZETTA_CLUSTER_TOKEN_FILE (zetta#770, operator#721). Every other answer (an older usage, an unknown option,
 // a crash) is an image that has none of them, which renders it as before: the safe form for any image.
 func parseZettaImageFeatures(image, log string, exitCode int32) *oramav1alpha1.ZettaImageFeatures {
 	clean := exitCode == 0
@@ -223,6 +231,7 @@ func parseZettaImageFeatures(image, log string, exitCode int32) *oramav1alpha1.Z
 		ClusterCASeedFile:    clean && zettaUsageListsEnv(log, zettaClusterCASeedFileEnv),
 		EgressGateway: clean && zettaUsageListsEnv(log, zettaEgressGatewayEnv) &&
 			zettaUsageListsEnv(log, zettaEgressGatewayRoutesEnv),
+		ClusterTokenFile: clean && zettaUsageListsEnv(log, zettaClusterTokenFileEnv),
 	}
 }
 

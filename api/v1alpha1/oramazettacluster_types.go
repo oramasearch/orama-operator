@@ -478,6 +478,11 @@ type ZettaImageFeatures struct {
 	// (zetta#1331, operator#1179).
 	// +optional
 	EgressGateway bool `json:"egressGateway,omitempty"`
+	// ClusterTokenFile is true when the image's usage lists ZETTA_CLUSTER_TOKEN_FILE: it reads the
+	// cluster join token from the mounted file (zetta#770), so the operator stops setting
+	// ZETTA_CLUSTER_TOKEN in its environment (operator#721).
+	// +optional
+	ClusterTokenFile bool `json:"clusterTokenFile,omitempty"`
 }
 
 // ZettaIdentitySpec asks for an identity root rotation.
