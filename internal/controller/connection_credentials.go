@@ -148,16 +148,29 @@ func (r *ConnectionReconciler) postgresServiceFor(
 	if user == "" || password == "" {
 		return connectionPostgresService{}, connectionPendingError{message: "waiting for the target's Postgres superuser Secret"}
 	}
+	// The cluster's CA, so the operator's superuser session verifies the server (orama-operator#775).
+	var ca corev1.Secret
+	if err := r.Get(ctx, client.ObjectKey{Namespace: connection.Namespace, Name: cluster.GetName() + "-ca"}, &ca); err != nil {
+		if apierrors.IsNotFound(err) {
+			return connectionPostgresService{}, connectionPendingError{message: "waiting for the target's Postgres CA Secret"}
+		}
+		return connectionPostgresService{}, err
+	}
+	if len(ca.Data["ca.crt"]) == 0 {
+		return connectionPostgresService{}, connectionPendingError{message: "waiting for the target's Postgres CA Secret"}
+	}
 	host := fmt.Sprintf("%s-rw.%s.svc.cluster.local", cluster.GetName(), connection.Namespace)
 	return connectionPostgresService{
 		Cluster: cluster.GetName(),
 		Host:    host,
 		Admin: ConnectionPostgresTarget{
-			Host:     host,
+			// The name CNPG's server certificate carries.
+			Host:     fmt.Sprintf("%s-rw.%s.svc", cluster.GetName(), connection.Namespace),
 			Port:     servicePostgresPort,
 			Database: servicePostgresDatabase,
 			User:     user,
 			Password: password,
+			CA:       ca.Data["ca.crt"],
 		},
 	}, nil
 }

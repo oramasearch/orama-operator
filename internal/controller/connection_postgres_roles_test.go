@@ -7,8 +7,15 @@ package controller
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/url"
 	"os"
@@ -185,8 +192,16 @@ func startThrowawayPostgres(t *testing.T) ConnectionPostgresTarget {
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
+	// The server presents a certificate from a throwaway CA for 127.0.0.1: the operator's session
+	// verifies it (orama-operator#775).
+	caPEM, certPEM, keyPEM := testPostgresServerCertificate(t, "127.0.0.1")
+	for name, value := range map[string][]byte{"server.crt": certPEM, "server.key": keyPEM} {
+		if err := os.WriteFile(filepath.Join(data, name), value, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// TCP only: a temporary directory's path is too long for a Unix socket on macOS.
-	options := fmt.Sprintf("-p %d -c listen_addresses=127.0.0.1 -c unix_socket_directories=''", port)
+	options := fmt.Sprintf("-p %d -c listen_addresses=127.0.0.1 -c unix_socket_directories='' -c ssl=on", port)
 	if output, err := exec.Command(tool("pg_ctl"), "-D", data, "-o", options, "-l", filepath.Join(dir, "log"), "-w", "start").CombinedOutput(); err != nil {
 		log, _ := os.ReadFile(filepath.Join(dir, "log"))
 		t.Fatalf("pg_ctl start: %v\n%s\n%s", err, output, log)
@@ -194,7 +209,7 @@ func startThrowawayPostgres(t *testing.T) ConnectionPostgresTarget {
 	t.Cleanup(func() {
 		_ = exec.Command(tool("pg_ctl"), "-D", data, "-m", "immediate", "-w", "stop").Run()
 	})
-	return ConnectionPostgresTarget{Host: "127.0.0.1", Port: port, Database: "postgres", User: "postgres", Password: superPassword}
+	return ConnectionPostgresTarget{Host: "127.0.0.1", Port: port, Database: "postgres", User: "postgres", Password: superPassword, CA: caPEM}
 }
 
 func tryConnect(ctx context.Context, target ConnectionPostgresTarget, user, password string) (*pgx.Conn, error) {
@@ -238,4 +253,48 @@ func expectDenied(ctx context.Context, t *testing.T, conn *pgx.Conn, statement s
 	if err == nil || !strings.Contains(err.Error(), "permission denied") && !strings.Contains(err.Error(), "must be owner") {
 		t.Fatalf("%s was not refused: %v", statement, err)
 	}
+}
+
+// testPostgresServerCertificate is a throwaway CA and a server certificate it signed for host (an
+// IP address), all in PEM.
+func testPostgresServerCertificate(t *testing.T, host string) (ca, certificate, key []byte) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test postgres CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: host},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IPAddresses: []net.IP{net.ParseIP(host)}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage: x509.KeyUsageDigitalSignature,
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(serverKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 }
