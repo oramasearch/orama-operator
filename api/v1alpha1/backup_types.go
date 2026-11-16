@@ -19,7 +19,7 @@ import (
 // BackupDatastoreKind names the kind of datastore a backup is taken of. Kafka has no backup, by
 // decision (operator#733): its schedules and Backups are refused with reason NoBackupByDecision and
 // the decision in words; see docs/backups.md "Kafka".
-// +kubebuilder:validation:Enum=Postgres;ClickHouse;Zetta;Kafka;Cassandra;TiDB;Valkey;SQLite;DuckDB;Polars
+// +kubebuilder:validation:Enum=Postgres;ClickHouse;Zetta;Kafka;Cassandra;TiDB;Valkey;SQLite;DuckDB;Polars;Volume
 type BackupDatastoreKind string
 
 const (
@@ -33,6 +33,9 @@ const (
 	BackupDatastoreSQLite     BackupDatastoreKind = "SQLite"
 	BackupDatastoreDuckDB     BackupDatastoreKind = "DuckDB"
 	BackupDatastorePolars     BackupDatastoreKind = "Polars"
+	// BackupDatastoreVolume is a volume claim, copied file by file from a CSI snapshot of it
+	// (operator#738): a Lake's store.
+	BackupDatastoreVolume BackupDatastoreKind = "Volume"
 )
 
 // BackupDatastoreRef identifies the datastore, which is in the same namespace as the backup.
@@ -57,6 +60,28 @@ type BackupDatastoreRef struct {
 	// kind's default: the labels its operator puts on the pods of a datastore of this name.
 	// +optional
 	PodSelector map[string]string `json:"podSelector,omitempty"`
+	// Volume is how a volume-backed datastore (Volume, SQLite, DuckDB, Polars; name is then the
+	// volume claim) is read: the backup takes a CSI VolumeSnapshot of the claim, mounts a claim made
+	// from it read-only in the backup Job, and copies its files to the bucket (operator#738,
+	// operator#737).
+	// +optional
+	Volume *BackupVolumeSource `json:"volume,omitempty"`
+}
+
+// BackupVolumeSource is how a volume-backed datastore's claim is snapshotted and read.
+type BackupVolumeSource struct {
+	// VolumeSnapshotClassName is the class of the snapshot the copy is made from. Empty means
+	// lake-retain, the Retain class the platform layer installs.
+	// +optional
+	VolumeSnapshotClassName string `json:"volumeSnapshotClassName,omitempty"`
+	// RunAsUser and RunAsGroup are the user and group the copy runs as, so it can read files only
+	// their owner may: the workload's own. Default 65532.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RunAsGroup *int64 `json:"runAsGroup,omitempty"`
 }
 
 // LocalSecretReference names a Secret in the same namespace.

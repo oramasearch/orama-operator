@@ -133,15 +133,26 @@ spec:
 - Each ready managed service gets a `BackupSchedule` `<datastore>-backup` in its workspace
   namespace, where `<datastore>` is the service's resource (`<lake>-<slug>`, or the workspace's
   Zetta cluster). For Zetta, ClickHouse and Valkey the Lake also writes `<datastore>-backup-connection`
-  (`host`, `port`, `username`, `password`, `database`) from the service's connection. The workspace
-  namespace is added to the bucket's `allowedNamespaces`.
+  (`host`, `port`, `username`, `password`, `database`) from the service's connection. A SQLite,
+  DuckDB or Polars service gets one schedule per data claim, `data-<datastore>-<i>-backup`, a copy
+  of the claim from a CSI snapshot ([operator#737](https://github.com/oramasearch/orama-operator/issues/737)).
+  The workspace namespace is added to the bucket's `allowedNamespaces`.
 - **A late or failed backup is shown**: appended to the service's `service_status` message (for
   example `service ready; backup late: no backup has succeeded since ...`), and summarised in the
   Lake's condition `BackupsOnSchedule`. A workspace's own Zetta shows only on the condition, since
   its status belongs to the workspace reconciler.
+- **The store volume** gets a schedule `<claim>-backup` in the Lake's namespace (kind `Volume`): a
+  file-level copy, from a CSI snapshot of the claim, to the same bucket, run as lake's user (10001)
+  so every file can be read ([operator#738](https://github.com/oramasearch/orama-operator/issues/738)).
+  This is the copy off the cluster's disks and region that the daily CSI snapshots
+  ([`volume-snapshots.md`](volume-snapshots.md)) are not; the snapshots stay.
 - Deleting a service deletes its schedule and connection Secret. Its `Backup`s are only labelled,
   so they and their objects stay.
 
 Nothing of this is applied to any cluster: `spec.backups` is set in a set file, with Steve's consent
 for the apply, and the account token is Steve's to issue.
+
+The instance key is not a datastore: with `spec.backups.escrowRecipients` it is sealed to recovery
+keys held off the cluster and written to the same bucket ([`key-escrow.md`](key-escrow.md), human
+action).
 

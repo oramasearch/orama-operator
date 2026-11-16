@@ -182,3 +182,18 @@ func TestV1BackupTargets(t *testing.T) {
 		t.Fatal("backups enabled without a Cloudflare token")
 	}
 }
+
+// A wrapper service's every data claim gets a volume schedule, as the wrapper's user.
+func TestWrapperServicesBackUpEveryDataClaim(t *testing.T) {
+	lake := backupsTestLake()
+	svc := backupsTestService(serviceKindPolars)
+	svc.Spec = `{"instances": 2, "storage_gi": 5}`
+	targets := lakeServiceBackupTargets(lake, svc)
+	if len(targets) != 2 || targets[0].kind != oramav1alpha1.BackupDatastorePolars || targets[1].name != "data-prod-events-1" ||
+		targets[0].volume == nil || *targets[0].volume.RunAsUser != wrapperRunAsUser {
+		t.Fatalf("targets = %+v", targets)
+	}
+	if targets := lakeServiceBackupTargets(lake, backupsTestService(serviceKindSQLite)); len(targets) != 1 || targets[0].name != "data-prod-events-0" {
+		t.Fatalf("sqlite targets = %+v", targets)
+	}
+}

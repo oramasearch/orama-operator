@@ -79,6 +79,13 @@ var mechanisms = map[string]Mechanism{
 	"ClickHouse": ClickHouse{},
 	"Valkey":     Valkey{},
 	"Zetta":      Zetta{},
+	// A volume claim, file by file from a CSI snapshot (operator#738).
+	"Volume": Volume{},
+	// The wrapper services' data claims, the same way, with their engine's header checked
+	// (operator#737).
+	"SQLite": Volume{Format: SQLiteFormat},
+	"DuckDB": Volume{Format: DuckDBFormat},
+	"Polars": Volume{Format: PolarsFormat},
 }
 
 // resourceKinds are the kinds the controllers back up by writing their own operator's resources

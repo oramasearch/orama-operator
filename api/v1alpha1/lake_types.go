@@ -819,6 +819,27 @@ type LakeBackupsSpec struct {
 	// +kubebuilder:default=7
 	// +optional
 	Keep int32 `json:"keep,omitempty"`
+	// EscrowRecipients are the recovery keys the Lake's instance key is sealed to (operator#739): age
+	// X25519 public keys ("age1..."), whose private halves are held off the cluster by the people
+	// named in docs/lake/key-escrow.md. The sealed copy goes to the backup bucket whenever the key or
+	// the recipients change; any one recipient opens it with `age -d`. Empty: the key is not escrowed,
+	// and the InstanceKeyEscrowed condition says so.
+	// +kubebuilder:validation:items:Pattern=`^age1[02-9ac-hj-np-z]{58}$`
+	// +optional
+	EscrowRecipients []string `json:"escrowRecipients,omitempty"`
+}
+
+// LakeKeyEscrowStatus is where the Lake's instance key was last sealed and to whom.
+type LakeKeyEscrowStatus struct {
+	// Object is the sealed copy: s3://<bucket>/lake-<name>/instance-kek/<fingerprint>.age.
+	Object string `json:"object"`
+	// Fingerprint is the SHA-256 of the key Secret's data, which a recovered copy must match. It
+	// says nothing about the key itself.
+	Fingerprint string `json:"fingerprint"`
+	// RecipientsDigest is the SHA-256 of the sorted recipients it was sealed to.
+	RecipientsDigest string `json:"recipientsDigest"`
+	// EscrowedAt is when it was written.
+	EscrowedAt metav1.Time `json:"escrowedAt"`
 }
 
 // LakePostgresBackupSpec describes scheduled object-store backups for a Lake control-plane
@@ -899,6 +920,9 @@ type LakeStatus struct {
 	// LastBackupTime is the completion time reported by the newest CNPG Backup.
 	// +optional
 	LastBackupTime *metav1.Time `json:"lastBackupTime,omitempty"`
+	// KeyEscrow is the newest sealed copy of the instance key in the backup bucket (operator#739).
+	// +optional
+	KeyEscrow *LakeKeyEscrowStatus `json:"keyEscrow,omitempty"`
 	// DataServices reports the operational evidence for every data service associated with the
 	// Lake. Managed is true only when every applicable procedure has a successful rehearsal.
 	// +listType=map

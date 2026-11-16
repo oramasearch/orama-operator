@@ -60,6 +60,7 @@ type lakeBackupTarget struct {
 	// connection: the kind's backup Job reads the server's connection.
 	connection  bool
 	podSelector map[string]string
+	volume      *oramav1alpha1.BackupVolumeSource
 }
 
 // lakeServiceBackupTargets is what of a service is backed up, by kind.
@@ -82,6 +83,24 @@ func lakeServiceBackupTargets(lake *oramav1alpha1.Lake, svc *LakeService) []lake
 		return []lakeBackupTarget{{kind: oramav1alpha1.BackupDatastoreCassandra, name: name, podSelector: cassandraServiceKind{}.podSelector(in)}}
 	case serviceKindValkey:
 		return []lakeBackupTarget{{kind: oramav1alpha1.BackupDatastoreValkey, name: name, connection: true, podSelector: valkeyServiceKind{}.podSelector(in)}}
+	case serviceKindSQLite, serviceKindDuckDB, serviceKindPolars:
+		// Each data claim data-<name>-<i>, copied from a CSI snapshot as the wrapper's own user
+		// (operator#737). Polars keeps datasets per worker, so every worker's claim has a schedule.
+		kind := map[string]oramav1alpha1.BackupDatastoreKind{serviceKindSQLite: oramav1alpha1.BackupDatastoreSQLite,
+			serviceKindDuckDB: oramav1alpha1.BackupDatastoreDuckDB, serviceKindPolars: oramav1alpha1.BackupDatastorePolars}[svc.Kind]
+		instances := int32(1)
+		if wrapper, _ := catalogKinds[svc.Kind].(wrapperServiceKind); wrapper.multiInstance {
+			if spec, err := parseServiceSpec(svc.Spec); err == nil && spec.Instances > 0 {
+				instances = spec.Instances
+			}
+		}
+		user := wrapperRunAsUser
+		var targets []lakeBackupTarget
+		for i := int32(0); i < instances; i++ {
+			targets = append(targets, lakeBackupTarget{kind: kind, name: fmt.Sprintf("%s-%s-%d", wrapperDataVolume, name, i),
+				volume: &oramav1alpha1.BackupVolumeSource{VolumeSnapshotClassName: snapshotDefaultClass, RunAsUser: &user, RunAsGroup: &user}})
+		}
+		return targets
 	case serviceKindKafka:
 		// The schedule states Kafka's decision (operator#733) instead of running.
 		return []lakeBackupTarget{{kind: oramav1alpha1.BackupDatastoreKafka, name: name}}
@@ -121,7 +140,7 @@ func (r *LakeReconciler) reconcileServiceBackup(ctx context.Context, lake *orama
 
 func (r *LakeReconciler) ensureLakeBackupSchedule(ctx context.Context, lake *oramav1alpha1.Lake, svc *LakeService, target lakeBackupTarget, document map[string]interface{}) (*oramav1alpha1.BackupSchedule, error) {
 	namespace := svc.WorkspaceNamespace
-	datastore := oramav1alpha1.BackupDatastoreRef{Kind: target.kind, Name: target.name, PodSelector: target.podSelector}
+	datastore := oramav1alpha1.BackupDatastoreRef{Kind: target.kind, Name: target.name, PodSelector: target.podSelector, Volume: target.volume}
 	if target.connection {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeBackupConnectionSecret(target.name), Namespace: namespace}}
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
@@ -345,3 +364,50 @@ func isBackupDecisionRefusal(schedule *oramav1alpha1.BackupSchedule) bool {
 
 // backupReasonNoBackupByDecision is the Ready reason of a kind with no backup by decision.
 const backupReasonNoBackupByDecision = "NoBackupByDecision"
+
+// lakeStoreBackupID is the service-id label of the store's schedule, which no service row has.
+const lakeStoreBackupID = "lake-store"
+
+// reconcileLakeStoreBackup keeps the BackupSchedule of the Lake's store volume (operator#738): a
+// file-level copy, from a CSI snapshot, to the Lake's backup bucket, as lake's own user so every file
+// can be read. The store's CSI snapshots (lake_volume_snapshots.go) stay as they are; this is the copy
+// off the cluster's disks.
+func (r *LakeReconciler) reconcileLakeStoreBackup(ctx context.Context, lake *oramav1alpha1.Lake, namespace, claim string) error {
+	if claim == "" {
+		return nil
+	}
+	schedule := &oramav1alpha1.BackupSchedule{ObjectMeta: metav1.ObjectMeta{Name: lakeBackupScheduleName(claim), Namespace: namespace}}
+	if lake.Spec.Backups == nil {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(schedule), schedule); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if !metav1.IsControlledBy(schedule, lake) {
+			return nil
+		}
+		return client.IgnoreNotFound(r.Delete(ctx, schedule))
+	}
+	user, group := lakeRunAsUser, lakeRunAsGroup
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, schedule, func() error {
+		if schedule.ResourceVersion != "" && !metav1.IsControlledBy(schedule, lake) {
+			return fmt.Errorf("BackupSchedule %s/%s exists and is not this Lake's", namespace, schedule.Name)
+		}
+		schedule.Labels = map[string]string{serviceLakeLabel: lake.Name, serviceComponentLabel: lakeBackupComponent, serviceIDLabel: lakeStoreBackupID}
+		keep := lake.Spec.Backups.Keep
+		if keep < 1 {
+			keep = backupScheduleDefaultKeep
+		}
+		cron := lake.Spec.Backups.Schedule
+		if cron == "" {
+			cron = backupScheduleDefaultCron
+		}
+		schedule.Spec = oramav1alpha1.BackupScheduleSpec{
+			Datastore: oramav1alpha1.BackupDatastoreRef{Kind: oramav1alpha1.BackupDatastoreVolume, Name: claim,
+				Volume: &oramav1alpha1.BackupVolumeSource{VolumeSnapshotClassName: snapshotDefaultClass, RunAsUser: &user, RunAsGroup: &group}},
+			Bucket:   oramav1alpha1.BackupBucketRef{Kind: "CloudflareR2Bucket", Name: lakeBackupBucketName(lake.Name), Namespace: namespace},
+			Schedule: cron,
+			Keep:     keep,
+		}
+		return controllerutil.SetControllerReference(lake, schedule, r.Scheme)
+	})
+	return err
+}

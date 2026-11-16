@@ -227,3 +227,11 @@ operator and lake `0069` are deployed on `Lake/prod`:
 2. Restore the workspace snapshot into a scratch claim (A), mount it, and read the Zetta data
    directory. Delete the scratch claim.
 3. Record the snapshot names, the times to `readyToUse` and the restore in the deployment record.
+
+## A copy off the cluster
+
+The snapshots stay in the cloud's snapshot storage, in the cluster's region and account. With
+`spec.backups`, the store is also copied file by file to the Lake's backup bucket, from a snapshot of
+its own ([operator#738](https://github.com/oramasearch/orama-operator/issues/738),
+[`../backups.md`](../backups.md#mechanisms), kind `Volume`).
+

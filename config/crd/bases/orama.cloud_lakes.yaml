@@ -201,6 +201,17 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  escrowRecipients:
+                    description: |-
+                      EscrowRecipients are the recovery keys the Lake's instance key is sealed to (operator#739): age
+                      X25519 public keys ("age1..."), whose private halves are held off the cluster by the people
+                      named in docs/lake/key-escrow.md. The sealed copy goes to the backup bucket whenever the key or
+                      the recipients change; any one recipient opens it with `age -d`. Empty: the key is not escrowed,
+                      and the InstanceKeyEscrowed condition says so.
+                    items:
+                      pattern: ^age1[02-9ac-hj-np-z]{58}$
+                      type: string
+                    type: array
                   keep:
                     default: 7
                     description: Keep is how many succeeded backups each schedule
@@ -2009,6 +2020,32 @@ spec:
                 required:
                 - image
                 - supported
+                type: object
+              keyEscrow:
+                description: KeyEscrow is the newest sealed copy of the instance key
+                  in the backup bucket (operator#739).
+                properties:
+                  escrowedAt:
+                    description: EscrowedAt is when it was written.
+                    format: date-time
+                    type: string
+                  fingerprint:
+                    description: |-
+                      Fingerprint is the SHA-256 of the key Secret's data, which a recovered copy must match. It
+                      says nothing about the key itself.
+                    type: string
+                  object:
+                    description: 'Object is the sealed copy: s3://<bucket>/lake-<name>/instance-kek/<fingerprint>.age.'
+                    type: string
+                  recipientsDigest:
+                    description: RecipientsDigest is the SHA-256 of the sorted recipients
+                      it was sealed to.
+                    type: string
+                required:
+                - escrowedAt
+                - fingerprint
+                - object
+                - recipientsDigest
                 type: object
               lastBackupTime:
                 description: LastBackupTime is the completion time reported by the
