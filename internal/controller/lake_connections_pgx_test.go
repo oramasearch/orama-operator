@@ -44,6 +44,7 @@ func TestConnectionsPgxStoreAgainstPostgres(t *testing.T) {
 		"SET LOCAL search_path TO " + scratch + ", pg_catalog",
 		`CREATE TABLE workspaces (
             id uuid PRIMARY KEY,
+            customer_id uuid NOT NULL,
             namespace text NOT NULL DEFAULT '',
             created_at timestamptz NOT NULL DEFAULT now()
         )`,
@@ -81,7 +82,7 @@ func TestConnectionsPgxStoreAgainstPostgres(t *testing.T) {
 	if _, err := tx.Exec(ctx, `CREATE TABLE network_guard (applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO workspaces (id, namespace) VALUES ($1, $2)`, testWorkspaceID, testWorkspaceName); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO workspaces (id, customer_id, namespace) VALUES ($1, $2, $3)`, testWorkspaceID, testServiceCustomer, testWorkspaceName); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO network_connections

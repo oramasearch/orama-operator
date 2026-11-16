@@ -50,7 +50,7 @@ func TestPeersPgxStoreAgainstPostgres(t *testing.T) {
 	exec(
 		"CREATE SCHEMA "+scratch,
 		"SET LOCAL search_path TO "+scratch+", pg_catalog",
-		`CREATE TABLE workspaces (id uuid PRIMARY KEY, namespace text NOT NULL DEFAULT '')`,
+		`CREATE TABLE workspaces (id uuid PRIMARY KEY, customer_id uuid NOT NULL, namespace text NOT NULL DEFAULT '')`,
 		`CREATE TABLE network_peers (
             id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
             customer_id uuid NOT NULL,
@@ -79,7 +79,7 @@ func TestPeersPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	exec(
 		`CREATE TABLE network_guard (applied_at timestamptz NOT NULL DEFAULT now())`,
-		fmt.Sprintf(`INSERT INTO workspaces (id, namespace) VALUES ('%s', 'workspace')`, testWorkspaceID),
+		fmt.Sprintf(`INSERT INTO workspaces (id, customer_id, namespace) VALUES ('%s', '%s', 'workspace')`, testWorkspaceID, testServiceCustomer),
 		fmt.Sprintf(`INSERT INTO network_peers (id, customer_id, workspace_id, name, remote, exports, imports)
             VALUES ('%s', '%s', '%s', 'to-us', '40.0.0.3:7446', '[{"target_kind":"service","target_id":"%s","port":5432}]', '[{"name":"cache.us","port":6379}]')`,
 			testPeerID, testServiceCustomer, testWorkspaceID, testConnectionTargetID),
