@@ -691,6 +691,17 @@ spec:
                         - local
                         - central
                         type: string
+                      referenceRows:
+                        description: |-
+                          ReferenceRows is this stack's catalog: the dashboard reference rows (subscription_plans,
+                          stripe_addon_prices, llms) the operator seeds, one statement per line, in the shape
+                          hack/export-dashboard-reference-rows.sh prints:
+                          INSERT INTO reference_<table> SELECT * FROM json_populate_record(NULL::reference_<table>, '<row JSON>');
+                          Lines starting with "--" and blank lines are allowed; any other line fails the stack's
+                          reconcile, visibly. The rows must include the default plan the dashboard's migration 0008
+                          names. Empty seeds the operator's built-in example catalog.
+                        maxLength: 262144
+                        type: string
                       replicate:
                         description: |-
                           Replicate: for a read tier, stream/replicate this store from the primary

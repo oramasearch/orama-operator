@@ -159,7 +159,7 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 	want := oramav1alpha1.PostgresSchemaSpec{
 		ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: oc.Name + "-controldb-app", Key: "uri"},
 		SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: oc.Name + "-controldb-migrations", Key: "schema-0008.sql"},
-		Version:             schemaVersion(mustSQL(controlDBSchema0008SQL())),
+		Version:             schemaVersion(mustSQL(controlDBSchema0008SQL(dashboardReferenceRowsSQL))),
 		GuardTable:          "team_migrations",
 		Image:               pinnedPostgres16Image,
 	}
@@ -192,7 +192,7 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cm.Data) != 3 || cm.Data["schema.sql"] != dashboardSchemaSQL ||
-		cm.Data["schema-0008.sql"] != mustSQL(controlDBSchema0008SQL()) ||
+		cm.Data["schema-0008.sql"] != mustSQL(controlDBSchema0008SQL(dashboardReferenceRowsSQL)) ||
 		cm.Data["reference-data.sql"] != mustSQL(controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices)) {
 		t.Fatalf("ConfigMap keys = %v, want schema.sql, schema-0008.sql and reference-data.sql", slices.Sorted(maps.Keys(cm.Data)))
 	}
@@ -222,7 +222,7 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 }
 
 func TestControlDBSchema0008SeedsBeforeTeamForeignKey(t *testing.T) {
-	sql := mustSQL(controlDBSchema0008SQL())
+	sql := mustSQL(controlDBSchema0008SQL(dashboardReferenceRowsSQL))
 	head, rest, ok := strings.Cut(sql, seedBeginMarker)
 	if !ok {
 		t.Fatal("0008 schema has no operator seed block")
@@ -536,5 +536,66 @@ func TestApplyEveryVersionHasNoGuard(t *testing.T) {
 	}
 	if strings.Contains(every, "to_regclass") || !strings.Contains(every, "--single-transaction -f /migrations/reference-data.sql") {
 		t.Fatalf("applyEveryVersion script:\n%s", every)
+	}
+}
+
+// TestControlDBReferenceRowsFromSpec: a stack's spec.components.controlDB.referenceRows replaces the
+// built-in example catalog in both the 0008 seed and the reference-data upsert, byte for byte; an
+// empty field falls back to the example catalog.
+func TestControlDBReferenceRowsFromSpec(t *testing.T) {
+	oc := &oramav1alpha1.OramaCloudV1{}
+	if got := mustSQL(controlDBReferenceRows(oc)); got != dashboardReferenceRowsSQL {
+		t.Fatal("an empty referenceRows must seed the built-in example catalog")
+	}
+	rows := "-- a stack's own catalog\n" +
+		`INSERT INTO reference_subscription_plans SELECT * FROM json_populate_record(NULL::reference_subscription_plans, '{"id": "0d735744-e58e-4438-b618-97523e407cdc", "name": "it''s free"}');` + "\n" +
+		"\n" +
+		`INSERT INTO reference_llms SELECT * FROM json_populate_record(NULL::reference_llms, '{"id": "00000000-0000-4000-8000-000000000201", "name": "model"}');` + "\n"
+	oc.Spec.Components.ControlDB.ReferenceRows = rows
+	if got := mustSQL(controlDBReferenceRows(oc)); got != rows {
+		t.Fatal("referenceRows must be used as written")
+	}
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range schemas[1:3] {
+		if !strings.Contains(s.sql, rows) || strings.Contains(s.sql, "example-free") {
+			t.Fatalf("%s does not seed the spec's rows in place of the example catalog", s.suffix)
+		}
+	}
+}
+
+// TestControlDBReferenceRowsRefuseOtherSQL: referenceRows can only stage rows into the three
+// reference tables; any other statement, a table mismatch, an unescaped quote or a non-JSON row fails
+// the stack's reconcile.
+func TestControlDBReferenceRowsRefuseOtherSQL(t *testing.T) {
+	for name, rows := range map[string]string{
+		"other statement": "DROP TABLE teams;",
+		"other table":     `INSERT INTO reference_teams SELECT * FROM json_populate_record(NULL::reference_teams, '{"id": "x"}');`,
+		"table mismatch":  `INSERT INTO reference_llms SELECT * FROM json_populate_record(NULL::reference_subscription_plans, '{"id": "x"}');`,
+		"quote escape":    `INSERT INTO reference_llms SELECT * FROM json_populate_record(NULL::reference_llms, '{"id": "x"}'); DROP TABLE teams; --');`,
+		"not json":        `INSERT INTO reference_llms SELECT * FROM json_populate_record(NULL::reference_llms, 'not json');`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			oc := &oramav1alpha1.OramaCloudV1{}
+			oc.Spec.Components.ControlDB.ReferenceRows = rows
+			if _, err := controlDBSchemas(oc); err == nil {
+				t.Fatal("controlDBSchemas accepted referenceRows that are not reference row statements")
+			}
+		})
+	}
+}
+
+// TestControlDBExampleCatalogIsMadeUp: the built-in rows are the example catalog, and they keep the
+// default plan migration 0008 names, without which no team can be created.
+func TestControlDBExampleCatalogIsMadeUp(t *testing.T) {
+	for _, want := range []string{`"id": "0d735744-e58e-4438-b618-97523e407cdc"`, `"name": "example-free"`, `"name": "example-paid"`} {
+		if !strings.Contains(dashboardReferenceRowsSQL, want) {
+			t.Errorf("the example catalog lacks %s", want)
+		}
+	}
+	if _, err := controlDBReferenceRows(&oramav1alpha1.OramaCloudV1{Spec: oramav1alpha1.OramaCloudV1Spec{}}); err != nil {
+		t.Fatal(err)
 	}
 }

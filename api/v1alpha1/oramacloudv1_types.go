@@ -503,6 +503,16 @@ type SecretKeyRef struct {
 // dashboard reference rows the operator seeds (operator#378).
 type ControlDBSpec struct {
 	DataStoreSpec `json:",inline"`
+	// ReferenceRows is this stack's catalog: the dashboard reference rows (subscription_plans,
+	// stripe_addon_prices, llms) the operator seeds, one statement per line, in the shape
+	// hack/export-dashboard-reference-rows.sh prints:
+	// INSERT INTO reference_<table> SELECT * FROM json_populate_record(NULL::reference_<table>, '<row JSON>');
+	// Lines starting with "--" and blank lines are allowed; any other line fails the stack's
+	// reconcile, visibly. The rows must include the default plan the dashboard's migration 0008
+	// names. Empty seeds the operator's built-in example catalog.
+	// +kubebuilder:validation:MaxLength=262144
+	// +optional
+	ReferenceRows string `json:"referenceRows,omitempty"`
 	// StripePrices are this stack's Stripe price IDs for the seeded reference rows: test-mode IDs on
 	// a nonprod stack, live-mode IDs on production. They are never part of the operator's committed
 	// rows. Empty leaves every plan's Stripe columns NULL and seeds no add-on price.

@@ -1058,10 +1058,12 @@ the next. A streaming replica receives the primary's schema and owns none.
   `team_migrations` re-applies cleanly. The guard does not prove the other 0008 objects exist: a
   database with `team_migrations` but missing objects is drift, to be reported, not repaired.
 - **Who creates the reference rows.** The operator does
-  ([decision 7](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-16.md)).
-  `assets/dashboard-reference-rows.sql` holds Prod 1's `subscription_plans`, `stripe_addon_prices`
-  and `llms` rows, with their IDs and every column, exported read-only by
-  `hack/export-dashboard-reference-rows.sh`, without Stripe price IDs.
+  from the stack's catalog, `spec.components.controlDB.referenceRows`: its `subscription_plans`,
+  `stripe_addon_prices` and `llms` rows, with their IDs and every column, as
+  `hack/export-dashboard-reference-rows.sh` prints them from a control database, without Stripe
+  price IDs. A stack that leaves the field empty seeds the built-in example catalog,
+  `assets/dashboard-reference-rows.sql`, whose rows are made up. A production catalog is
+  configuration and is never committed here.
   `assets/dashboard-reference-data.sql` upserts them by ID (`ON CONFLICT (id) DO UPDATE`, never a
   delete) and fails unless the default plan `0d735744-e58e-4438-b618-97523e407cdc` exists. Inside
   0008 it runs before `teams.subscription_plan_id` and its foreign key, so existing teams validate
@@ -1069,7 +1071,7 @@ the next. A streaming replica receives the primary's schema and owns none.
   rows, 0008 rolls back as a whole. The tenant copy tool does not copy these rows.
 - **Stripe prices are per stack**: `spec.components.controlDB.stripePrices` (test-mode IDs on
   nonprod, live-mode IDs on `v1-prod`). They reach only `<cr>-controldb-reference-data`, so 0008's
-  SQL and version are the same on every stack. Empty leaves plans' Stripe columns NULL and seeds no
+  SQL and version are the same on every stack with the same catalog. Empty leaves plans' Stripe columns NULL and seeds no
   add-on price (`stripe_addon_prices.stripe_price_id` is NOT NULL). An ID that is not a reference
   row fails the seed, visibly, and changes nothing.
 - **Readiness.** The stack's `controldb-schema` component is ready only when all five report their

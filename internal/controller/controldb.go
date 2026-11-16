@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,16 +45,51 @@ var dashboardSchemaSQL string
 var dashboardSchema0008SQL string
 
 // dashboardReferenceDataSQL is the operator's upsert of the dashboard's global reference rows
-// (subscription_plans, stripe_addon_prices, llms; operator#378). Its rows are
-// dashboardReferenceRowsSQL, Prod 1's rows exported read-only by
-// hack/export-dashboard-reference-rows.sh, spliced in at referenceRowsMarker. controlDBReferenceSQL
-// renders the two together with one stack's Stripe prices.
+// (subscription_plans, stripe_addon_prices, llms; operator#378). Its rows are the stack's
+// spec.components.controlDB.referenceRows, or dashboardReferenceRowsSQL when that is empty, spliced
+// in at referenceRowsMarker. controlDBReferenceSQL renders the two together with one stack's Stripe
+// prices.
 //
 //go:embed assets/dashboard-reference-data.sql
 var dashboardReferenceDataSQL string
 
+// dashboardReferenceRowsSQL is the built-in example catalog: made-up rows, seeded by a stack whose
+// spec.components.controlDB.referenceRows is empty. A stack's own catalog is configuration, in its
+// spec, never in this repository.
+//
 //go:embed assets/dashboard-reference-rows.sql
 var dashboardReferenceRowsSQL string
+
+// referenceRowLine is the one statement shape a reference-rows line may have: one row's JSON, as a
+// single-quoted SQL literal (a quote inside it doubled), staged into one of the three reference
+// tables. The table names must match, so a line cannot stage rows into another table.
+var referenceRowLine = regexp.MustCompile(`^INSERT INTO reference_(subscription_plans|stripe_addon_prices|llms) SELECT \* FROM json_populate_record\(NULL::reference_(subscription_plans|stripe_addon_prices|llms), '((?:[^']|'')*)'\);$`)
+
+// controlDBReferenceRows is the stack's reference rows: spec.components.controlDB.referenceRows, or
+// the built-in example catalog when it is empty. Every line must be a comment, blank, or one
+// referenceRowLine statement whose literal is a JSON object; anything else is refused, so the field
+// can only ever stage rows and never runs other SQL.
+func controlDBReferenceRows(oc *oramav1alpha1.OramaCloudV1) (string, error) {
+	rows := oc.Spec.Components.ControlDB.ReferenceRows
+	if rows == "" {
+		return dashboardReferenceRowsSQL, nil
+	}
+	for i, line := range strings.Split(rows, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		m := referenceRowLine.FindStringSubmatch(line)
+		if m == nil || m[1] != m[2] {
+			return "", fmt.Errorf("spec.components.controlDB.referenceRows line %d is not a reference row statement", i+1)
+		}
+		var row map[string]any
+		if err := json.Unmarshal([]byte(strings.ReplaceAll(m[3], "''", "'")), &row); err != nil {
+			return "", fmt.Errorf("spec.components.controlDB.referenceRows line %d: the row is not a JSON object: %w", i+1, err)
+		}
+	}
+	return rows, nil
+}
 
 const (
 	referenceRowsMarker = "\n-- @reference-rows\n"
@@ -90,16 +127,17 @@ func controlDBReferenceSQL(rows string, prices oramav1alpha1.ControlDBStripePric
 	return b.String() + before + "\n" + rows + "\n" + after, nil
 }
 
-// controlDBSchema0008SQL is 0008 with the reference rows seeded at schema0008SeedPoint, without any
-// Stripe prices, so it is the same on every stack. The vendored statements are unchanged; the
-// operator's block sits between seedBeginMarker and seedEndMarker. It fails when the vendored 0008
-// no longer contains schema0008SeedPoint, so a re-vendored file cannot silently lose the seed.
-func controlDBSchema0008SQL() (string, error) {
+// controlDBSchema0008SQL is 0008 with the stack's reference rows seeded at schema0008SeedPoint,
+// without any Stripe prices, so it is the same on every stack with the same rows. The vendored
+// statements are unchanged; the operator's block sits between seedBeginMarker and seedEndMarker. It
+// fails when the vendored 0008 no longer contains schema0008SeedPoint, so a re-vendored file cannot
+// silently lose the seed.
+func controlDBSchema0008SQL(rows string) (string, error) {
 	head, tail, found := strings.Cut(dashboardSchema0008SQL, schema0008SeedPoint)
 	if !found {
 		return "", fmt.Errorf("dashboard-schema-0008.sql has no seed point %q", schema0008SeedPoint)
 	}
-	seed, err := controlDBReferenceSQL(dashboardReferenceRowsSQL, oramav1alpha1.ControlDBStripePrices{})
+	seed, err := controlDBReferenceSQL(rows, oramav1alpha1.ControlDBStripePrices{})
 	if err != nil {
 		return "", err
 	}
@@ -308,11 +346,15 @@ var controlDBSchemaSuffixes = []string{
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
 // one before it reports its current version Applied, because each builds on the tables of the last.
 func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error) {
-	schema0008, err := controlDBSchema0008SQL()
+	rows, err := controlDBReferenceRows(oc)
 	if err != nil {
 		return nil, err
 	}
-	reference, err := controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices)
+	schema0008, err := controlDBSchema0008SQL(rows)
+	if err != nil {
+		return nil, err
+	}
+	reference, err := controlDBReferenceSQL(rows, oc.Spec.Components.ControlDB.StripePrices)
 	if err != nil {
 		return nil, err
 	}

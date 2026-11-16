@@ -450,7 +450,7 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 // lastTableSchemaVersion is the version of the last control DB schema that creates tables (0008).
 func lastTableSchemaVersion(t *testing.T, oc *oramav1alpha1.OramaCloudV1) string {
 	t.Helper()
-	return schemaVersion(mustSQL(controlDBSchema0008SQL()))
+	return schemaVersion(mustSQL(controlDBSchema0008SQL(dashboardReferenceRowsSQL)))
 }
 
 func envNames(env []corev1.EnvVar) []string {
