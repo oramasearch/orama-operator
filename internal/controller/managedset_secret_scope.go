@@ -111,8 +111,8 @@ func (r *managedSetReconciler) scopeFor(ctx context.Context, resolved resolvedMe
 
 // operatorSecretScope is the scope of the cluster an OramaOperator installs onto: its purpose tag
 // and, unless it is production, every Secret production copies. A cluster that does not exist yet
-// has no purpose, so it is not production. An empty clusterName is the managing cluster itself
-// (an observability hub with no clusterRef), which is production (observability_purpose.go).
+// has no purpose, so it is not production. An empty clusterName is the managing cluster itself,
+// which is production (cluster_purpose.go).
 func operatorSecretScope(ctx context.Context, r client.Reader, clusterName string) (secretScope, error) {
 	purpose, _, err := clusterPurpose(ctx, r, clusterName)
 	if err != nil {
@@ -144,7 +144,7 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 		for _, member := range spec.Clusters {
 			purpose, read := purposes[member.ClusterRef]
 			if !read {
-				// An empty clusterRef (a hub on the managing cluster) is production.
+				// An empty clusterRef (the managing cluster) is production.
 				var err error
 				if purpose, _, err = clusterPurpose(ctx, r, member.ClusterRef); err != nil {
 					return false, err
@@ -254,50 +254,6 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 		}
 		if _, found := sources[ref.Namespace+"/"+ref.Name]; production && !found {
 			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of ClusterHelmRelease " + release.Name + " on production-tier cluster " + release.Spec.ClusterRef
-		}
-	}
-	// Observability (operator#15): a production agent's or hub's pull Secret, and the alert
-	// receivers of a hub serving production (the managing cluster's hub, #1059), are production
-	// credentials.
-	var hubs oramav1alpha1.ObservabilityHubList
-	if err := r.List(ctx, &hubs); err != nil {
-		return nil, fmt.Errorf("list ObservabilityHubs to find production Secrets: %w", err)
-	}
-	sort.Slice(hubs.Items, func(i, j int) bool { return hubs.Items[i].Name < hubs.Items[j].Name })
-	for index := range hubs.Items {
-		hub := &hubs.Items[index]
-		production, err := isProduction(&oramav1alpha1.ManagedSetSpec{Clusters: []oramav1alpha1.SetMember{{ClusterRef: hub.Spec.ClusterRef}}}, "")
-		if err != nil {
-			return nil, err
-		}
-		if !production {
-			continue
-		}
-		by := "is a production credential of ObservabilityHub " + hub.Name
-		refs := []oramav1alpha1.SetSecret{{Namespace: hub.Spec.ImagePullSecretRef.Namespace, Name: hub.Spec.ImagePullSecretRef.Name}}
-		for _, ref := range alertReceiverSecrets(hub) {
-			refs = append(refs, oramav1alpha1.SetSecret{Namespace: ref.Namespace, Name: ref.Name})
-		}
-		for _, ref := range refs {
-			if _, found := sources[ref.Namespace+"/"+ref.Name]; !found {
-				sources[ref.Namespace+"/"+ref.Name] = by
-			}
-		}
-	}
-	var agents oramav1alpha1.ObservabilityAgentList
-	if err := r.List(ctx, &agents); err != nil {
-		return nil, fmt.Errorf("list ObservabilityAgents to find production Secrets: %w", err)
-	}
-	sort.Slice(agents.Items, func(i, j int) bool { return agents.Items[i].Name < agents.Items[j].Name })
-	for index := range agents.Items {
-		agent := &agents.Items[index]
-		production, err := isProduction(&oramav1alpha1.ManagedSetSpec{Clusters: []oramav1alpha1.SetMember{{ClusterRef: agent.Spec.ClusterRef}}}, "")
-		if err != nil {
-			return nil, err
-		}
-		ref := agent.Spec.ImagePullSecretRef
-		if _, found := sources[ref.Namespace+"/"+ref.Name]; production && !found {
-			sources[ref.Namespace+"/"+ref.Name] = "is the pull Secret of ObservabilityAgent " + agent.Name + " on production cluster " + firstNonEmpty(agent.Spec.ClusterRef, managingClusterName)
 		}
 	}
 	return sources, nil

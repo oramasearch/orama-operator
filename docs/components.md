@@ -2165,17 +2165,15 @@ What remains from that work is correctness, not quiet: `settle` never returns a 
 with an error, and the KV namespace and R2 bucket controllers write a failure to status only when
 it changes instead of on every retry.
 
-## Observability (`observability_controller.go`, `pixiecloud_controller.go`, `pixievizier_controller.go`, `oramacloudv1_monitoring.go`, [#15](https://github.com/oramasearch/orama-operator/issues/15)) — 🟡 implemented and tested locally; not run on a cluster (Pixie's images, #455, are not built yet)
+## Monitoring (`oramacloudv1_monitoring.go`, `platform_monitoring.go`, [#15](https://github.com/oramasearch/orama-operator/issues/15)) — 🟡 implemented and tested locally
 
-The design, licences, rollout and failure behaviour are in
-[`infrastructure/observability.md`](infrastructure/observability.md). What each reconciler creates:
+What the platform layer runs, the licences, and what was removed with Pixie
+([#1192](https://github.com/oramasearch/orama-operator/issues/1192)) are in
+[`infrastructure/observability.md`](infrastructure/observability.md). The operator has no
+observability kinds of its own; what it creates for monitoring:
 
 | Reconciler | Creates | Maps to prod |
 |---|---|---|
-| `ObservabilityHub` (managing cluster) | namespace `plc` (Pod Security `baseline`), `plc/pixie-pull`, the alert receivers' Secrets, `PixieCloud plc/pixie` on the hub's cluster | Grafana Cloud's hosted UI, replaced by self-hosted Pixie Cloud |
-| `ObservabilityAgent` (managing cluster) | namespace `pl` (Pod Security `privileged`, for the eBPF node agents), `pl/pixie-pull`, `pl/pl-deploy-secrets`, `pl/pixie-cloud-ca`, receiver Secrets, `PixieVizier pl/pixie`; for another cluster, `PeerConnection`s at both ends (vzconn to the agent, the agent's metrics to the hub) and a `PeerLink` | Grafana Alloy on each cluster, replaced by Vizier |
-| `PixieCloud` (hub's cluster) | minted CAs, certificates and keys; CloudNativePG `pixie-db` with a `Database` and role per service; OpenSearch `pixie-search`; `pixie-scripts`; the vendored services, Ory and NATS (no plugin loader Job: it needs GitHub); the `bootstrap` role; `NetworkSandbox`; `PrometheusRule orama-observability`; the hub Prometheus (`Prometheus observability-hub`, `Secret hub-prometheus-config` with a federate job per cluster, hub-scoped `PrometheusRule hub-cluster-alerts`, `ConfigMap hub-dashboards`, all labelled `orama.cloud/pixie: metrics` and written before anything of Pixie); the bootstrap, and a deploy key per agent through Pixie's API | — (new) |
-| `PixieVizier` (agent's cluster) | its CA, `service-tls-certs`, `pl-cluster-secrets`; `pl-cloud-config` and `pl-cluster-config` (auto-update off); the vendored Vizier and NATS; for a hub on another cluster, `metrics-federation` (the `platform-envoy` mirror, GET `/federate` only, written before anything of Pixie); `NetworkSandbox` with a Cilium rule for the host-network node agents; `PrometheusRule orama-observability`; `AlertmanagerConfig orama-alert-routing` | — (new) |
 | `OramaCloudV1` monitoring step | `PodMonitor <stack>-engine` (:8080 `/metrics`), `PodMonitor <stack>-controldb` (:9187), `PrometheusRule <stack>-alerts`, `ConfigMap <stack>-dashboards` (Perses project, overview, one dashboard per component); two scrape allowances in the stack's `NetworkSandbox` | Grafana Cloud dashboards and alerts on Prod 1 |
 
 The platform layer (kube-prometheus-stack, Perses) is in `helmfile.yaml` and every

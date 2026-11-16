@@ -508,8 +508,8 @@ contexts: [{name: leaf, context: {cluster: leaf, user: admin}}]
 	}
 }
 
-// A leaf client knows Orama's kinds as well as Kubernetes': the observability agent reads the hub's
-// PixieCloud and writes a PixieVizier on leaf clusters.
+// A leaf client knows Orama's kinds as well as Kubernetes': the managing cluster writes
+// PeerConnections and reads them back on leaf clusters.
 func TestLeafClientsKnowOramaKinds(t *testing.T) {
 	kubeconfig := []byte(`apiVersion: v1
 kind: Config
@@ -518,11 +518,11 @@ clusters: [{name: leaf, cluster: {server: "https://leaf.invalid"}}]
 users: [{name: admin, user: {token: t}}]
 contexts: [{name: leaf, context: {cluster: leaf, user: admin}}]
 `)
-	_, c, err := leafClients(kubeconfig, "pl")
+	_, c, err := leafClients(kubeconfig, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, obj := range []client.Object{&oramav1alpha1.PixieCloud{}, &oramav1alpha1.PixieVizier{}, &corev1.Secret{}} {
+	for _, obj := range []client.Object{&oramav1alpha1.PeerConnection{}, &oramav1alpha1.KubernetesCluster{}, &corev1.Secret{}} {
 		if _, err := c.GroupVersionKindFor(obj); err != nil {
 			t.Errorf("a leaf client cannot handle %T: %v", obj, err)
 		}

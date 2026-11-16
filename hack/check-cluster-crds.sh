@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 
-# Fail if the cluster is missing a CRD this chart ships.
+# Fail if the cluster is missing a CRD this chart ships, or still holds objects of a kind the chart
+# no longer ships (hack/retired-crds.txt).
 #
 # Helm applies chart/crds on INSTALL ONLY — never on upgrade — and the rollout runbooks pass
 # --skip-crds. So a CRD added after the first install lands on no cluster until someone applies it
@@ -74,8 +75,34 @@ for file in "${files[@]}"; do
   fi
 done
 
+# A kind the chart no longer ships (hack/retired-crds.txt) has no controller after the roll. An
+# object of it that is still there keeps whatever it ran, and one with a finalizer can never be
+# deleted again. So the roll waits until the previous operator has torn every one down: delete
+# them from their committed files, wait until they are gone, then roll. The CRD left behind holds
+# nothing and is harmless; deleting it is a change to the cluster like any other.
+retired_live=()
+while read -r crd; do
+  case "$crd" in ''|\#*) continue ;; esac
+  kube get crd "$crd" >/dev/null 2>&1 || continue
+  count="$(kube get "$crd" --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$count" -gt 0 ]; then
+    printf '   RETIRED  %s   (%s object(s) still exist)\n' "$crd" "$count"
+    retired_live+=("$crd")
+  else
+    printf '   retired  %s   (CRD left behind, no objects)\n' "$crd"
+  fi
+done < "${REPO_ROOT}/hack/retired-crds.txt"
+if [ ${#retired_live[@]} -gt 0 ]; then
+  echo "!! ${#retired_live[@]} kind(s) this chart no longer ships still have objects on the cluster."
+  echo "!! Delete them under the operator that still runs them, wait until they are gone, then roll:"
+  for crd in "${retired_live[@]}"; do
+    echo "     kubectl ${CONTEXT:+--context $CONTEXT }get $crd --all-namespaces"
+  done
+fi
+
 if [ ${#missing[@]} -eq 0 ]; then
   echo ">> every chart CRD is present on the cluster"
+  [ ${#retired_live[@]} -eq 0 ] || exit 1
   exit 0
 fi
 
