@@ -2029,8 +2029,17 @@ spec:
                     - enabled
                     type: object
                   pgAdmin:
-                    description: Toggle is a simple on/off component.
+                    description: PgAdminSpec is pgAdmin's toggle plus the address
+                      of its login.
                     properties:
+                      email:
+                        description: |-
+                          Email is the address of pgAdmin's login (PGADMIN_DEFAULT_EMAIL); its password is generated into
+                          the stack's pgAdmin Secret. pgAdmin refuses an address without a public top-level domain (such
+                          as .local). Empty is admin@example.com.
+                        maxLength: 254
+                        pattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+                        type: string
                       enabled:
                         default: true
                         type: boolean

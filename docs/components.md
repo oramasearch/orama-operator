@@ -297,7 +297,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-index-builder-auth` | `API_SECRET` | the bootstrap step, where ingestion runs | index-builder checks incoming deploy requests |
 | `<cr>-deployment-api-auth` | `DEPLOYMENT_API_API_KEY` | the bootstrap step, where ingestion runs | index-builder sends it to its configured deployment API; the receiver contract still needs qualification |
 | `<cr>-disco-auth` | `DISCO_SECRET` | the bootstrap step, where DISCO, workers or ingestion run | DISCO and workers as `DISCO_SECRET`, index-builder as `DISCO_SECRET_KEY` |
-| `<cr>-pgadmin-auth` | `PGADMIN_DEFAULT_PASSWORD` | the bootstrap step, where pgAdmin runs | pgAdmin's web login; its Deployment has only a ClusterIP Service |
+| `<cr>-pgadmin-auth` | `PGADMIN_DEFAULT_PASSWORD` | the bootstrap step, where pgAdmin runs | pgAdmin's web login, whose address is `spec.components.pgAdmin.email` (empty is `admin@example.com`); its Deployment has only a ClusterIP Service |
 | `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`), index-builder, workers, dashboard, the e2e runner; never a reader ([#795](https://github.com/oramasearch/orama-operator/issues/795)) |
 
 - **Generated once.** For broker and cache, where the store runs in this cluster (enabled, not `mode: external`, not

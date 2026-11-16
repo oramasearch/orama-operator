@@ -54,7 +54,7 @@ func (r *OramaCloudV1Reconciler) reconcilePgAdmin(ctx context.Context, oc *orama
 		image:     storeImage(oc, "pgadmin", pgAdminImage),
 		port:      80,
 		env: []corev1.EnvVar{
-			{Name: "PGADMIN_DEFAULT_EMAIL", Value: "steve@orama.com"}, // pgAdmin rejects non-TLD domains (.local)
+			{Name: "PGADMIN_DEFAULT_EMAIL", Value: pgAdminEmail(oc)},
 			secretKeyEnv("PGADMIN_DEFAULT_PASSWORD", pgAdminAuthSecretName(oc), "PGADMIN_DEFAULT_PASSWORD"),
 			{Name: "PGADMIN_LISTEN_PORT", Value: "80"},
 			{Name: "PGADMIN_SERVER_JSON_FILE", Value: "/config/servers.json"},
@@ -75,4 +75,13 @@ func (r *OramaCloudV1Reconciler) reconcilePgAdmin(ctx context.Context, oc *orama
 			{Name: "servers", MountPath: "/config", ReadOnly: true},
 		},
 	})
+}
+
+// pgAdminDefaultEmail is pgAdmin's login when spec.components.pgAdmin.email is empty. pgAdmin
+// refuses an address without a public top-level domain (such as .local), so it is not a .local name.
+const pgAdminDefaultEmail = "admin@example.com"
+
+// pgAdminEmail is the address of pgAdmin's login: spec.components.pgAdmin.email, or the default.
+func pgAdminEmail(oc *oramav1alpha1.OramaCloudV1) string {
+	return orDefault(oc.Spec.Components.PgAdmin.Email, pgAdminDefaultEmail)
 }

@@ -267,7 +267,7 @@ type ComponentsSpec struct {
 	// ControlDB is the Postgres control plane, always in-cluster.
 	// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode == 'in-cluster'",message="controlDB.mode external is not supported: the control DB is always in-cluster"
 	ControlDB ControlDBSpec `json:"controlDB,omitempty"`
-	PgAdmin   Toggle        `json:"pgAdmin,omitempty"` // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
+	PgAdmin   PgAdminSpec   `json:"pgAdmin,omitempty"` // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
 	Cache     DataStoreSpec `json:"cache,omitempty"`   // Redis (+ QStash shim)
 	Broker    DataStoreSpec `json:"broker,omitempty"`  // RabbitMQ
 	Search    DataStoreSpec `json:"search,omitempty"`  // Typesense hosted-search clusters
@@ -607,6 +607,18 @@ type Toggle struct {
 	// sensible per-component default (workload hardening, #18).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// PgAdminSpec is pgAdmin's toggle plus the address of its login.
+type PgAdminSpec struct {
+	Toggle `json:",inline"`
+	// Email is the address of pgAdmin's login (PGADMIN_DEFAULT_EMAIL); its password is generated into
+	// the stack's pgAdmin Secret. pgAdmin refuses an address without a public top-level domain (such
+	// as .local). Empty is admin@example.com.
+	// +kubebuilder:validation:Pattern=`^[^@\s]+@[^@\s]+\.[^@\s]+$`
+	// +kubebuilder:validation:MaxLength=254
+	// +optional
+	Email string `json:"email,omitempty"`
 }
 
 // AnalyticsProcessorSpec is the analytics processor's toggle plus its scheduled import.
