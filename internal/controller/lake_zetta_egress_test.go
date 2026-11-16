@@ -50,10 +50,10 @@ func TestZettaEgressMirrorsTheRulesTheSandboxRendered(t *testing.T) {
 	f.add(t, nameRuleName, nameRule())
 	f.add(t, lakeEgressRuleName(testEgressCIDRRuleID), oramav1alpha1.EgressRuleSpec{
 		RuleID: testEgressCIDRRuleID, SourceKind: oramav1alpha1.EgressRuleSourceService, SourceID: testEgressSourceID,
-		CIDR: "203.0.113.7/32", Ports: []int32{5432},
+		CIDR: "9.9.9.9/32", Ports: []int32{5432},
 	})
 	f.add(t, lakeEgressRuleName(testEgressSourcelessRuleID), oramav1alpha1.EgressRuleSpec{
-		RuleID: testEgressSourcelessRuleID, CIDR: "2001:db8::/32", Ports: []int32{8443, 443},
+		RuleID: testEgressSourcelessRuleID, CIDR: "2620:fe::/48", Ports: []int32{8443, 443},
 	})
 	f.add(t, lakeEgressRuleName(testEgressOtherRuleID), oramav1alpha1.EgressRuleSpec{
 		RuleID: testEgressOtherRuleID, SourceKind: oramav1alpha1.EgressRuleSourceService, SourceID: testConnectionTargetID,
@@ -74,12 +74,12 @@ func TestZettaEgressMirrorsTheRulesTheSandboxRendered(t *testing.T) {
 		t.Fatalf("the pod-range rule is %q, want Failed", rule.Status.Phase)
 	}
 
-	want := "*:443,203.0.113.7/32:5432,[2001:db8::/32]:443,[2001:db8::/32]:8443,api.example.com:443,api.example.com:8443"
+	want := "*:443,9.9.9.9/32:5432,[2620:fe::/48]:443,[2620:fe::/48]:8443,api.example.com:443,api.example.com:8443"
 	if got := zettaEgressAllow(t, f.kube, testEgressNamespace, testEgressSourceID); got != want {
 		t.Fatalf("Zetta allowlist\n got %q\nwant %q", got, want)
 	}
 	// A Zetta that is not the source of any rule gets only the workspace-wide ones.
-	if got := zettaEgressAllow(t, f.kube, testEgressNamespace, ""); got != "*:443,[2001:db8::/32]:443,[2001:db8::/32]:8443" {
+	if got := zettaEgressAllow(t, f.kube, testEgressNamespace, ""); got != "*:443,[2620:fe::/48]:443,[2620:fe::/48]:8443" {
 		t.Fatalf("workspace-wide allowlist = %q", got)
 	}
 

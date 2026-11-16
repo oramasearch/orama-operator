@@ -81,6 +81,10 @@ var zettaManagedEnvNames = map[string]struct{}{
 	// Named egress through the workspace gateway (operator#1179, lake_zetta_egress_gateway.go).
 	zettaEgressGatewayEnv:       {},
 	zettaEgressGatewayRoutesEnv: {},
+	// The connector-credential root and the egress allowlist are files the operator mounts
+	// (operator#1166, zetta_egress_file.go); spec.env may not point the engine elsewhere.
+	zettaConnectionRootFileEnv: {},
+	zettaEgressAllowFileEnv:    {},
 }
 
 // zettaCustomEnv returns accepted spec.env entries in authored order and a stable list of names the
