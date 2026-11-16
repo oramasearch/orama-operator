@@ -118,6 +118,12 @@ func (r *LakeAppReconciler) reconcileSyncedLakeAppSecrets(ctx context.Context, l
 			if len(connections.Data[id]) == 0 || !validAppServiceName(app.Spec.Bindings.ServiceNames[id]) {
 				return result, "BindingPending", "waiting for a requested service connection", nil
 			}
+			// Only a service of the app's own workspace is handed to it, whatever its row says
+			// (lake#945).
+			if app.Spec.Sync == nil || app.Spec.Sync.WorkspaceID == "" ||
+				connections.Annotations[serviceWorkspaceAnnotation(id)] != app.Spec.Sync.WorkspaceID {
+				return result, "ServiceInAnotherWorkspace", "service " + id + " is not in this app's workspace", nil
+			}
 			data[id] = connections.Data[id]
 		}
 	}
