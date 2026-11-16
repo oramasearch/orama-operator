@@ -262,7 +262,9 @@ func TestLakeSealedSecretStatusNeverCarriesThePlaintext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		mint := decodeMintRequest(t, request)
 		if refuse {
-			_ = json.NewEncoder(writer).Encode(lakeMintResponse{OK: false, Error: &lakeAPIError{Code: "not_found", Message: "no such secret"}})
+			// A refusal that is not a revocation (not_found now deletes the projection, operator#777,
+			// TestLakeSourceRevokedByLakeDeletesTheSecret): the mint fails and its error comes back.
+			_ = json.NewEncoder(writer).Encode(lakeMintResponse{OK: false, Error: &lakeAPIError{Code: "store_unavailable", Message: "the secret store is unavailable"}})
 			return
 		}
 		record := referenceSealForMintRequest(t, mint, []byte(isolationPlaintext), 1)
