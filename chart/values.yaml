@@ -26,7 +26,7 @@ serviceAccount:
 # the pull secret its services use.
 lakeServices:
   sqliteImage: oramasearch/lake-sqlite:0.1.1
-  duckdbImage: oramasearch/lake-duckdb:0.1.0
+  duckdbImage: oramasearch/lake-duckdb:0.2.0
   polarsImage: oramasearch/lake-polars:0.1.0
 
 # Images the operator runs for secure networking (docs/infrastructure/tunnels.md). zetta-tunnel's
