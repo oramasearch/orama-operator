@@ -37,10 +37,16 @@ Every allowance below is added to the workspace `NetworkSandbox`, which renders 
 ## By address
 
 A CIDR rule is one allowance, `egress-<id>`: egress from the source pods to the range on the
-rule's TCP ports. The range never includes what no rule may reach: loopback and link-local (the
-cloud metadata address included) are excepted always, and so is every cluster address inside the
-range (the Kubernetes API Service and its endpoints, every node address, every node's pod range).
-A range that lies wholly inside one of those is `Failed`. A CIDR rule is also how an IP literal is
+rule's TCP ports. **A CIDR rule reaches public addresses only** (LSR-217; orama-operator#812, #780,
+#764): the range never includes what public-internet egress never reaches, the same list
+(`workspacePublicIPExceptions`): private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16),
+CGNAT (100.64.0.0/10), ULA (fc00::/7), loopback, link-local (the cloud metadata address included),
+documentation, multicast and reserved ranges. Every cluster address inside the range is excepted too
+(the Kubernetes API Service and its endpoints, every node address, every node's pod range); on an
+overlay network the pod and Service ranges are private addresses, so they are covered even when no
+node reports them. A range that lies wholly inside one of those is `Failed` (for example
+`10.224.0.0/16`); a wider range (`0.0.0.0/0`) is opened minus all of them. Reaching a private
+network is a peer or tunnel path, never an egress rule. A CIDR rule is also how an IP literal is
 allowed: nothing else opens a direct path to an address.
 
 ## By DNS name
