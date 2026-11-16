@@ -102,6 +102,23 @@ func (cassandraServiceKind) adminUsers(svc *LakeService) []string {
 	return []string{cassandraSuperuserSecret(svc.Slug), "cassandra"}
 }
 
+// The administrator rotation (operator#1172): the superuser's password is in the Secret K8ssandra
+// generates. K8ssandra makes that Secret only when it is missing; the operator writes the new
+// password into it after changing the role, so cass-operator and the Secret agree.
+func (cassandraServiceKind) adminSecret(in catalogService) (string, string, string) {
+	return cassandraSuperuserSecret(cassandraSlugName(in)), "password", "username"
+}
+
+func (cassandraServiceKind) adminUser() string { return "" }
+
+func (cassandraServiceKind) rotateAdmin(ctx context.Context, in catalogService, user, current, next string) error {
+	return tenantUsers.rotateCassandraSuperuser(ctx, in, user, current, next)
+}
+
+func (cassandraServiceKind) otherUsers(ctx context.Context, in catalogService, user, password string) ([]string, error) {
+	return tenantUsers.otherCassandraRoles(ctx, in, user, password)
+}
+
 // cassandraSuperuserSecret is the superuser Secret K8ssandra generates, <cluster name>-superuser;
 // the role it holds has the same name.
 func cassandraSuperuserSecret(slug string) string { return slug + "-superuser" }
@@ -156,7 +173,7 @@ func (cassandraServiceKind) credential(ctx context.Context, c client.Reader, in 
 	if superuser == cassandraTenantRole {
 		return nil, fmt.Sprintf("Secret %s/%s names the superuser %s, the tenant role's name", in.namespace, secretName, cassandraTenantRole), nil
 	}
-	if !ensureTenantUserOnce(ctx, in, superuser+"\x00"+superPassword, func(ctx context.Context) error {
+	if !ensureTenantUserOnce(ctx, in, func(ctx context.Context) error {
 		return tenantUsers.ensureCassandra(ctx, in, superuser, superPassword, in.tenantPassword)
 	}) {
 		return nil, "", nil

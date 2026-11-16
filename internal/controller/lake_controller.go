@@ -104,8 +104,9 @@ type LakeReconciler struct {
 	LakeManifestLogs func(ctx context.Context, namespace, podName string) (string, error)
 	// BuildEventClient posts best-effort pod-level events to lake. Nil uses a bounded client.
 	BuildEventClient *http.Client
-	// Recorder records the Lake's Warning events, such as a tenant service object found in the Lake
-	// namespace (lake_tenant_isolation.go). SetupWithManager sets it; nil records none.
+	// Recorder records events on the Lake: Warnings such as a tenant service object found in the Lake
+	// namespace (lake_tenant_isolation.go), and Normal ones such as a service's administrator
+	// password being rotated (operator#1172). SetupWithManager sets it; nil records none.
 	Recorder record.EventRecorder
 }
 

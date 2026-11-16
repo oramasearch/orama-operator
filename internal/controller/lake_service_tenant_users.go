@@ -41,21 +41,32 @@ import (
 type tenantUserProvisioner interface {
 	ensureTiDB(ctx context.Context, in catalogService, rootPassword, tenantPassword string) error
 	ensureCassandra(ctx context.Context, in catalogService, superuser, superPassword, tenantPassword string) error
+	// rotateTiDBRoot and rotateCassandraSuperuser set the administrator's password to next,
+	// signed in with current; when current no longer signs in but next does, the password was
+	// already changed and they succeed without a change (operator#1172).
+	rotateTiDBRoot(ctx context.Context, in catalogService, current, next string) error
+	rotateCassandraSuperuser(ctx context.Context, in catalogService, superuser, current, next string) error
+	// otherTiDBUsers and otherCassandraRoles list the users or roles that are neither the
+	// administrator's nor the tenant user's (operator#1172).
+	otherTiDBUsers(ctx context.Context, in catalogService, rootPassword string) ([]string, error)
+	otherCassandraRoles(ctx context.Context, in catalogService, superuser, password string) ([]string, error)
 }
 
 var tenantUsers tenantUserProvisioner = inClusterTenantUsers{}
 
 // tenantUsersEnsured remembers the services whose tenant user is in place, keyed by the service and
-// a digest of both passwords, so a steady service makes no call to its store. A restarted operator
-// checks each one once again; a new password (a recreated service) is a new key.
+// a digest of the tenant user's password, so a steady service makes no call to its store. A
+// restarted operator checks each one once again; a new password (a recreated service) is a new
+// key. The administrator's password is not in the key: its rotation (operator#1172) does not
+// change the tenant user.
 var tenantUsersEnsured sync.Map
 
-// ensureTenantUserOnce runs ensure unless it already succeeded for this service and these
-// passwords, and reports whether the tenant user is in place. A failure is logged and tried again
+// ensureTenantUserOnce runs ensure unless it already succeeded for this service and this tenant
+// password, and reports whether the tenant user is in place. A failure is logged and tried again
 // on the next pass. Meanwhile no new connection is written; a tenant user's connection already in
 // the services Secret stays, as for any transient failure, and an administrator's never does.
-func ensureTenantUserOnce(ctx context.Context, in catalogService, adminPassword string, ensure func(context.Context) error) bool {
-	digest := sha256.Sum256([]byte(adminPassword + "\x00" + in.tenantPassword))
+func ensureTenantUserOnce(ctx context.Context, in catalogService, ensure func(context.Context) error) bool {
+	digest := sha256.Sum256([]byte(in.tenantPassword))
 	key := in.svc.Kind + "/" + in.namespace + "/" + in.name + "/" + hex.EncodeToString(digest[:8])
 	if _, done := tenantUsersEnsured.Load(key); done {
 		return true
@@ -174,21 +185,11 @@ func statementVerb(statement string) string {
 // ensureTiDB signs in as root over TiDB's SQL port (workspace NetworkPolicy
 // allow-orama-operator-tidb-sql admits the operator) and runs tidbTenantUserStatements.
 func (inClusterTenantUsers) ensureTiDB(ctx context.Context, in catalogService, rootPassword, tenantPassword string) error {
-	config := mysql.NewConfig()
-	config.User, config.Passwd = tidbRootUser, rootPassword
-	config.Net, config.Addr = "tcp", tidbServiceKind{}.endpoint(in)
-	config.Timeout, config.ReadTimeout, config.WriteTimeout = 10*time.Second, 30*time.Second, 30*time.Second
-	connector, err := mysql.NewConnector(config)
+	conn, done, err := tidbRootSession(ctx, in, rootPassword)
 	if err != nil {
 		return err
 	}
-	db := sql.OpenDB(connector)
-	defer func() { _ = db.Close() }()
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("sign in to TiDB as root: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
+	defer done()
 	hosts, err := queryTiDBStrings(ctx, conn, "SELECT Host FROM mysql.user WHERE User = ?", tidbTenantUser)
 	if err != nil {
 		return err
@@ -209,6 +210,85 @@ func (inClusterTenantUsers) ensureTiDB(ctx context.Context, in catalogService, r
 		}
 	}
 	return nil
+}
+
+// tidbRootSession opens one SQL session to the service as root; done closes it.
+func tidbRootSession(ctx context.Context, in catalogService, rootPassword string) (*sql.Conn, func(), error) {
+	config := mysql.NewConfig()
+	config.User, config.Passwd = tidbRootUser, rootPassword
+	config.Net, config.Addr = "tcp", tidbServiceKind{}.endpoint(in)
+	config.Timeout, config.ReadTimeout, config.WriteTimeout = 10*time.Second, 30*time.Second, 30*time.Second
+	connector, err := mysql.NewConnector(config)
+	if err != nil {
+		return nil, nil, err
+	}
+	db := sql.OpenDB(connector)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("sign in to TiDB as root: %w", err)
+	}
+	return conn, func() { _ = conn.Close(); _ = db.Close() }, nil
+}
+
+// tidbRootPasswordStatement sets root's password from its hash.
+func tidbRootPasswordStatement(password string) string {
+	return fmt.Sprintf("ALTER USER 'root'@'%%' IDENTIFIED WITH 'mysql_native_password' AS '%s'", tidbNativePasswordHash(password))
+}
+
+func (inClusterTenantUsers) rotateTiDBRoot(ctx context.Context, in catalogService, current, next string) error {
+	conn, done, err := tidbRootSession(ctx, in, current)
+	if err != nil {
+		// Changed already, by a pass that stopped before it could record it.
+		if _, nextDone, nextErr := tidbRootSession(ctx, in, next); nextErr == nil {
+			nextDone()
+			return nil
+		}
+		return err
+	}
+	defer done()
+	if _, err := conn.ExecContext(ctx, tidbRootPasswordStatement(next)); err != nil {
+		return fmt.Errorf("run ALTER USER on TiDB: %w", err)
+	}
+	return nil
+}
+
+func (inClusterTenantUsers) otherTiDBUsers(ctx context.Context, in catalogService, rootPassword string) ([]string, error) {
+	conn, done, err := tidbRootSession(ctx, in, rootPassword)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	rows, err := conn.QueryContext(ctx, "SELECT User, Host FROM mysql.user")
+	if err != nil {
+		return nil, fmt.Errorf("run SELECT on TiDB: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var accounts [][2]string
+	for rows.Next() {
+		var user, host string
+		if err := rows.Scan(&user, &host); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, [2]string{user, host})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tidbOtherUsers(accounts), nil
+}
+
+// tidbOtherUsers names, as user@host and sorted, every account but root and the tenant user.
+func tidbOtherUsers(accounts [][2]string) []string {
+	var out []string
+	for _, account := range accounts {
+		if account[0] == tidbRootUser || account[0] == tidbTenantUser {
+			continue
+		}
+		out = append(out, account[0]+"@"+account[1])
+	}
+	sort.Strings(out)
+	return out
 }
 
 // queryTiDBStrings reads the first column of every row.
@@ -335,17 +415,9 @@ func cassandraTenantKeyspaces(keyspaces []string) []string {
 // allow-orama-operator-cassandra-cql admits the operator) and runs cassandraTenantRoleStatements.
 // The management API cannot do this: it creates and drops roles but has no GRANT.
 func (inClusterTenantUsers) ensureCassandra(ctx context.Context, in catalogService, superuser, superPassword, tenantPassword string) error {
-	cluster := gocql.NewCluster(cassandraHost(in))
-	cluster.Port = cassandraPort
-	cluster.Authenticator = gocql.PasswordAuthenticator{Username: superuser, Password: superPassword}
-	// Only the datacenter Service's own addresses; the pods behind it are the whole cluster.
-	cluster.DisableInitialHostLookup = true
-	cluster.ConnectTimeout, cluster.Timeout = 10*time.Second, 30*time.Second
-	cluster.NumConns = 1
-	cluster.Consistency = gocql.LocalQuorum
-	session, err := cluster.CreateSession()
+	session, err := cassandraSession(in, superuser, superPassword)
 	if err != nil {
-		return fmt.Errorf("sign in to Cassandra as %s: %w", superuser, err)
+		return err
 	}
 	defer session.Close()
 
@@ -375,6 +447,68 @@ func (inClusterTenantUsers) ensureCassandra(ctx context.Context, in catalogServi
 		}
 	}
 	return nil
+}
+
+// cassandraSession opens a CQL session to the datacenter as user.
+func cassandraSession(in catalogService, user, password string) (*gocql.Session, error) {
+	cluster := gocql.NewCluster(cassandraHost(in))
+	cluster.Port = cassandraPort
+	cluster.Authenticator = gocql.PasswordAuthenticator{Username: user, Password: password}
+	// Only the datacenter Service's own addresses; the pods behind it are the whole cluster.
+	cluster.DisableInitialHostLookup = true
+	cluster.ConnectTimeout, cluster.Timeout = 10*time.Second, 30*time.Second
+	cluster.NumConns = 1
+	cluster.Consistency = gocql.LocalQuorum
+	session, err := cluster.CreateSession()
+	if err != nil {
+		return nil, fmt.Errorf("sign in to Cassandra as %s: %w", user, err)
+	}
+	return session, nil
+}
+
+func (inClusterTenantUsers) rotateCassandraSuperuser(ctx context.Context, in catalogService, superuser, current, next string) error {
+	session, err := cassandraSession(in, superuser, current)
+	if err != nil {
+		// Changed already, by a pass that stopped before it could record it.
+		if nextSession, nextErr := cassandraSession(in, superuser, next); nextErr == nil {
+			nextSession.Close()
+			return nil
+		}
+		return err
+	}
+	defer session.Close()
+	statement := "ALTER ROLE " + cqlIdentifier(superuser) + " WITH PASSWORD = " + cqlString(next)
+	if err := session.Query(statement).ExecContext(ctx); err != nil {
+		return fmt.Errorf("run ALTER ROLE on Cassandra: %w", err)
+	}
+	return nil
+}
+
+func (inClusterTenantUsers) otherCassandraRoles(ctx context.Context, in catalogService, superuser, password string) ([]string, error) {
+	session, err := cassandraSession(in, superuser, password)
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+	roles, err := cassandraStrings(ctx, session, "SELECT role FROM system_auth.roles")
+	if err != nil {
+		return nil, err
+	}
+	return cassandraOtherRoles(roles, superuser), nil
+}
+
+// cassandraOtherRoles names, sorted, every role but the superuser, the tenant role and Cassandra's
+// stock `cassandra`, which the operator drops itself (operator#772).
+func cassandraOtherRoles(roles []string, superuser string) []string {
+	var out []string
+	for _, role := range roles {
+		if role == superuser || role == cassandraTenantRole || role == "cassandra" {
+			continue
+		}
+		out = append(out, role)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func cassandraStrings(ctx context.Context, session *gocql.Session, query string, args ...interface{}) ([]string, error) {

@@ -309,8 +309,8 @@ Lake, never rotated, deleted last with the other password Secret).
 
 - **Every pass until it has succeeded once.** After the service is ready, the operator makes sure
   the tenant user is there, then delivers it. The statements are idempotent (`IF NOT EXISTS`, the
-  password set again, the grants given again). Success is remembered per service and pair of
-  passwords, so a steady service makes no call; a restarted operator checks each service once
+  password set again, the grants given again). Success is remembered per service and tenant
+  password (not the administrator's, which is rotated), so a steady service makes no call; a restarted operator checks each service once
   more. A failure is logged and tried on the next pass, and until it succeeds no connection is
   delivered (the service stays `Provisioning`, `delivering the connection`).
 - **A user it did not leave as it wants it is made again.** Before creating, the operator reads
@@ -327,9 +327,26 @@ Lake, never rotated, deleted last with the other password Secret).
   Secret never keeps or writes a connection file whose `user` is an administrator of its kind
   (TiDB `root`; Cassandra `<slug>-superuser` and `cassandra`), so the old file goes on that pass
   even if the tenant user cannot be made yet. Bound apps roll with the new connection.
-- **What this does not do.** It does not change the administrator's password, which tenants of a
-  service made before this change have already seen, nor drop users or roles such a tenant made
-  for itself while it held it. Both need a decision of their own (see #771).
+- **The administrator's password is rotated once** ([#1172](https://github.com/oramasearch/orama-operator/issues/1172)).
+  Tenants of a service made before #771 have seen it. Once the tenant user's connection is
+  delivered, the operator generates a new administrator password, writes it to the tenant Secret
+  as key `admin-next`, changes it in the store (TiDB `ALTER USER 'root'@'%'` from the hash;
+  Cassandra `ALTER ROLE "<slug>-superuser" WITH PASSWORD`), then writes it to the administrator's
+  Secret (`<name>-init` key `root`; the K8ssandra `<slug>-superuser` key `password`, which K8ssandra
+  makes only when missing). It records the time as annotation
+  `orama.cloud/admin-password-rotated` on `<name>-tenant` and removes `admin-next`; with that
+  annotation it never rotates again and makes no call. A pass that stops halfway is finished by
+  the next one with the same new password: if the old one no longer signs in but the new one
+  does, the store was already changed. A failure is logged and retried and never holds back the
+  tenant's connection. Every service is rotated once, including one made after #771, which costs
+  one statement and needs no record of which services were exposed.
+- **Users and roles the operator did not make are reported, not dropped.** At the rotation the
+  operator lists every TiDB account (`user@host`) or Cassandra role other than the administrator,
+  the tenant user and Cassandra's stock `cassandra` (dropped by #772). The list is recorded as
+  annotation `orama.cloud/unmanaged-users` on `<name>-tenant`, added to the Ready status message
+  (`service ready; users and roles the operator did not make: …`), and raised as a Warning event
+  `UnmanagedUsers` on the Lake (the rotation itself is a Normal event `AdminPasswordRotated`). A
+  tenant may rely on a user it made, so dropping one is left to the tenant or to Steve.
 
 ### Kafka's listener: TLS, peers and ACLs (operator#770)
 

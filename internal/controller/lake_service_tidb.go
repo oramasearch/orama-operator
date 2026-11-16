@@ -170,6 +170,22 @@ func (tidbServiceKind) tenantSecret(name string) (string, string) {
 
 func (tidbServiceKind) adminUsers(*LakeService) []string { return []string{tidbRootUser} }
 
+// The administrator rotation (operator#1172): root's password is the generated one in
+// <cluster>-init, key root.
+func (tidbServiceKind) adminSecret(in catalogService) (string, string, string) {
+	return in.name + tidbInitSecretSuffix, tidbRootKey, ""
+}
+
+func (tidbServiceKind) adminUser() string { return tidbRootUser }
+
+func (tidbServiceKind) rotateAdmin(ctx context.Context, in catalogService, _, current, next string) error {
+	return tenantUsers.rotateTiDBRoot(ctx, in, current, next)
+}
+
+func (tidbServiceKind) otherUsers(ctx context.Context, in catalogService, _, password string) ([]string, error) {
+	return tenantUsers.otherTiDBUsers(ctx, in, password)
+}
+
 func tidbHost(in catalogService) string {
 	return fmt.Sprintf("%s-tidb.%s.svc.cluster.local", in.name, in.namespace)
 }
@@ -205,7 +221,7 @@ func (tidbServiceKind) credential(ctx context.Context, _ client.Reader, in catal
 	if password == "" || in.tenantPassword == "" {
 		return nil, "", nil
 	}
-	if !ensureTenantUserOnce(ctx, in, password, func(ctx context.Context) error {
+	if !ensureTenantUserOnce(ctx, in, func(ctx context.Context) error {
 		return tenantUsers.ensureTiDB(ctx, in, password, in.tenantPassword)
 	}) {
 		return nil, "", nil
