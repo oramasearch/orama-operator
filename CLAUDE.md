@@ -1,93 +1,81 @@
-# orama-operator — working rules
+# orama-operator: working rules
 
-A **kubebuilder operator** (Go) + an **install Helm chart / helmfile** that deploys an
-entire self-contained **Orama Cloud v1** stack in-cluster from one `OramaCloudV1` CR.
-Read [`README.md`](README.md) for the overview and [`DESIGN.md`](DESIGN.md) for the
-architecture + decision log. Deep docs live in [`docs/`](docs/).
+A **kubebuilder operator** (Go) and an **install Helm chart / helmfile**. It reconciles the whole
+Orama stack in a cluster from custom resources: Lake (`Lake`, `LakeSet`), Orama Zetta
+(`OramaZettaCluster`), Orama Cloud v1 (`OramaCloudV1`, `OramaCloudV1Set`), the datastore kinds, and
+the cluster-management kinds (`KubernetesCluster`, `ClusterHelmRelease`, `OramaOperator`).
+Read [`README.md`](README.md) for the overview. Deep docs live in [`docs/`](docs/).
 
-## Guiding principle — this is a production migration (non-negotiable)
+## Guiding principles (non-negotiable)
 
-**We are migrating Orama Cloud v1 to run on this operator in production.** The operator's job
-is to **encapsulate the entire operational complexity of the stack** so the whole system is
-deterministic, reproducible, and recoverable — not to be a dev/demo toy. Every change is judged
-against production-readiness, not "does a pod start."
+The operator's job is to **encapsulate the entire operational complexity of the stack** so the
+whole system is deterministic, reproducible and recoverable. Every change is judged against
+production-readiness, not "does a pod start".
 
-1. **Everything production-grade.** No shortcuts that "just make it pass." If a thing is wrong
+1. **Everything production-grade.** No shortcuts that "just make it pass". If a thing is wrong
    for production (a hack, a placeholder, a single point of failure, a non-reproducible manual
-   step), it is not done — even if the sandbox appears healthy.
+   step), it is not done, even if a test cluster appears healthy.
 2. **Codify all operational complexity in the operator** (first choice) or the **helmfile**
-   (platform prereqs only, e.g. CNPG / an ingress controller). **No out-of-band `kubectl`, no
-   undocumented manual steps.** If an operator can own it, the operator owns it.
-3. **Model all infrastructure state as CRDs — declarative, owned, reconciled (never imperative
-   one-shot Jobs or app-boot side effects). Reuse a datastore's OWN operator's CRDs only when that
-   operator is RELIABLE; otherwise own the CRD yourself.** Judge the dependency first — is it
-   maintained, are its images actually pullable, is the release cadence sane? **CNPG is reliable**
-   → use its `managed.roles` / `Database` / `DatabaseRole` CRDs. The **bitnami RabbitMQ
-   Cluster/Topology operators were NOT** — their images 404'd (`ErrImagePull`, deprecated catalog),
-   so we **dropped them** and model the broker's streams/topology with our **own** small
-   `RabbitMQTopology` CRD reconciling the plain RabbitMQ StatefulSet via its management API
-   ([#41](https://github.com/oramasearch/orama-operator/issues/41); design +
-   the datastore-state-as-CRDs epic in [`docs/datastore-crds.md`](docs/datastore-crds.md)).
-   A purpose-built CRD you control beats an unstable vendor dependency: faster to build, and it
-   can't rot out from under you. This holds for **off-cluster infra too** (Cloudflare DNS/KV/R2 are
-   owned CRDs). Learn an operator's API **and check its health** (perplexity) before relying on it.
+   (platform prerequisites only, e.g. CNPG or an ingress controller). **No out-of-band `kubectl`,
+   no undocumented manual steps.** If an operator can own it, the operator owns it.
+3. **Model all infrastructure state as CRDs: declarative, owned, reconciled** (never imperative
+   one-shot Jobs or app-boot side effects). **Reuse a datastore's own operator's CRDs only when that
+   operator is reliable; otherwise own the CRD yourself.** Judge the dependency first: is it
+   maintained, are its images actually pullable, is the release cadence sane? **CNPG is reliable**,
+   so use its `managed.roles` / `Database` / `DatabaseRole` CRDs. The Bitnami RabbitMQ
+   Cluster/Topology operators were not (their images 404'd from a deprecated catalog), so the broker's
+   streams and topology are modelled by our own small `RabbitMQTopology` CRD, which reconciles the
+   plain RabbitMQ StatefulSet through its management API (see
+   [`docs/datastore-crds.md`](docs/datastore-crds.md)). A purpose-built CRD you control beats an
+   unstable vendor dependency. This holds for **off-cluster infrastructure too** (DNS, KV and object
+   storage are owned CRDs). Learn an operator's API **and check its health** before relying on it.
 4. **Least-privilege, per-service access.** Every service that connects to a datastore gets its
-   **own role/user with only the grants it needs** — never a shared superuser/owner. Postgres:
+   **own role or user with only the grants it needs**, never a shared superuser or owner. Postgres:
    one CNPG `managed.role` per service (`login`, `superuser: false`, `connectionLimit`, scoped
-   `GRANT`s); RabbitMQ: one `User` + scoped `Permission` per service; etc. The owner/admin role is
-   used only by migrations/admin, never by a running app.
-5. **Determinism.** The same `OramaCloudV1` (+ its child CRs) must produce the same stack every
-   time. Idempotent reconcile, pinned versions, no hidden/implicit state, ordered dependencies.
-6. **Disaster recovery is first-class.** Backup / restore / config-snapshot are CRDs, scheduled,
-   and tested (see [operator#33](https://github.com/oramasearch/orama-operator/issues/33)).
-   "Can we rebuild this from nothing, and recover data after a loss?" must always be **yes**.
-7. **Status is accurate, component-level observability — and anti-flap.** Every CRD's `.status`
-   reflects real child readiness at **component granularity** — one entry per deployable component
-   (writer/reader/broker/dashboard/…), **not** per-pod and **not** per-field. Surface a
-   `Ready | Progressing | Degraded` phase, an `n/total` count, a per-component list, and standard
-   `conditions` (+ `printcolumn`s for at-a-glance `kubectl get`). **Write the status subresource
-   ONLY on a real state transition** (deep-compare first): a steady stack must produce **zero**
-   control-plane traffic. Middle ground — accurate enough to trust, coarse enough not to flap.
-8. **Right-size everything — cap the pod AND make its binary respect the cap.** Be deliberate
-   about resource use (mem/cpu/**storage**/**IOPS**). Two halves, both required: (a) per-component
-   k8s `requests`/`limits` + PVC size + an IOPS-provisioned storageClass; and (b) **translate that
-   intent into the binary's OWN config** — a binary that assumes it owns the node OOMs even under a
-   cgroup limit. E.g. ClickHouse needs a `config.d` overlay (`mark_cache_size` — default **5 GiB**!,
-   `max_server_memory_usage_to_ram_ratio`, `uncompressed_cache_size=0`); Redis `maxmemory`; RabbitMQ
-   `vm_memory_high_watermark`; JVM `-Xmx`/`MaxRAMPercentage`; Node `--max-old-space-size`; Mongo
-   wiredTiger cache. Derive the binary limits from the **same numbers** as the k8s limits. Mount
-   config overlays via **`subPath`** so you add to (not replace + hide) the image's config dir.
-   ([#42](https://github.com/oramasearch/orama-operator/issues/42))
-9. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
-   operator matures to encapsulate this complexity (real writer→reader replication, real schema,
-   real creds, …). **Never hack the test green** — make the operator correct and e2e follows.
-
-10. **Abstract kinds, concrete providers.** Steve, 2026-10-12: *"as a general rule, try to use
-    abstract objects (KubernetesCluster, DnsRecord, ServiceMesh) with a type that provisions a
-    concrete AksCluster, CloudflareDnsRecord, IstioServiceMesh ... that way, we can swap out
-    different providers if an enterprise client has hard requirements for one provider over
-    another."* A new kind for something a vendor provides is **two kinds**: an abstract one named
-    for the thing, which is what people and other reconcilers ask for, and a concrete one named for
-    the provider, which the abstract kind's type provisions and owns and which makes the vendor's
-    API calls. The vendor, the account and the credentials live on a **provider resource** that
-    the abstract kind points at (a `DnsProvider`, a `KubernetesClusterProvider`), not on each
-    record or cluster. Nothing outside the concrete kind's controller names the vendor. The kinds that
-    predate this rule (`CloudflareDNSRecord`, `CloudflareLoadBalancer`, `CloudflareKVNamespace`,
+   `GRANT`s); RabbitMQ: one `User` plus a scoped `Permission` per service; and so on. The owner or
+   admin role is used only by migrations and administration, never by a running app.
+5. **Determinism.** The same resource (and its child resources) must produce the same stack every
+   time: idempotent reconcile, pinned versions, no hidden or implicit state, ordered dependencies.
+6. **Disaster recovery is first-class.** Backup, restore and config snapshots are CRDs, scheduled
+   and tested ([`docs/backups.md`](docs/backups.md)). "Can we rebuild this from nothing, and recover
+   data after a loss?" must always be **yes**.
+7. **Status is accurate, component-level observability, and anti-flap.** Every CRD's `.status`
+   reflects real child readiness at **component granularity**: one entry per deployable component
+   (writer, reader, broker, dashboard, ...), **not** per pod and **not** per field. Surface a
+   `Ready | Progressing | Degraded` phase, an `n/total` count, a per-component list and standard
+   `conditions` (plus `printcolumn`s for an at-a-glance `kubectl get`). **Write the status
+   subresource only on a real state transition** (deep-compare first): a steady stack must produce
+   **zero** control-plane traffic.
+8. **Right-size everything: cap the pod and make its binary respect the cap.** Be deliberate about
+   memory, CPU, storage and IOPS. Two halves, both required: (a) per-component Kubernetes
+   `requests`/`limits`, PVC size and an IOPS-provisioned storage class; and (b) **translate that
+   intent into the binary's own config**, because a binary that assumes it owns the node OOMs even
+   under a cgroup limit. For example ClickHouse needs a `config.d` overlay (`mark_cache_size`,
+   default 5 GiB, `max_server_memory_usage_to_ram_ratio`, `uncompressed_cache_size=0`); Redis
+   `maxmemory`; RabbitMQ `vm_memory_high_watermark`; JVM `-Xmx`/`MaxRAMPercentage`; Node
+   `--max-old-space-size`; Mongo's wiredTiger cache. Derive the binary limits from the **same
+   numbers** as the Kubernetes limits. Mount config overlays with **`subPath`** so you add to, and do
+   not replace and hide, the image's config directory.
+9. **e2e is the forcing function, not the target.** The e2e suites progress **only** as the operator
+   matures to encapsulate this complexity (real replication, real schema, real credentials, ...).
+   **Never hack a test green**: make the operator correct and the test follows.
+10. **Abstract kinds, concrete providers.** Use abstract objects (`KubernetesCluster`, `DnsRecord`,
+    `ServiceMesh`) whose type provisions a concrete one (`AksCluster`, `CloudflareDnsRecord`,
+    `IstioServiceMesh`), so a provider can be swapped when an installation requires a different one.
+    A new kind for something a vendor provides is **two kinds**: an abstract one named for the
+    thing, which is what people and other reconcilers ask for, and a concrete one named for the
+    provider, which the abstract kind's type provisions and owns and which makes the vendor's API
+    calls. The vendor, the account and the credentials live on a **provider resource** that the
+    abstract kind points at (a `DnsProvider`, a `KubernetesClusterProvider`), not on each record or
+    cluster. Nothing outside the concrete kind's controller names the vendor. The kinds that predate
+    this rule (`CloudflareDNSRecord`, `CloudflareLoadBalancer`, `CloudflareKVNamespace`,
     `CloudflareR2Bucket`, `ClerkApplication`) are concrete only; do not add another like them. See
     [`docs/infrastructure/README.md`](docs/infrastructure/README.md).
-
-When in doubt, choose the option that makes the operator more complete and the system more
-deterministic/recoverable, even if it is more work now.
-
-11. **One operator: no differences between clusters (non-negotiable).** Steve, 2026-10-12, three
-    times in one session before it was done: *"install the same operator everywhere... all crds"*,
-    *"no differences between management and leaf operator"*, *"any leaf can be a mgnt cluster
-    too... no differences"*, then *"I said no differences!!! I said it like 3 times"*.
-
-    The operator is **identical on every cluster**: the same chart, the same image, **every CRD**,
-    **every controller running**, the same RBAC. A cluster's role (management, leaf, testing,
-    production) is decided **only by which resources exist on it**, never by how its operator is
-    installed. Concretely, **never**:
+11. **One operator: no differences between clusters.** The operator is **identical on every
+    cluster**: the same chart, the same image, **every CRD**, **every controller running**, the same
+    RBAC. A cluster's role (management, leaf, testing, production) is decided **only by which
+    resources exist on it**, never by how its operator is installed. Any cluster can manage others.
+    Concretely, **never**:
 
     - add a flag, environment variable or chart value that turns a controller, a kind or a
       permission on or off (`--enable-cluster-management` and `--enable-e2e-controllers` both
@@ -97,9 +85,8 @@ deterministic/recoverable, even if it is more work now.
     - register a controller inside a condition in `cmd/main.go`;
     - have `OramaOperator`, a build script or a runbook set a value on one cluster that it does
       not set on another, beyond the image, its pull secret and the cluster's own cloud identity;
-    - keep "one small exception" because a difference seems reasonable. When Steve says no
-      differences, there are none: if you believe an exception is needed, **stop and ask before
-      writing it**, do not ship it and mention it afterwards.
+    - keep "one small exception" because a difference seems reasonable. "No differences" means
+      none: if you believe an exception is needed, **stop and ask before writing it**.
 
     What may differ is a cluster's **configuration**, not its operator: where images are pulled
     from, and the identity the pod uses to call a cloud.
@@ -108,334 +95,225 @@ deterministic/recoverable, even if it is more work now.
     `TestTheChartHasOneCRDDirectoryWithEveryKind`, `TestManagementKindsShipAndRunOnEveryCluster`).
     **Never weaken or delete those tests to make a change pass.**
 
+When in doubt, choose the option that makes the operator more complete and the system more
+deterministic and recoverable, even if it is more work now.
+
 ## Two installation paths, one result: `helmfile.yaml` and the operator stay in sync (STRICT)
 
-Steve, 2026-10-13: *"both the helmfile and the operator need to be kept in sync so that operators
-on mgnt clusters and leaf clusters are effectively the same, even though mgmt cluster will need the
-helmfile installation path and leaf clusters will be installed by the mgmt operator"*.
-
-- **The management cluster is installed from [`helmfile.yaml`](helmfile.yaml).** It has to be: it
-  is the cluster the managing operator runs on, so it exists before any operator can install
-  anything.
-- **Every leaf cluster is installed by the management cluster's operator**, from the
-  `ClusterHelmRelease` and `OramaOperator` resources in
-  [`config/clusters/<cluster>/`](config/clusters/README.md).
+- **A management cluster is installed from [`helmfile.yaml`](helmfile.yaml).** It has to be: it is
+  the cluster the managing operator runs on, so it exists before any operator can install anything.
+- **Every leaf cluster is installed by the management cluster's operator**, from
+  `ClusterHelmRelease` and `OramaOperator` resources laid out as in
+  [`config/clusters/`](config/clusters/README.md), which is an example of the shape.
 - **Both must install the same thing**: same charts, same chart versions, same namespaces, same
   values, same order, same operator version. A management cluster and a leaf are effectively the
   same cluster.
 
-**Every platform change is made in both places, in the same pull request.** Change a release in
-`helmfile.yaml` and you change the matching `ClusterHelmRelease` in every
-`config/clusters/*/platform.yaml`; change a `ClusterHelmRelease` and you change `helmfile.yaml`
-and every other cluster's file. Roll a new operator version onto the leaves and the management
-cluster gets the same version. **A change that is in only one of them is not finished, and must
-not be merged.**
+**Every platform change is made in both places, together.** Change a release in `helmfile.yaml` and
+you change the matching `ClusterHelmRelease` in every `config/clusters/*/platform.yaml`; change a
+`ClusterHelmRelease` and you change `helmfile.yaml`. A new operator version on the leaves is the
+same version on the management cluster. **A change that is in only one of them is not finished.**
 
-`cmd/platform_sync_test.go` fails when they differ. **Never weaken or delete it to make a change
-pass**; fix the side that is behind.
-
-Neither path is a command typed at a cluster. Applying the helmfile to the management cluster is
-done from the merged file, with Steve's consent (next section). The full statement, with the table
-of who installs what, is
+`cmd/platform_sync_test.go` fails when they differ (against the example by default, or against
+another directory of cluster resources when `ORAMA_CLUSTERS_DIR` names it). **Never weaken or delete
+it to make a change pass**; fix the side that is behind. The full statement, with the table of who
+installs what, is
 [`docs/infrastructure/README.md`](docs/infrastructure/README.md#two-installation-paths-one-result).
 
-## Never change a cluster by hand: the operator is how change happens (STRICT)
+## The operator is how change happens
 
-Steve, 2026-10-13: *"I said no one-offs ... make a strict rule that you're not able to directly
-manipulate the clusters without my explicit consent ... the operator is how we affect change (or
-changing the CRs for the lakeset or v1 set)"*, and *"that's state changes outside of our code, and
-therefore not reproducible"*.
+A cluster must be rebuildable from the operator's code and the committed resources alone. There are
+two ways to change what runs on a cluster, and only two:
 
-**You may not directly manipulate any cluster without Steve's explicit consent for that specific
-action.** Every cluster: the managing one and every managed one, nonprod and production.
+1. **Change this operator**: code, chart, CRDs. If the operator cannot make a change, the fix is to
+   teach it, not to do the change by hand.
+2. **Change a custom resource the operator reconciles**, by editing its committed file and applying
+   that file. File, apply and commit go together; `kubectl diff -R -f <your cluster resources>` must
+   be empty.
 
-There are two ways to change what runs on a cluster, and only two:
+So, as a coding agent, **do not change a cluster by hand**: no `helm install/upgrade/uninstall/
+rollback`, no `kubectl apply/create/patch/edit/replace/scale/rollout restart/label/annotate/delete`
+or writing `exec` on anything but the operator's own custom resources from their committed files, no
+cloud-CLI change, no write to a database on a cluster, unless the person you are working for tells
+you to do that specific action. Deleting an object "so it is recreated" counts. Reading is always
+fine: `get`, `describe`, `logs`, `diff`, `wait`, a server dry-run, `helm list/get/history/template`,
+a read-only `select`. **When a by-hand action looks like the fix, stop**, say what is wrong, and make
+the operator or a resource do it. Anything an operator of the clusters would need to do by hand is a
+missing feature: file it and build it.
 
-1. **Change this operator**: code, chart, CRDs, merged into `dev`. If the operator cannot make a
-   change, the fix is to teach it, not to do the change by hand.
-2. **Change a custom resource the operator reconciles**, by editing its file in
-   [`config/clusters/`](config/clusters/README.md) and applying that file. File, apply and commit
-   go together.
+Where to look: [`docs/infrastructure/operations.md`](docs/infrastructure/operations.md) is the
+runbook for creating a cluster, installing its platform layer and operator, and running sets;
+[`docs/infrastructure/README.md`](docs/infrastructure/README.md) is the architecture;
+[`docs/infrastructure/orders.md`](docs/infrastructure/orders.md) covers resources a `LakeOrderSource`
+creates from Lake's orders (found by the `orama.cloud/order-id` label; never edit or delete one by
+hand).
 
-Without his explicit consent you do not run, against any cluster: `helm install`, `upgrade`,
-`uninstall` or `rollback`; `kubectl apply`, `create`, `patch`, `edit`, `replace`, `scale`,
-`rollout restart`, `label`, `annotate`, `delete`, or a writing `exec`, on anything but the
-operator's own custom resources applied from their committed files; a cloud CLI change; a write to
-a database on a cluster. Deleting an object "so it is recreated" is included, on nonprod too, even
-when it holds no data. Reading is always allowed: `get`, `describe`, `logs`, `diff`, `wait`, a
-server dry-run, `helm list`, `get`, `history` and `template`, a read-only `select`.
+## Zetta is the operator's datastore (multi-cluster)
 
-**When a by-hand action looks like the fix, stop.** Say what is wrong and make the operator, or a
-resource, do it. Never offer a by-hand action as an option you might take.
-
-**What this means for the operator's design**: anything an operator of the clusters would need to
-do by hand is a missing feature. Examples already hit: a volume claim whose access mode was wrong
-had to be deleted by hand; a chart setting on the managing cluster had to be applied with `helm`
-because that cluster has no `ClusterHelmRelease`; a workload refused by a quota had no remedy but a
-manual one. Each is work for the operator, to be filed and built.
-
-**Known gap, not a licence**: the managing cluster's own operator and platform charts are not
-managed by a resource yet, so rolling a new build onto it is a `helm upgrade` by
-`build-operator.sh`. That roll needs Steve's explicit consent each time, until the managing cluster
-is managed like the others.
-
-The org-wide form of this rule is in the umbrella bridge's `CLAUDE.md`
-(https://github.com/oramasearch/orama-bridge/blob/main/CLAUDE.md).
-
-## Clusters, their platform layer, and sets: where to look
-
-Creating a cluster, installing its platform layer and operator, and running Lake or Orama Cloud v1
-instances on it are all done by editing resources on the managing cluster:
-
-- **How**: [`docs/infrastructure/operations.md`](docs/infrastructure/operations.md), the runbook.
-  Read it before creating a cluster, upgrading the operator, or touching a set.
-- **What is deployed**: [`config/clusters/`](config/clusters/README.md), the resources as applied.
-  **Change the file, apply it, commit it, in one change.** Never leave a `kubectl edit` or
-  `kubectl patch` that the files do not show; `kubectl diff -R -f config/clusters/` must be empty.
-- **Why**: [`docs/infrastructure/README.md`](docs/infrastructure/README.md), the architecture.
-- **Paid lake.live orders**: [`docs/infrastructure/orders.md`](docs/infrastructure/orders.md). A
-  `LakeOrderSource` makes resources from lake's `cloud_orders` rows; those are not in
-  `config/clusters/` and are found by the `orama.cloud/order-id` label. Never edit or delete one
-  by hand.
-- **Short form for an agent**: the `orama-clusters` skill in the umbrella bridge
-  (https://github.com/oramasearch/orama-bridge/blob/main/.claude/skills/orama-clusters/SKILL.md).
-
-## One Orama: Zetta is the operator's datastore (multi-cluster)
-
-Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (One Orama stage 2,
-[orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)). Know the model — see
+The operator keeps its observed state in Orama Zetta. Know the model; see
 [`docs/zetta-datastore.md`](docs/zetta-datastore.md):
 
-- **k8s (etcd) is the source of truth for reconciled DESIRED state** (the CRs). **Zetta normally holds
-  OBSERVED state**, including the coarse component projection in `orama_control.components`. The one
-  explicit intake exception is `orama_control.deployments`: liquid appends an external desired event,
-  the operator materializes it into a Lake-owned `LakeEnvironment` CR, and that CR is authoritative from
-  then on. Status returns as append-only events only on a real transition. Both paths use the same
-  anti-flap discipline (steady stack ⇒ zero Zetta writes).
-- **One Zetta cluster can span many k8s clusters** (equal CRDT peers on :7777 — not bound to one
-  cluster). So the topology is **N k8s clusters → 1 operator each → 1 shared Zetta.** Every synced row is
-  namespaced by an **operator identity** (`ORAMA_OPERATOR_ID`, default the `kube-system` Namespace UID)
-  so states never collide.
-- **Peer traffic is always mTLS — one shared cluster join token per cluster.** The join token *is* the
-  cluster identity (the CA is derived from it), so the operator mints **one** token (Secret
-  `<name>-zetta-cluster`, minted once/never rotated) and injects it into **every** node as
-  `ZETTA_CLUSTER_TOKEN` — else each node derives its own CA and forms a cluster-of-one. There is **no
-  plaintext-peer mode** (removed as a security hole). See
-  [`docs/zetta-cluster-mtls.md`](docs/zetta-cluster-mtls.md) ([operator#92](https://github.com/oramasearch/orama-operator/issues/92));
-  multi-node convergence also needs [zetta#785](https://github.com/oramasearch/zetta/issues/785)/[#786](https://github.com/oramasearch/zetta/issues/786).
-- **Elastic capacity (planned):** Zetta signals the operator, the operator drives the cluster's node
-  autoscaler (Karpenter/NAP), and more Zetta nodes schedule onto the new nodes —
-  [operator#69](https://github.com/oramasearch/orama-operator/issues/69).
-- **Zetta SQL is a Postgres subset** (append-only on the deployed engine — no `UPDATE`/`DELETE` until
-  [zetta#735](https://github.com/oramasearch/zetta/issues/735) ships); the node HTTP server is flaky
-  ([zetta#731](https://github.com/oramasearch/zetta/issues/731)) so all Zetta writes are best-effort +
-  retried. The **MCP boundary** holds: adding a capability to Zetta's MCP needs a green light.
-- **Auth is mandatory ([zetta#799](https://github.com/oramasearch/zetta/issues/799)).** The engine gates
-  every HTTP/MCP/SQL call on a bearer that resolves to a user — there is no unauthenticated/`--mcp-token`/
-  `--cluster-plaintext` mode (those flags were removed; passing them crashes the node). So the operator
-  **always** mints + injects a seeded admin token (Secret `<name>-zetta-admin`, env `ZETTA_ADMIN_TOKEN` on every
-  node — never the `--admin-token` flag, whose value would be readable in the process argv, operator#279) and **authenticates its own SQL client** — the state-sync client (`zetta_statesync.go`) and the
-  schema-provisioning curl Job (`zetta_controlplane.go`) send `Authorization: Bearer <admin>`.
-  `spec.requireAuth`/`spec.mcpTokenAuth` are now **deprecated no-ops**; the target image must be
-  auth-capable (post-#799).
+- **Kubernetes (etcd) is the source of truth for reconciled desired state** (the CRs). **Zetta
+  normally holds observed state**, including the coarse component projection in
+  `orama_control.components`. The one explicit intake exception is `orama_control.deployments`:
+  liquid appends an external desired event, the operator materializes it into a Lake-owned
+  `LakeEnvironment` CR, and that CR is authoritative from then on. Status returns as append-only
+  events only on a real transition. Both paths use the same anti-flap discipline (a steady stack
+  makes zero Zetta writes).
+- **One Zetta cluster can span many Kubernetes clusters** (equal CRDT peers on :7777). So the
+  topology is **N Kubernetes clusters, one operator each, one shared Zetta.** Every synced row is
+  namespaced by an **operator identity** (`ORAMA_OPERATOR_ID`, default the `kube-system` Namespace
+  UID) so states never collide.
+- **Peer traffic is always mTLS, with one shared cluster join token per cluster.** The join token is
+  the cluster identity (the CA is derived from it), so the operator mints **one** token (Secret
+  `<name>-zetta-cluster`) and injects it into **every** node as `ZETTA_CLUSTER_TOKEN`; otherwise each
+  node derives its own CA and forms a cluster of one. There is **no plaintext-peer mode**. See
+  [`docs/zetta-cluster-mtls.md`](docs/zetta-cluster-mtls.md).
+- **Zetta SQL is a Postgres subset**, and all Zetta writes are best-effort and retried. Adding a
+  capability to Zetta's MCP surface is a design decision, not a drive-by change.
+- **Auth is mandatory.** The engine gates every HTTP, MCP and SQL call on a bearer that resolves to a
+  user. So the operator **always** mints and injects a seeded admin token (Secret
+  `<name>-zetta-admin`, env `ZETTA_ADMIN_TOKEN` on every node; never the `--admin-token` flag, whose
+  value would be readable in the process argv) and **authenticates its own SQL client**: the
+  state-sync client (`zetta_statesync.go`) and the schema-provisioning Job (`zetta_controlplane.go`)
+  send `Authorization: Bearer <admin>`. `spec.requireAuth` and `spec.mcpTokenAuth` are deprecated
+  no-ops.
 
 ## Docs discipline (non-negotiable)
 
-**Keep the docs in lockstep with the source.** Every change to the operator's
-behavior updates documentation in the **same change**:
+**Keep the docs in lockstep with the source.** Every change to the operator's behavior updates
+documentation in the **same commit**:
 
-- Change the CRD (`api/v1alpha1/*.go`) → update [`docs/crd-reference.md`](docs/crd-reference.md)
-  **and** regenerate (`make generate manifests` + copy the CRD into `chart/crds/`).
-- Add/alter a component reconciler (`internal/controller/`) → update
-  [`docs/components.md`](docs/components.md) (what it creates + how it maps to prod).
-- Change the build/test/deploy flow → update [`docs/development.md`](docs/development.md).
-- A decision changes → update [`DESIGN.md`](DESIGN.md)'s decision table.
-- Anything user-facing → update the page under `docs/` that owns it (the README is a front door only:
-  what the operator is, build and test, pointers; never append feature sections to it).
+- Change a CRD (`api/v1alpha1/*.go`) → update [`docs/crd-reference.md`](docs/crd-reference.md)
+  **and** regenerate (`make generate manifests`, then copy the CRD into `chart/crds/`).
+- Add or alter a component reconciler (`internal/controller/`) → update
+  [`docs/components.md`](docs/components.md) (what it creates and how it maps to the stack).
+- Change the build, test or deploy flow → update [`docs/development.md`](docs/development.md).
+- Anything user-facing → update the page under `docs/` that owns it (the README is a front door
+  only: what the operator is, build and test, pointers; never append feature sections to it).
 
-A PR/commit that changes behavior without the matching doc update is incomplete. The
-ops truth for the *production* system being modeled lives in
-[`techops-docs`](https://github.com/oramasearch/techops-docs) — keep this repo's docs
-about the **operator**, not a copy of prod docs.
+A commit that changes behavior without the matching doc update is incomplete. Keep this repo's docs
+about the **operator**, not about any one deployment of it.
 
-### The `Lake` CR (lake, liquid project)
+### The `Lake` CR
 
-`Lake` deploys the lake service: namespace, admin-token, instance-KEK and cluster-sealing-key Secrets, Deployment, Service, a CNPG
-control-plane Postgres with lake's schema applied through `PostgresSchema`, an owned `OramaZettaCluster` data plane, opt-in scheduled R2/S3
-backup through CNPG Barman, cluster-scoped `LakeRestoreRehearsal` restore/upgrade/failover proof,
-opt-in Ingress + Cloudflare DNS, and Lake-owned `LakeEnvironment` CRs materialized from the
-operator's Zetta deployment table. **Every Lake runs every feature, with no per-Lake switch, and
-the operator supplies a default for every image** (operator#539; `internal/controller/lake_defaults.go`,
-`docs/lake/README.md#every-lake-runs-every-feature`): never add an `enabled` field to a Lake
-feature, and never let an empty image turn a feature off. It synchronizes the control Postgres
-`apps` table into Lake-owned `LakeApp` resources, registers generated token hashes, returns status,
-and maintains the apps wildcard DNS record; see `docs/lake/apps.md`.
-It synchronizes control-Postgres workspace rows into restricted,
-default-deny namespaces with local Zetta credentials. Required `workspace_id` values place managed
-services, stores, user agents and synchronized apps in the same boundary; see
-`docs/lake/workspaces.md`.
-It also runs isolated image-build Jobs from Lake's `builds` table; see `docs/lake/builds.md`.
-With `spec.clerk` (one Clerk instance's secret key) it keeps that instance configured for lake through
-Clerk's Backend API and gives the Lake its keys; Clerk's Platform API is a private beta it does not use.
-See `docs/lake/clerk.md`.
-With `spec.payments` (a Stripe mode and account Secret) it owns a `PaymentProvider`, a webhook endpoint
-and Lake's catalog, and gives the Lake its Stripe keys only once all are ready; see `docs/lake/payments.md`.
-`spec.payments` requires `spec.billing.enabled` (CEL), which gives the Lake `LAKE_BILLING=on`; on-prem
-leaves `spec.billing` unset and bills nothing.
-`LakeSealedSecret` delivers cluster-bound ciphertext into
-owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
-Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
-production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching
-`internal/controller/lake_controller.go`. The schema's source of truth is `oramasearch/lake` `db/schema.sql`;
-an image from lake#1147 onward carries it and the operator runs `lake migrate` from the image, reading
-its Stripe events, products and guard tables from `lake manifest` (#936, `lake_manifest.go`), so a
-lake release is only the `image:` in a set file. For older images `assets/lake-schema.sql` is a
+`Lake` deploys the Lake service: namespace, admin-token, instance-KEK and cluster-sealing-key
+Secrets, Deployment, Service, a CNPG control-plane Postgres with Lake's schema applied through
+`PostgresSchema`, an owned `OramaZettaCluster` data plane, opt-in scheduled S3-compatible backup
+through CNPG Barman, cluster-scoped `LakeRestoreRehearsal` restore/upgrade/failover proof, opt-in
+Ingress and DNS, and Lake-owned `LakeEnvironment` CRs materialized from the operator's Zetta
+deployment table. **Every Lake runs every feature, with no per-Lake switch, and the operator supplies
+a default for every image** (`internal/controller/lake_defaults.go`,
+`docs/lake/README.md#every-lake-runs-every-feature`): never add an `enabled` field to a Lake feature,
+and never let an empty image turn a feature off.
+
+- It synchronizes the control Postgres `apps` table into Lake-owned `LakeApp` resources, registers
+  generated token hashes, returns status, and maintains the apps wildcard DNS record
+  (`docs/lake/apps.md`).
+- It synchronizes control-Postgres workspace rows into restricted, default-deny namespaces with local
+  Zetta credentials. Required `workspace_id` values place managed services, stores, user agents and
+  synchronized apps in the same boundary (`docs/lake/workspaces.md`).
+- It runs isolated image-build Jobs from Lake's `builds` table (`docs/lake/builds.md`).
+- With `spec.clerk` it keeps one Clerk instance configured for Lake through Clerk's Backend API
+  (`docs/lake/clerk.md`).
+- With `spec.payments` it owns a `PaymentProvider`, a webhook endpoint and Lake's catalog, and gives
+  the Lake its Stripe keys only once all are ready (`docs/lake/payments.md`). `spec.payments` requires
+  `spec.billing.enabled` (CEL), which gives the Lake `LAKE_BILLING=on`; an install that leaves
+  `spec.billing` unset bills nothing.
+- `LakeSealedSecret` delivers cluster-bound ciphertext into owned Kubernetes Secrets
+  (`docs/lake/sealed-secrets.md`).
+
+Read [`docs/lake/README.md`](docs/lake/README.md) and the `Lake` section of
+[`docs/crd-reference.md`](docs/crd-reference.md) before touching
+`internal/controller/lake_controller.go`. The schema's source of truth is the lake repository's
+`db/schema.sql`; current Lake images carry it, and the operator runs `lake migrate` from the image,
+reading its Stripe events, products and guard tables from `lake manifest` (`lake_manifest.go`), so a
+Lake release is only the `image:` in a set file. For older images `assets/lake-schema.sql` is a
 byte-identical vendored copy (a test checks its pinned SHA-256; `hack/check-lake-schema.py` compares
-the upstream bytes). Schema apply gates Lake workload rollout; see `docs/lake/schema.md`. The operator serves
-liquid's authenticated deployment REST/MCP contract from its manager Service; see
-`docs/control-plane/README.md`. The chart ClusterRole is
-hand-maintained: a new owned kind needs its entry there or the manager CrashLoops on cache sync.
-That, its CRD in `chart/crds`, and that CRD being present on the target cluster are all now
-**checked rather than remembered** — `go test ./cmd/...` covers the first two and
+the upstream bytes). Schema apply gates Lake workload rollout (`docs/lake/schema.md`). The operator
+serves liquid's authenticated deployment REST/MCP contract from its manager Service
+(`docs/control-plane/README.md`).
+
+The chart ClusterRole is hand-maintained: a new owned kind needs its entry there or the manager
+crash-loops on cache sync. That, its CRD in `chart/crds`, and that CRD being present on the target
+cluster are **checked rather than remembered**: `go test ./cmd/...` covers the first two and
 `hack/check-cluster-crds.sh` the third. Read
-[`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md); it exists because forgetting two
-of them took production down for ~12 hours
-([#166](https://github.com/oramasearch/orama-operator/issues/166)).
+[`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md) before any roll.
 
-## Build / codegen flow
+## Build and codegen
 
-Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH)/bin:$PATH"`).
+Go, kubebuilder, helm, helmfile and kubectl on `PATH` (plus `$(go env GOPATH)/bin`).
 
-- After editing `api/v1alpha1/*.go`: `make generate` (DeepCopy) + `make manifests`
-  (CRD + RBAC) + `cp config/crd/bases/*.yaml chart/crds/`. The generated
-  `zz_generated.deepcopy.go` and CRDs **are committed**. `Makefile` pins
-  controller-gen to `v0.21.0`; do not use `@latest`, which can restamp unrelated CRDs.
-- `go build ./...` + `go vet ./...` must stay green.
-- `helm lint chart` must pass; the chart carries the generated CRD in `chart/crds/`.
+- After editing `api/v1alpha1/*.go`: `make generate` (DeepCopy) and `make manifests` (CRD and
+  RBAC), then `cp config/crd/bases/*.yaml chart/crds/`. The generated `zz_generated.deepcopy.go` and
+  CRDs **are committed**. The `Makefile` pins controller-gen to `v0.21.0`; do not use `@latest`,
+  which can restamp unrelated CRDs.
+- `go build ./...` and `go vet ./...` must stay green.
+- `helm lint chart` must pass; the chart carries the generated CRDs in `chart/crds/`.
 
 ## Test
 
-- **Local run:** `make run` (or `go run ./cmd/main.go`) reconciles against your current
-  kube-context — the standard dev loop.
-- **AKS smoke test:** context `orama-production-cluster-01` is a fresh, empty,
-  single-node **sandbox** (no GPU). Install the CRD + apply a sample into an isolated
-  `orama-system` namespace. **No GPU node yet → set `writer.gpu: false`** when testing
-  the engine, or the writer pod stays Pending.
-**Every cluster gets every CRD and runs every controller** (principle 11). The e2e kinds
-(`OramaCloudV1E2ETest`, `ZettaClusterE2ETest`, `LakeE2ETest`) are in `chart/crds` and reconciled on
-every cluster; a cluster runs an e2e suite only when one of those resources is created on it.
-Production runs no e2e suites because none is created there
-([#166](https://github.com/oramasearch/orama-operator/issues/166)).
+- **Unit and envtest suites:** `make test` (or `go test ./...` with the envtest assets).
+  `go test ./cmd/...` holds the structural checks (CRD coverage, platform sync, field removal).
+- **Local run:** `make run` (or `go run ./cmd/main.go`) reconciles against your current kube-context.
+  Use a disposable cluster (kind, k3d, a sandbox), never one you were not told to use.
+- **Every cluster gets every CRD and runs every controller** (principle 11). The e2e kinds
+  (`OramaCloudV1E2ETest`, `ZettaClusterE2ETest`, `LakeE2ETest`) are in `chart/crds` and reconciled on
+  every cluster; a cluster runs an e2e suite only when one of those resources is created on it.
+- **Functional e2e (`OramaCloudV1E2ETest`):** the suite is
+  `internal/controller/assets/e2e-functional.sh` (a curl and jq script embedded with `go:embed`,
+  shipped in a ConfigMap, run by an `alpine` Job). It bootstraps a clean collection and index and
+  asserts every critical OramaCore function in variations (search modes, filters, facets, sort,
+  group, CRUD, upsert, delete, replication canary, batch-get, KV, hooks, merchandising, MCP,
+  answer/RAG; never the analytics export, which erases readers' events). It sources
+  `assets/e2e-lib.sh` and `assets/e2e-control-plane.sh` (the dashboard's JWKS, write tokens, RBAC and
+  CSRF guards, the edge workers' auth, the expired token), whose local harness is
+  `e2e_control_plane_script_test.go`. The write-token sections need `spec.dashboardFixtureSecretRef`
+  and otherwise skip with the reason. **It must stay `fail=0`.** Editing the script requires
+  rebuilding the operator (the script is embedded at compile time). Per principle 9, extend the
+  operator to make an assertion pass; never soften the assertion.
+- **Zetta e2e (`ZettaClusterE2ETest`):** runs the live-cluster Zetta suite as a Job against a
+  deployed `OramaZettaCluster`. The script lives in the zetta repository (`tests/e2e/zetta-e2e.sh`)
+  and is baked into the `zetta-e2e` image, so it evolves with the engine; the CRD only triggers it,
+  reading the target's `spec.replicas` and passing the addressing as `ZETTA_E2E_*` env (`BASE_URL`
+  pinned to node 0, `PEER_URLS` for ordinals 1..N-1, `LEVELS`, and the admin `TOKEN`). Auth is
+  mandatory, so the e2e always sets `ZETTA_E2E_REQUIRE_AUTH=1` and `ZETTA_E2E_TOKEN` (the seeded
+  admin token). The status carries best-effort pass/fail/skip counts parsed from the Job's pod logs.
+  Watch `kubectl get ozce2e`; logs with `kubectl logs job/<name>-e2e`.
+- **Lake e2e (`LakeE2ETest`):** runs the `lake-e2e` runner image as a Job in the target Lake's
+  namespace: every Lake feature as a freshly signed-up person (never the admin bearer), through REST,
+  MCP and a headless browser. It targets a `LakeSet` member (`spec.member`; refused unless the Lake
+  carries that set's label) or a Lake by name, waits for the Lake, Postgres and schema, runs one Job
+  `<name>-e2e-<generation>` per spec generation (`spec.runID` re-runs it), and records pass/fail/skip
+  counts and each failed and skipped step's reason from the runner's termination message. See
+  `docs/lake/README.md#service-e2e`.
 
-- **Functional e2e (`OramaCloudV1E2ETest`):** the comprehensive suite lives at
-  `internal/controller/assets/e2e-functional.sh` (a curl+jq script embedded via `go:embed`,
-  shipped in a ConfigMap, run by an `alpine` Job that installs curl+jq). It self-bootstraps a
-  clean-slate collection+index and asserts **every critical OramaCore function in variations**
-  (search modes/filters/facets/sort/group, CRUD/upsert/delete, replication canary, batch-get, KV,
-  hooks, merchandising, MCP, answer/RAG; never the analytics export, which erases readers' events).
-  It sources `assets/e2e-lib.sh` (helpers) and `assets/e2e-control-plane.sh` (sections 21-24: the
-  dashboard's JWKS, write tokens, RBAC and CSRF guards, the edge workers' auth, the expired token;
-  [#61](https://github.com/oramasearch/orama-operator/issues/61), [#63](https://github.com/oramasearch/orama-operator/issues/63)),
-  whose local harness is `e2e_control_plane_script_test.go`. The write-token sections need
-  `spec.dashboardFixtureSecretRef` and otherwise skip with the reason.
-  **~70 assertions; must stay `fail=0`.** Editing
-  the script requires re-running the operator (the script is embedded at compile time). Coverage +
-  the per-subsystem backlog are tracked under
-  [operator#44](https://github.com/oramasearch/orama-operator/issues/44). Per principle #9,
-  extend the operator to make an assertion pass — never soften the assertion.
-- **Zetta e2e (`ZettaClusterE2ETest`):** runs the **live-cluster zetta suite** as a Job against a
-  deployed `OramaZettaCluster`. Unlike the v1 suite (embedded via `go:embed`), the Zetta script lives in
-  the **zetta repo** (`tests/e2e/zetta-e2e.sh`) and is **baked into the `oramasearch/zetta-e2e` image**
-  (its `ENTRYPOINT` runs it) so it evolves with the engine — the CRD only *triggers* it, reading the
-  target's `spec.replicas` and passing the addressing as `ZETTA_E2E_*` env (`BASE_URL` pinned to node-0,
-  `PEER_URLS` for ordinals 1..N-1, `LEVELS`, and the admin `TOKEN`). Runs L2
-  (`zetta::testkit`) + L3 (black-box integration). Watch `kubectl get ozce2e`; logs `kubectl logs
-  job/<name>-e2e`. A coverage change touches three repos: zetta (script) → zetta-bridge (image) →
-  operator (CRD). **Authz coverage (always on):** auth is **mandatory** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)),
-  so the e2e ALWAYS sets `ZETTA_E2E_REQUIRE_AUTH=1` + `ZETTA_E2E_TOKEN` (the seeded admin token, Secret
-  `<name>-zetta-admin`) to exercise authz enforcement — the regression harness for the zetta auth work
-  ([operator#88](https://github.com/oramasearch/orama-operator/issues/88),
-  [zetta#799](https://github.com/oramasearch/zetta/issues/799)). The target's image MUST be an auth-capable
-  build (post-#799). `spec.requireAuth`/`spec.mcpTokenAuth` are deprecated no-ops. The test's status also
-  carries best-effort `pass`/`fail`/`skip` counts parsed from the Job's pod logs (RBAC `pods/log get`).
-- **Lake e2e (`LakeE2ETest`):** runs the private runner image `oramasearch/lake-e2e` (repo
-  `oramasearch/lake-e2e`, [#537](https://github.com/oramasearch/orama-operator/issues/537)) as a Job
-  in the target Lake's namespace: every Lake feature as a freshly signed-up person (never the admin
-  bearer), through REST, MCP and a headless browser. It targets a LakeSet member (`spec.member`;
-  refused unless the Lake carries that set's label) or a Lake by name, waits for the Lake, Postgres
-  and schema, runs one Job `<name>-e2e-<generation>` per spec generation (`spec.runID` re-runs it),
-  and records pass/fail/skip counts and each failed and skipped step's reason from the runner's
-  termination message. On the `testing` member of `lake-nonprod` it is the testing → staging gate
-  of a substantial lake release; see `docs/lake/README.md#service-e2e`.
-
-## Branches: work lands on `dev`, `main` is the last release
-
-Steve, 2026-10-12, after two pull requests were merged into `main` the day `v0.1.0` was cut:
-*"shouldn't you be merging into dev branch? we're not cutting a release yet"*.
+## Branches and releases
 
 - **Every pull request targets `dev`.** `dev` is the integration branch.
 - **`main` moves only on a release**, by a pull request that promotes `dev` to `main`. Between
-  releases `main` equals the last tag.
-- **Never push to `dev` or `main` directly.**
-- **The development cluster runs `dev`** between releases: the manager's image is built from the
-  tip of `dev` and tagged `dev-<sha>`. A release image is built from the tag and tagged
-  `main-<sha>`.
-- Until 2026-10-12 this repository had no `dev` and pull requests went to `main`. Older pages,
-  issues and skills that say so are out of date.
-
-## Cutting a release
-
-A release promotes `dev` to `main` and tags the result. The pages and their conventions are in
-[`docs/releases/`](docs/releases/README.md). `v0.1.0` (2026-10-12) was the first.
-
-1. **Steve names the version.** `dev` is what gets released, so confirm it is what the cluster
-   runs: the manager's image tag is `dev-<sha>`, and that commit must be the tip of `origin/dev`,
-   or an ancestor with nothing unproven after it.
-2. **On a branch off `dev`**, `docs/release-vX.Y.Z`, write `docs/releases/vX.Y.Z.md` and add it to
-   `docs/releases/README.md`: what the release includes, what it does not, known issues, and
-   verification. Say where each thing has run (implemented, validated on the cluster, live-tested).
-   Move `version` and `appVersion` in `chart/Chart.yaml` when the version changes.
-3. **Prove it**: `go build ./...`, `go vet ./...`, `go test ./...` with the envtest assets, and
-   `helm lint chart`. Put the results in the page, and say which opt-in tests did not run.
-4. **Open the pull request into `dev`** and merge it with a merge commit, never a squash.
-5. **Promote `dev` to `main`** with a pull request titled `release: vX.Y.Z — ...`, merged with a
-   merge commit. `dev` is kept. Then merge `main` back into `dev` with a pull request, so the two
-   share history.
-6. **Tag the merge commit on `main`** `vX.Y.Z` and publish the GitHub release from the page
-   (`gh release create vX.Y.Z --repo oramasearch/orama-operator --verify-tag --title "Release vX.Y.Z" --notes-file <page without its first heading, relative links made absolute at the tag>`).
-7. **Build the image from the tag and roll it.** `make check-crds CONTEXT=<context>` first, then
-   build `oramasearch/orama-operator:main-<sha>` on the cluster BuildKit, apply the CRDs widened
-   (`hack/crdunion`), upgrade the release with the stored values as a file, wait for the rollout,
-   then apply `chart/crds/` exactly
-   (`docs/operations/crd-rollout.md`, operator#543) (liquid-bridge's `liquid-dev` skill has the commands). Confirm the pod runs the
-   new digest and that every `Lake` and `OramaZettaCluster` is still `Ready`.
-   Publish the chart for the same tag, so a management cluster can install this version on a
-   leaf: `go run ./hack/pushchart -version <image tag>` (and again for `vX.Y.Z` after step 8). It
-   goes to the private repository `oramasearch/orama-operator-chart`.
-8. **Tag the image `vX.Y.Z` in Docker Hub**, naming the same digest that is deployed, without
-   rebuilding: `retag-image.py orama-operator main-<sha> vX.Y.Z` (in the `liquid-dev` skill). Check
-   that an anonymous request for the repository still answers 404.
-
-A release is not finished until the Git tag, the GitHub release and the image tag all exist and
-the cluster runs that image.
+  releases `main` equals the last tag. Never push to `dev` or `main` directly.
+- Merge pull requests with a **merge commit**, never a squash or rebase.
+- A release writes `docs/releases/vX.Y.Z.md` (what it includes, what it does not, known issues, the
+  proof: `go build ./...`, `go vet ./...`, `go test ./...` with envtest assets, `helm lint chart`, and
+  which opt-in tests did not run), moves `version` and `appVersion` in `chart/Chart.yaml`, and tags
+  the merge commit on `main` `vX.Y.Z`.
 
 ## Conventions
 
-- **No AI attribution** in commits/PRs (org policy): no `Co-Authored-By: Claude`,
-  "Generated with…", or any Claude/Codex/AI mention.
-- **Reuse published `oramasearch/*` images** — no build-from-source of the app
-  components in this repo.
-- Conventional Commits (`feat:`/`fix:`/`docs:`/`chore:`).
-- Shipping: a pull request into `dev` (see *Branches* above), merged with a merge commit → bump the
-  pointer in the umbrella `orama-bridge` (fast-forward to its `main`). This repo left
-  `orama-cloud-v1-bridge` on 2026-09-09 when it was renamed from `orama-cloud-v1-operator` and
-  promoted to a top-level module — it is no longer v1-specific, so there is no v1-bridge pointer in
-  the chain any more.
-- Before any `helm upgrade`, run `make check-crds CONTEXT=<kube-context>`. Helm applies
-  `chart/crds` on install only, so an upgrade never adds a new CRD; see
+- **No AI attribution** in commits or pull requests: no `Co-Authored-By` trailer for an assistant,
+  no "Generated with ...", no mention of an AI tool.
+- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `test:`).
+- **Do not write time or size estimates** for work; describe what is done and what is not.
+- **Never write the word "seam".** It has been used for an interface, an extension point, an injected
+  dependency and a boundary, which are different things. Name the actual mechanism.
+- The operator deploys published images; it does not build the stack's application components from
+  source.
+- Before any `helm upgrade`, run `make check-crds CONTEXT=<kube-context>`. Helm applies `chart/crds`
+  on install only, so an upgrade never adds a new CRD; see
   [`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md).
-- **CRDs go on in two steps around a roll** (operator#543): widened by what the cluster still has
-  before the new operator starts, exactly once it alone runs. Never `kubectl apply -f chart/crds/`
+- **CRDs go on in two steps around a roll**: widened by what the cluster still has before the new
+  operator starts (`hack/crdunion`), exact once it alone runs. Never `kubectl apply -f chart/crds/`
   before a roll: a removed field is pruned under the old operator. Never change a field's type or
   meaning; add a new field. A removal is named in `cmd/crd_field_removal_test.go`. See
   [`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md#removing-or-changing-a-field-crds-in-two-steps-around-the-roll).

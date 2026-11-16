@@ -5,8 +5,8 @@ Licensed under the Apache License, Version 2.0.
 
 package controller
 
-// Regression test for the methodology isolation rule found by the security deep search
-// (orama-operator#714, docs/security/deep-search-714-workspace-services.md).
+// Regression test for the methodology isolation rule found by a security review of workspace
+// services.
 
 import (
 	"strings"

@@ -242,7 +242,7 @@ func pixieSearchObjects(cloud *oramav1alpha1.PixieCloud, securityConfig map[stri
 
 // pixieScriptsObjects serves the PxL script bundle inside the cluster: to the UI through the proxy
 // (/pxl_scripts/), and to the script manager as a storage emulator. The image (#455,
-// hack/pixie-script-bundle) serves /pixie-scripts/bundle.json on port 8080, as a non-root user.
+// the Pixie source's hack/pixie-script-bundle) serves /pixie-scripts/bundle.json on port 8080, as a non-root user.
 func pixieScriptsObjects(cloud *oramav1alpha1.PixieCloud) []client.Object {
 	labels := map[string]string{pixieManagedLabel: pixieManagedCloud, pixieComponentLabel: pixieScriptsService}
 	budget := pixieBudget{CPURequest: "10m", CPULimit: "200m", MemoryRequest: "32Mi", MemoryLimit: "64Mi"}

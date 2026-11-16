@@ -15,8 +15,8 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// The isolation rules a tenant's app runs under, which the deep search of operator#711
-// (docs/security/deep-search-711-tenant-app.md) relies on. Each test pins one rule so that it
+// The isolation rules a tenant's app runs under, which a security review of tenant apps relies
+// on. Each test pins one rule so that it
 // cannot silently stop holding.
 
 const isolationTestWorkspace = "prod-ws-0123456789ab"

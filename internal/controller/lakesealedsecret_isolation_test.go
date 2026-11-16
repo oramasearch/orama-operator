@@ -5,8 +5,8 @@ Licensed under the Apache License, Version 2.0.
 
 package controller
 
-// Regression tests for the isolation rules the security deep search of sealed secret delivery
-// relied on (orama-operator#714, docs/security/deep-search-714-workspace-services.md). Each test
+// Regression tests for the isolation rules a security review of sealed secret delivery relied
+// on. Each test
 // names the rule it holds: break the rule and the test fails.
 
 import (
