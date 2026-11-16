@@ -46,6 +46,9 @@ const (
 	zettaClusterTokenFile      = zettaClusterTokenMountPath + "/token"
 	// 0440: owner root, group fsGroup (10001, the zetta user's group), no access for others.
 	zettaClusterTokenFileMode int32 = 0o440
+	// zettaClusterTokenFileEnv names the file to the engine, and is what its usage lists when it
+	// reads the file (zetta#770).
+	zettaClusterTokenFileEnv = "ZETTA_CLUSTER_TOKEN_FILE"
 
 	// The connector-credential root secret (operator#1166, zetta#1314), mounted from Secret
 	// <name>-zetta-connection-root (key root) as a read-only file outside the data volume. Zetta
@@ -545,6 +548,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	identity.render.tokenFileOnly = zettaImageReadsClusterTokenFile(&z, features)
 	if len(specInvalid) == 0 && !egress.hold && !identity.hold {
 		advertiseMap := strings.Join(r.zettaWANAddresses(ctx, &z, peerLBName, stsName), ",")
 		sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
@@ -904,17 +908,23 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSetWith(z *oramav1alpha
 		// oramasearch/zetta#770: the engine reads the token from this read-only file (the Secret volume
 		// below) in preference to the environment, refuses to start if the two disagree, and scrubs
 		// ZETTA_CLUSTER_TOKEN from its environment once read so no child process inherits it.
-		{Name: "ZETTA_CLUSTER_TOKEN_FILE", Value: zettaClusterTokenFile},
-		// Kept for Zetta images that predate zetta#770 and ignore ZETTA_CLUSTER_TOKEN_FILE: without it they
-		// would mint their own token and split the cluster. Remove once every image in use reads the file
-		// (operator#721).
-		{Name: "ZETTA_CLUSTER_TOKEN", ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-cluster"}, Key: "token"}}},
+		{Name: zettaClusterTokenFileEnv, Value: zettaClusterTokenFile},
+	}
+	// ZETTA_CLUSTER_TOKEN is set only for an image not known to read the file (operator#721): one that
+	// predates zetta#770 ignores ZETTA_CLUSTER_TOKEN_FILE and, without the variable, would mint its own
+	// token and split the cluster. An image whose usage lists ZETTA_CLUSTER_TOKEN_FILE reads the same
+	// token from the file, so the variable stays out of its environment (/proc/<pid>/environ). It keeps
+	// its place in the list, so an image that still gets it renders the same pod template as before.
+	if !identity.tokenFileOnly {
+		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_CLUSTER_TOKEN", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-cluster"}, Key: "token"}}})
+	}
+	zettaEnv = append(zettaEnv,
 		// The connector-credential root secret as a file outside /data (operator#1166, zetta#1314). An
 		// image that predates zetta#1314 ignores the variable and keeps its old sealing; one that has it
 		// and finds no file refuses connector credentials, so the operator rolls before that image.
-		{Name: zettaConnectionRootFileEnv, Value: zettaConnectionRootFile},
-	}
+		corev1.EnvVar{Name: zettaConnectionRootFileEnv, Value: zettaConnectionRootFile},
+	)
 	if z.Spec.HostNetwork {
 		// Pack ordinals onto per-ordinal ports; seed peers off HOST_IP (the node's real address, via the
 		// downward API) — NOT 127.0.0.1 — so the dialed address equals node-0's advertised address and

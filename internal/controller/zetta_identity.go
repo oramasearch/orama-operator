@@ -124,6 +124,9 @@ type zettaIdentityRender struct {
 	clusterCA string
 	// caSeed mounts the seed of this slice's Secret as ZETTA_CLUSTER_CA_SEED_FILE.
 	caSeed bool
+	// tokenFileOnly is true when the image reads the join token from its file (operator#721):
+	// ZETTA_CLUSTER_TOKEN is then not set, so the token is not in the container's environment.
+	tokenFileOnly bool
 }
 
 // zettaIdentityState is what one reconcile knows about the cluster's identity.

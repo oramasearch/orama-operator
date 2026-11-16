@@ -45,10 +45,10 @@ on every node indefinitely.
    - It runs **before** the StatefulSet in the reconcile so the pods' `secretKeyRef` resolves on first
      apply.
 
-2. **Inject into every node.** `mutateZettaStatefulSet` adds `ZETTA_CLUSTER_TOKEN` to **every** pod
-   (node-0 included) via a `secretKeyRef` into `<name>-zetta-cluster/token`. The engine reads
-   `ZETTA_CLUSTER_TOKEN` on boot and maps it to its `--join-token` (its `src/main.cpp` provisioning env),
-   so all nodes derive the same CA and form **one** cluster.
+2. **Give it to every node.** Every pod (node-0 included) gets the token from
+   `<name>-zetta-cluster/token`: as the file below, and, for an image not known to read that file, as
+   `ZETTA_CLUSTER_TOKEN` through a `secretKeyRef`. The engine maps it to its `--join-token` (its
+   `src/main.cpp` provisioning env), so all nodes derive the same CA and form **one** cluster.
 
 3. **Mount it as a file too** ([zetta#770](https://github.com/oramasearch/zetta/issues/770)). The same
    Secret key is a read-only Secret volume `cluster-token`, mounted at `/run/secrets/zetta-cluster`
@@ -57,10 +57,18 @@ on every node indefinitely.
    variable is readable through `/proc/<pid>/environ` and is inherited by every child process the node
    starts; a file is not. A Zetta image that includes zetta#770 reads the file first, refuses to start if
    the file and `ZETTA_CLUSTER_TOKEN` disagree, and removes `ZETTA_CLUSTER_TOKEN` from its environment
-   once read. `ZETTA_CLUSTER_TOKEN` stays set for images that predate zetta#770, which ignore the file
-   variable and would otherwise mint their own token and split the cluster. Dropping it, once every image
-   in use reads the file, is [operator#721](https://github.com/oramasearch/orama-operator/issues/721).
-   Both names are operator-owned: `spec.env` cannot set either.
+   once read.
+
+   **`ZETTA_CLUSTER_TOKEN` is set only where it is needed**
+   ([operator#721](https://github.com/oramasearch/orama-operator/issues/721)). The operator reads each
+   image's own `zetta --help` (`status.imageFeatures`, the same probe as the egress file). An image whose
+   usage lists `ZETTA_CLUSTER_TOKEN_FILE` (zetta v0.5.0 on) gets the file only, so the token is never in
+   its environment. Any other answer keeps the variable: an image that predates zetta#770 ignores the
+   file and would otherwise mint its own token and split the cluster. That covers an older usage, a probe
+   that failed, an answer for another image, or no answer yet. A new image keeps the variable until its
+   own answer arrives. Moving a cluster to an image that reads the file rolls its StatefulSet once, without
+   the variable. An image that still gets it renders the same pod template as before, so it does not
+   roll. Both names are operator-owned: `spec.env` cannot set either.
 
 4. **Keep saved connector credentials off the data volume**
    ([operator#1166](https://github.com/oramasearch/orama-operator/issues/1166),
