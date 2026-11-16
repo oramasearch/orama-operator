@@ -16,7 +16,7 @@ import (
 
 // DefaultLakeSQLiteImage is the lake-sqlite image when neither the Lake nor the operator's flag
 // names one. The chart passes its own default (lakeServices.sqliteImage) as the flag.
-const DefaultLakeSQLiteImage = "oramasearch/lake-sqlite:0.1.1"
+const DefaultLakeSQLiteImage = "oramasearch/lake-sqlite:0.2.0"
 
 var sqliteServiceKind = wrapperServiceKind{
 	kind:      serviceKindSQLite,
