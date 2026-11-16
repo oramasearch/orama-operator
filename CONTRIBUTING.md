@@ -38,19 +38,15 @@ kubebuilder) and the Helm chart that installs it.
 - **Change happens through the operator.** Behaviour belongs in the operator's code or in the custom
   resources it reconciles, never in a manual step on a cluster.
 
-## Sign your work (DCO)
+## Contributor License Agreement
 
-Contributions are accepted under the [Developer Certificate of Origin](https://developercertificate.org/).
-Sign off every commit to certify that you wrote it or have the right to submit it:
+orama-operator is owned by OramaSearch, Inc. Every contributor signs the
+[Contributor License Agreement](CLA.md) (CLA) once, before their first pull request is merged. Under
+it you assign the copyright in your contributions to OramaSearch, Inc., you keep a licence to use
+your own contributions for any purpose, and you grant a patent licence for them. The project is
+published under the license in [`LICENSE`](LICENSE).
 
-```sh
-git commit -s -m "fix(lake): ..."
-```
-
-This adds a `Signed-off-by: Your Name <you@example.com>` line. There is no contributor license
-agreement.
-
-## License
-
-By contributing, you agree that your contribution is licensed under the license in
-[`LICENSE`](LICENSE).
+When you open your first pull request, a bot comments on it with a link to the agreement. Sign
+there with your GitHub account; it covers all your later contributions to projects of OramaSearch,
+Inc. If you contribute as part of your job, your employer signs too: write to
+**opensource@orama.com** for the entity agreement.
