@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -71,4 +72,23 @@ func oramacoreOf(t *testing.T, spec corev1.PodSpec) corev1.Container {
 	}
 	t.Fatal("no oramacore container")
 	return corev1.Container{}
+}
+
+// TestEmbeddingsRequestsItsResidentMemory: the ai-server's request covers the ~3.4Gi its loaded
+// models hold, so the scheduler does not pack pods onto a node that lacks the room (#1146).
+func TestEmbeddingsRequestsItsResidentMemory(t *testing.T) {
+	r := embeddingsContainer(newOCV1(nil)).Resources
+	for _, tc := range []struct {
+		name string
+		got  resource.Quantity
+		want string
+	}{
+		{"memory request", r.Requests[corev1.ResourceMemory], "4Gi"},
+		{"memory limit", r.Limits[corev1.ResourceMemory], "5Gi"},
+		{"cpu request", r.Requests[corev1.ResourceCPU], "250m"},
+	} {
+		if want := resource.MustParse(tc.want); tc.got.Cmp(want) != 0 {
+			t.Errorf("%s = %s, want %s", tc.name, tc.got.String(), tc.want)
+		}
+	}
 }

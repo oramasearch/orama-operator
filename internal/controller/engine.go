@@ -498,11 +498,11 @@ func embeddingsContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 		Name:  "embeddings",
 		Image: embeddingsImage(oc),
 		Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 50051}},
-		// The ai-server preloads the embedding model(s) into RAM, so it's one of the heavy ones the
-		// audit (#18) warns NOT to blanket-OOM — a generous memory limit + a real request so the
-		// scheduler sees it. Deeper embeddings-memory tuning is #14; on a GPU writer the GPU limit is
-		// added on top in reconcileEmbeddings.
-		Resources:       *resourceReqs("512Mi", "250m", "4Gi"),
+		// The ai-server preloads the embedding model(s) into RAM. The request is their measured
+		// resident size (about 3.4Gi on every stack, 2026-11-02), so the scheduler
+		// reserves what the pod holds; the limit leaves room above it for a model or library update
+		// (#1146). On a GPU writer the GPU limit is added on top in reconcileEmbeddings.
+		Resources:       *resourceReqs("4Gi", "250m", "5Gi"),
 		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
 	}
 }
