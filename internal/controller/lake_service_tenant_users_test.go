@@ -309,9 +309,10 @@ func TestTheAdministratorPasswordIsRotatedOnceTheTenantUserIsDelivered(t *testin
 				t.Fatalf("rotations = %+v, want one", h.tenantUsers.rotations)
 			}
 			rotation := h.tenantUsers.rotations[0]
-			adminSecret, adminKey, wantAdmin, wantCurrent := c.passwordSecret, c.passwordKey, tidbRootUser, h.tenantUsers.tidb[0].adminPassword
-			if kind == serviceKindCassandra {
-				adminSecret, adminKey, wantAdmin, wantCurrent = c.slug+"-superuser", "password", c.slug+"-superuser", "cql-secret"
+			// The Cassandra case is chosen before anything reads the TiDB calls, which it makes none of.
+			adminSecret, adminKey, wantAdmin, wantCurrent := c.slug+"-superuser", "password", c.slug+"-superuser", "cql-secret"
+			if kind == serviceKindTiDB {
+				adminSecret, adminKey, wantAdmin, wantCurrent = c.passwordSecret, c.passwordKey, tidbRootUser, h.tenantUsers.tidb[0].adminPassword
 			}
 			if rotation.admin != wantAdmin || rotation.adminPassword != wantCurrent || len(rotation.tenantPassword) != 32 || rotation.tenantPassword == wantCurrent {
 				t.Fatalf("rotation = %+v", rotation)
