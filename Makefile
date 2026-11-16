@@ -17,8 +17,8 @@ generate: ## Generate DeepCopy methods.
 fmt: ; go fmt ./...
 vet: ; go vet ./...
 build: generate fmt vet ; go build -o bin/manager cmd/main.go
-run: ## Run the manager locally (out-of-cluster) against your current kube-context.
-	go run ./cmd/main.go
+run: ## Run the manager locally (out-of-cluster) against your current kube-context, without the deployment listener.
+	go run ./cmd --control-plane-bind-address=""
 test: ; go test ./... -coverprofile cover.out
 docker-build: ; docker build -t $(IMG) .
 

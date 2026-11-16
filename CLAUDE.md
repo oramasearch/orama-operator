@@ -255,7 +255,7 @@ Go, kubebuilder, helm, helmfile and kubectl on `PATH` (plus `$(go env GOPATH)/bi
 
 - **Unit and envtest suites:** `make test` (or `go test ./...` with the envtest assets).
   `go test ./cmd/...` holds the structural checks (CRD coverage, platform sync, field removal).
-- **Local run:** `make run` (or `go run ./cmd/main.go`) reconciles against your current kube-context.
+- **Local run:** `make run` (`go run ./cmd --control-plane-bind-address=""`) reconciles against your current kube-context.
   Use a disposable cluster (kind, k3d, a sandbox), never one you were not told to use.
 - **Every cluster gets every CRD and runs every controller** (principle 11). The e2e kinds
   (`OramaCloudV1E2ETest`, `ZettaClusterE2ETest`, `LakeE2ETest`) are in `chart/crds` and reconciled on

@@ -308,7 +308,7 @@ The standard loop: run the manager **out-of-cluster** against your current kube-
 using your kubeconfig creds (no in-cluster deploy needed to iterate):
 
 ```sh
-go run ./cmd --control-plane-bind-address=""
+go run ./cmd --control-plane-bind-address=""   # what `make run` runs
 ```
 
 This disables the deployment listener for the local reconciler loop. To exercise that listener,
