@@ -25,7 +25,7 @@ serviceAccount:
 # spec.services.polarsImage. When a registry needs credentials, a Lake's spec.pullSecretName is
 # the pull secret its services use.
 lakeServices:
-  sqliteImage: oramasearch/lake-sqlite:0.1.1
+  sqliteImage: oramasearch/lake-sqlite:0.2.0
   duckdbImage: oramasearch/lake-duckdb:0.2.0
   polarsImage: oramasearch/lake-polars:0.1.0
 
