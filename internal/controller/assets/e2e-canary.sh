@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # The e2e canary and its collection prune: one run of CronJob <cr>-e2e-canary (operator#17), run by
 # /bin/sh in the canary image, which provides monitor-test, curl and jq. Ported from Cloud v1's
 # original canary timer and collection prune crons.

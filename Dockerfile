@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # orama-operator — the kubebuilder manager image (the pod that reconciles the
 # OramaCloudV1 CRs). Standard kubebuilder multi-stage build: compile the Go binary in the
 # toolchain image, ship it on distroless/static:nonroot (no shell, runs as nonroot UID 65532).

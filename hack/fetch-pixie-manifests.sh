@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 # Re-vendor the pinned upstream Pixie manifests the operator renders for PixieVizier and PixieCloud
 # (operator#15, #456). The operator installs Pixie itself: no Pixie operator, no OLM, no Vizier
 # updater. It embeds the kustomize output of a pinned commit of our private copy oramasearch/pixie,

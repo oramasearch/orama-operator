@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Verify the vendored Lake schema against its pinned upstream source or a local copy."""
 
 import hashlib

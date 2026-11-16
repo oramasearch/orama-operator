@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 # Fail if the cluster is missing a CRD this chart ships.
 #
 # Helm applies chart/crds on INSTALL ONLY — never on upgrade — and the rollout runbooks pass
