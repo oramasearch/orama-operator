@@ -99,7 +99,9 @@ const (
 // fills oramacore_analytics_search_aggregated, which the dashboard's top terms, no-results and totals
 // read. It runs even when the import fails, as Prod 1's two independent timers do, so readers an
 // earlier failed run did import are still aggregated; the Job fails when either call fails. Each
-// call has its own request deadline, together inside the Job's 300 s, and neither retries.
+// call has its own request deadline, together inside the Job's 300 s, and neither retries. The
+// processor's aggregation budget (80 s by default, analytics-processor#2) must stay below the
+// /aggregate2 deadline of 110 s, so the processor stops its own work before curl gives up.
 func analyticsImportScript(oc *oramav1alpha1.OramaCloudV1) string {
 	const curl = "curl --fail --silent --show-error --connect-timeout 10 --request POST --write-out '\\n'"
 	base := fmt.Sprintf("http://%s-analytics-processor:8080", oc.Name)

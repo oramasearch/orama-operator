@@ -484,9 +484,10 @@ the operator creates, so a component is run *well*, not just *running*. The help
   a **memory limit** — but **no CPU limit** (a CPU limit throttles rather than protects; the request
   suffices). Limits are sized **per component** (a blanket small one OOM-kills the heavy ones):
   light apps `512Mi`, dashboard/disco/keycloak/stores `~1Gi`, Selenium `1.5Gi`, ClickHouse `4Gi`
-  (kept in lockstep with `clickhouseMemoryXML`), embeddings `5Gi` over a `4Gi` request (the loaded
-  models hold about 3.4Gi, so the request reserves what the pod really uses). The engine keeps its
-  cgroup-aware `resourceCaps` (CPU limit included — tokio tolerates it). Every component's
+  (its own `max_server_memory_usage` is three quarters of whatever memory limit the pod has, 3 GiB
+  by default, rendered by `clickhouseMemoryXML`; #1139), embeddings `5Gi` over a `4Gi` request (the
+  loaded models hold about 3.4Gi, so the request reserves what the pod really uses). The engine keeps
+  its cgroup-aware `resourceCaps` (CPU limit included — tokio tolerates it). Every component's
   `resources` is **overridable on the CR** (`spec.components.<x>.resources`, `spec.idp.resources`,
   `spec.components.ingestion.resources`) — like the engine writer/reader already were.
 - **SecurityContext baseline.** A conservative **per-container** `securityContext`
@@ -1754,7 +1755,9 @@ suite does not ([#315](https://github.com/oramasearch/orama-operator/issues/315)
   (`analyticsImportScript`): `curl --fail --silent --show-error --connect-timeout 10 --request POST
   --max-time 180 http://<cr>-analytics-processor:8080/import`, then the same flags with
   `--max-time 110` on `/aggregate2`. Both fit inside the Job's 300 s. It holds no credentials:
-  neither route takes any.
+  neither route takes any. The processor's own aggregation budget (80 s by default,
+  [analytics-processor#2](https://github.com/oramasearch/analytics-processor/issues/2)) stays below
+  that 110 s, so the processor stops its work before curl gives up.
 - **Aggregation.** Prod 1 runs `analytics-processor.aggregator.timer` every five minutes beside the
   importer. `POST /import` only writes raw events; the
   processor's `POST /aggregate2` route runs the same `Aggregator::aggregate` as Prod 1's
@@ -1774,6 +1777,15 @@ suite does not ([#315](https://github.com/oramasearch/orama-operator/issues/315)
   again; those readers keep their events logged meanwhile. A failed run shows in the Job's status and the processor's logs; the next
   scheduled run is the next attempt. "Each reader once" is one source per ordinal and one export
   call per healthy run, not a durable exactly-once delivery.
+- **Alerts.** With the processor and its import enabled, the stack's `<cr>-alerts` PrometheusRule
+  carries two warnings built from kube-state-metrics' CronJob series
+  ([#1139](https://github.com/oramasearch/orama-operator/issues/1139)). The Job fails when either
+  call does, so `kube_cronjob_status_last_successful_time` is the age of the stack's analytics:
+  `OramaAnalyticsStale` fires when it is over 30 minutes old for 5 minutes, unless
+  `kube_cronjob_spec_suspend` is 1 (a suspended import is expected to stop).
+  `OramaAnalyticsImportMetricsMissing` fires when that series is absent for 30 minutes; it is absent
+  until the CronJob's first success, and while it is, `OramaAnalyticsStale` cannot fire. Failed Jobs
+  alone page nothing here: `KubeJobFailed` flaps as the CronJob deletes old Jobs.
 - **Suspend.** `import.suspend: true` sets the CronJob's `spec.suspend` and keeps the CronJob, the
   headless Service and the sources, so the cutover flips one line. It stops new Jobs only: a
   running Job finishes, and the readers keep the events logged while suspended, which the first

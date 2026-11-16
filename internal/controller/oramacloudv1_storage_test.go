@@ -666,3 +666,50 @@ func TestOCV1StorageGrowsReaderClaimsFromTheReaderDefault(t *testing.T) {
 		assertClaimSize(t, r, oc, name, "600Gi")
 	}
 }
+
+// ClickHouse's own memory cap is three quarters of its pod's memory limit: the default 4Gi keeps the
+// 3 GiB cap it always had, and a stack that sets a larger limit gets a larger cap (#1139).
+func TestAnalyticsClickHouseCapFollowsItsMemoryLimit(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		resources *corev1.ResourceRequirements
+		limit     string
+		want      string
+	}{
+		{"default", nil, "4Gi", "<!-- ABSOLUTE cap (bytes) = 3 GiB, derived from the 4Gi pod limit. NOT the host-relative ratio. -->\n    <max_server_memory_usage>3221225472</max_server_memory_usage>"},
+		{"8Gi", &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("4Gi")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("8Gi")},
+		}, "8Gi", "= 6 GiB, derived from the 8Gi pod limit. NOT the host-relative ratio. -->\n    <max_server_memory_usage>6442450944</max_server_memory_usage>"},
+		{"no memory limit", &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+		}, "", "<max_server_memory_usage>3221225472</max_server_memory_usage>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+				o.Spec.Components.Analytics.Enabled = true
+				o.Spec.Components.Analytics.Resources = tc.resources
+			})
+			r, _ := storageFake(t, oc)
+			if err := r.reconcileAnalytics(ctx, oc); err != nil {
+				t.Fatal(err)
+			}
+			var cm corev1.ConfigMap
+			if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-analytics-config"}, &cm); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(cm.Data["orama-memory.xml"], tc.want) {
+				t.Errorf("orama-memory.xml lacks %q:\n%s", tc.want, cm.Data["orama-memory.xml"])
+			}
+			var sts appsv1.StatefulSet
+			if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-analytics"}, &sts); err != nil {
+				t.Fatal(err)
+			}
+			got := sts.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory]
+			if tc.limit != "" && got.String() != tc.limit {
+				t.Errorf("pod memory limit %s, want %s", got.String(), tc.limit)
+			}
+		})
+	}
+}

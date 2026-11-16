@@ -94,6 +94,20 @@ The setup-envtest of controller-runtime
 0.18 fetches from a bucket that now answers 401; `setup-envtest@release-0.21 use 1.30.0` fetches
 the same binaries from GitHub.
 
+### Cloud v1 rules in real Prometheus
+
+`TestOramaCloudV1AnalyticsAlertsInPrometheus` runs a stack's rendered rules through promtool's
+rule tests, in Prometheus 3.15, the version of the platform mirror. It needs the release tarball's
+`promtool`, checked against its `sha256sums.txt`:
+
+```sh
+curl -LO https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.<os>-<arch>.tar.gz
+export PROMETHEUS_BINARY_DIR=$PWD/prometheus-3.15.0.<os>-<arch>
+go test ./internal/controller -run 'AnalyticsAlertsInPrometheus'
+```
+
+Without it the test is skipped, as the envtests are without `KUBEBUILDER_ASSETS`.
+
 ### The observability platform charts
 
 `hack/charts/` holds the exact tarballs of kube-prometheus-stack and Perses that `helmfile.yaml` and
