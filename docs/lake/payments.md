@@ -1,7 +1,6 @@
 # Payments for a Lake (`spec.payments`)
 
-[operator#639](https://github.com/oramasearch/orama-operator/issues/639), part of the Stripe epic
-([orama-bridge#199](https://github.com/oramasearch/orama-bridge/issues/199)). lake takes payments
+[operator#639](https://github.com/oramasearch/orama-operator/issues/639), part of the Stripe epic. lake takes payments
 through Stripe when it has `LAKE_STRIPE_SECRET_KEY` and `LAKE_STRIPE_WEBHOOK_SECRET`, and through its
 manual provider when it has neither (lake `src/api/billing_capabilities.cpp`,
 `environment_payment_providers`). With `spec.payments`, the operator keeps the Lake's webhook
@@ -47,7 +46,7 @@ spec:
 
 - **On-prem and enterprise installs leave it unset** (or `enabled: false`), and bill nothing.
 - **Billing does not need payments.** A Lake can bill through lake's manual provider with no
-  `spec.payments`; `Lake/prod` on the managing cluster does.
+  `spec.payments`.
 - **Payments need billing**: the CEL rule above.
 - **Unset passes `spec.env` through** so nothing changes before each set file moves: a member that
   bills through a `spec.env` entry keeps billing until its file says `billing: {enabled: true}`
@@ -79,8 +78,7 @@ Secret given to a nonprod Lake, or a test Secret given to a production one, is r
 used. Restricted keys can only be made in the Stripe Dashboard; the operator only reads them, and no
 key value appears in a status, a log or an event.
 
-Each environment has its own Secret, created by a person on the managing cluster
-([orama-bridge#201](https://github.com/oramasearch/orama-bridge/issues/201)); see
+Each environment has its own Secret, created by a person on the managing cluster; see
 [`config/clusters/README.md`](../../config/clusters/README.md). A set copies the
 member's Secret into its namespace with `spec.secrets` or `clusters[].secrets`.
 
@@ -309,18 +307,18 @@ For each member:
          mode: test
          secretRef: {name: stripe}
      clusters:
-     - clusterRef: orama-nonprod-cluster-01
+     - clusterRef: example-nonprod
        name: testing
        secrets:
        - {name: stripe-testing, namespace: lake, as: stripe}
    ```
 
    `lake-prod` uses `mode: live` and `stripe-live`.
-3. Apply the file, with Steve's consent, and watch `kubectl get lake <name> -o
+3. Apply the file, with the cluster owner's consent, and watch `kubectl get lake <name> -o
    jsonpath='{.status.conditions[?(@.type=="PaymentsReady")]}'`.
 
 The member drops the old variables as soon as `spec.payments` is applied, so it restarts on manual
 payments, and restarts again with the new variables once `PaymentsReady` is `True`. A member whose
 `PaymentsReady` stays `False` keeps running on manual payments; the reason says what to fix.
 
-`Lake/prod` on the managing cluster (`lake.oramadev.net`, temporary) gets no Stripe.
+A Lake without `spec.payments` gets no Stripe.

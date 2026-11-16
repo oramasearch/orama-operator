@@ -5,10 +5,9 @@ architecture as decided so far. It is early: the first kinds exist, most of it i
 this is the design the work follows. The running discussion and the open questions are in
 [#351](https://github.com/oramasearch/orama-operator/issues/351).
 
-> **Where the files this page names are.** Orama's own cluster resources, named on this page as
-> `config/clusters/...`, are in the private [`orama-infra`](https://github.com/oramasearch/orama-infra) repository, at the
-> same paths. This repository's [`config/clusters/`](../../config/clusters/README.md) is an example of the same shape, with
-> placeholder values.
+> **Where the files this page names are.** A deployment keeps its own cluster resources in its own
+> repository, at the paths this page names as `config/clusters/...`. This repository's
+> [`config/clusters/`](../../config/clusters/README.md) is an example of the same shape, with placeholder values.
 
 **Status, 2026-10-12:** decided in outline. The first three kinds are implemented and tested
 against a fake Azure API ([#354](https://github.com/oramasearch/orama-operator/issues/354)); no
@@ -31,7 +30,7 @@ real cluster has been created with them yet. The first step is one non-productio
 > Zetta's `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`, the exact endpoints of its namespace's own data
 > services (#882).
 >
-> **Status pages** (external checks, alerts, the public lake.live page; liquid-bridge#14) are in
+> **Status pages** (external checks, alerts, the public lake.example.com page; are in
 > [`status-pages.md`](status-pages.md).
 >
 > **Observability** (Prometheus, Alertmanager and Perses on every cluster; #15) is in
@@ -133,9 +132,8 @@ The starting point is what `helmfile.yaml` installs today:
 
 ### Installing it: `ClusterHelmRelease` and `OramaOperator`
 
-Steve, 2026-10-12: *"we need to create an operator CR in the management cluster that will install
-and control the version of the leaf operator"*, and, of installing it alone: *"you can't install
-something without its prerequisites"*.
+The management cluster installs a leaf's operator and controls its version, and never installs
+something without its prerequisites.
 
 The operator is one item in an ordered list, and the list is the helmfile. Two management kinds
 install it from inside the management cluster's operator, which reaches the leaf with the
@@ -178,7 +176,7 @@ Helm otherwise puts them wherever the kubeconfig says: K8ssandra's Deployments l
 on the first leaf before this was fixed.
 
 [`config/samples/leaf-nonprod-operator.yaml`](../../config/samples/leaf-nonprod-operator.yaml) is
-the pair for `orama-nonprod-cluster-01`.
+the pair for `example-nonprod`.
 
 Two components named for a leaf are **not** in the helmfile today and are not on the existing
 cluster: **Karpenter** and **Istio**. Karpenter can already be installed by the operator from an
@@ -227,9 +225,8 @@ A general rule for every kind in this work, and for the operator from here on.
 ### A provider is its own resource
 
 The abstract kind does not carry the vendor's settings. It points at a **provider resource**,
-which says which vendor, which account and how to authenticate. Proposed by Steve, 2026-10-12:
-*"maybe we can create a DnsProvider CRD for example then the abstract can point to that
-provider."*
+which says which vendor, which account and how to authenticate. A DNS provider, for example, is its own
+resource that the abstract kind points at.
 
 | Abstract kind | Points at | Which provisions |
 |---|---|---|
@@ -285,8 +282,7 @@ nothing on it.
 
 ### Seeing what the provider is doing, and what it refused
 
-Steve, 2026-10-12, watching the first leaf's nodes not come up: *"the operator should talk to the
-API and report any errors from the azure api so they can be corrected"*.
+
 
 On every reconcile the `AksCluster` controller reads Azure's latest operation for the cluster
 (`managedClusters/<name>/operations/latest`) along with the cluster itself, and reports both:
@@ -299,7 +295,7 @@ On every reconcile the `AksCluster` controller reads Azure's latest operation fo
 | The operator's log | An error line when Azure fails an operation, once per distinct failure |
 
 A failure to read the operation is an error like any other: it is recorded and returned. Creating
-`orama-nonprod-cluster-01` took 14 minutes, 11 of them with the system node's virtual machine
+`example-nonprod` took 14 minutes, 11 of them with the system node's virtual machine
 running and not yet joined; during that time Azure reported no error and only the progress line
 said what it was waiting for.
 
@@ -309,16 +305,13 @@ copies a node's bootstrap failure onto the operation's error, which is reported.
 
 ### Two installation paths, one result
 
-Steve, 2026-10-13: *"both the helmfile and the operator need to be kept in sync so that operators
-on mgnt clusters and leaf clusters are effectively the same, even though mgmt cluster will need the
-helmfile installation path and leaf clusters will be installed by the mgmt operator ... make sure
-that knowledge is 1000% clear in the docs"*.
+
 
 **There are two ways a cluster gets its software, and they must produce the same cluster.**
 
 | | Management cluster | Leaf cluster |
 |---|---|---|
-| **Installed by** | A person or agent running `helmfile` from this repository, with Steve's consent | The management cluster's operator |
+| **Installed by** | A person or agent running `helmfile` from this repository, with the cluster owner's consent | The management cluster's operator |
 | **Described in** | [`helmfile.yaml`](../../helmfile.yaml) | [`config/clusters/<cluster>/`](../../config/clusters/README.md): `platform.yaml` (`ClusterHelmRelease`) and `operator.yaml` (`OramaOperator`) |
 | **Platform charts** | The helmfile's releases | One `ClusterHelmRelease` per chart |
 | **The Orama operator** | The helmfile's `orama-operator` release, from `./chart` | `OramaOperator`, from the chart published for that version |
@@ -341,7 +334,7 @@ management cluster.
 **Neither path is ever replaced by a command typed at a cluster.** A `helm upgrade` run by hand
 against the management cluster is not the helmfile path: it is state outside the code
 ([`CLAUDE.md`](../../CLAUDE.md), *Never change a cluster by hand*). To change the management
-cluster, change `helmfile.yaml`, merge it, and apply the helmfile with Steve's consent.
+cluster, change `helmfile.yaml`, merge it, and apply the helmfile with the cluster owner's consent.
 
 **What holds it:** [`cmd/platform_sync_test.go`](../../cmd/platform_sync_test.go) reads
 `helmfile.yaml` and every `config/clusters/*/platform.yaml` and fails if a chart, version,
@@ -361,8 +354,7 @@ has. That is not built.
 
 ### One operator, on every cluster
 
-Steve, 2026-10-12: *"install the same operator everywhere... all crds"*, *"no differences between
-management and leaf operator"*, *"any leaf can be a mgnt cluster too... no differences"*.
+
 
 The operator installed on a leaf is the operator installed on the management cluster: the same
 chart, the same CRDs (the cluster-management kinds included, in `chart/crds`), the same controllers
@@ -391,7 +383,7 @@ inside a condition, or if a flag or chart switch for controllers comes back.
 | | |
 |---|---|
 | Custom role | `Orama Cluster Provisioner`: read the subscription; read, write and delete resource groups; everything under `Microsoft.ContainerService/managedClusters`; read `Microsoft.ContainerService/locations`. Assigned on the subscription, because creating a resource group is a subscription-level action. |
-| Managed identity | `orama-operator-cluster-management`, in `orama-production-cluster-01_group` |
+| Managed identity | `orama-operator-cluster-management`, in `example-management_group` |
 | Federated credential | The existing cluster's OIDC issuer, subject `system:serviceaccount:orama-system:orama-operator` |
 
 The role cannot touch machines, networks, storage, identities or role assignments directly. It can
@@ -424,42 +416,35 @@ Kubernetes `NetworkPolicy`. Those isolate nothing on a dataplane that does not e
 
 | Cluster | Installed by | Policy engine | How it is known |
 |---|---|---|---|
-| `orama-production-cluster-01` (managing) | `helmfile` | Cilium | Read 2026-10-20: the `cilium` DaemonSet runs, the CRD is installed, 190 NetworkPolicies and 7 CiliumNetworkPolicies exist |
-| `orama-nonprod-cluster-01` | the managing cluster's operator | Cilium | `config/clusters/orama-nonprod-cluster-01/cluster.yaml` sets no `network`, so the provider default `cilium` applies |
-| `orama-production-cluster-02` | the managing cluster's operator | Cilium | as above |
-| `orama-production-cluster-03` | the managing cluster's operator | Cilium | as above |
+| `example-management` (managing) | `helmfile` | Cilium | Read 2026-10-20: the `cilium` DaemonSet runs, the CRD is installed, 190 NetworkPolicies and 7 CiliumNetworkPolicies exist |
+| `example-nonprod` | the managing cluster's operator | Cilium | `config/clusters/example-nonprod/cluster.yaml` sets no `network`, so the provider default `cilium` applies |
+| `example-production-eu` | the managing cluster's operator | Cilium | as above |
+| `example-production-us` | the managing cluster's operator | Cilium | as above |
 
-**Still owed (needs Steve's consent):** a live isolation probe on `lake-testing`, as part of the e2e
+**Still owed (needs the cluster owner's consent):** a live isolation probe on `lake-testing`, as part of the e2e
 suite (#537): a pod in one workspace namespace must fail to reach another workspace's Zetta, lake's
 control Postgres, the lake Zetta (the bus) and the Kubernetes API. The leaves' live dataplane has not
 been read from this host.
 
 ## The clusters today, and the path from here
 
-As of 2026-10-12. The resources themselves are in
-[`config/clusters/`](../../config/clusters/README.md), which is the record of what is deployed.
+An example deployment, the one [`config/clusters/`](../../config/clusters/README.md) describes with
+placeholder names:
 
 | Cluster | Region | Purpose | Role | Runs |
 |---|---|---|---|---|
-| `orama-production-cluster-01` | `eastus` | Development, despite its name | **The managing cluster**: holds every `KubernetesCluster`, `ClusterHelmRelease`, `OramaOperator` and set. Created by hand before these kinds existed, so it has no `KubernetesCluster` of its own | Also still runs workloads: `Lake/prod` (`lake.oramadev.net`) and the v1 sandbox (`app.oramadev.net`) |
-| `orama-nonprod-cluster-01` | `westus2` | `nonprod` | Managed | Lake `dev`, `testing` and `staging`; Orama Cloud v1 `v1-dev` |
-| `orama-production-cluster-02` | `swedencentral` | `production` | Managed | Lake `shared`; Orama Cloud v1 `v1-eu` |
-| `orama-production-cluster-03` | `eastus` | `production` | Managed | Lake `shared-us`; Orama Cloud v1 `v1-us` |
+| `example-management` | `eastus` | the managing cluster | **The managing cluster**: holds every `KubernetesCluster`, `ClusterHelmRelease`, `OramaOperator` and set | the observability hub and the status page |
+| `example-nonprod` | `westus2` | `nonprod` | Managed | Lake `dev`, `testing` and `staging` |
+| `example-production-eu` | `swedencentral` | `production` | Managed | a production Lake for the EU region |
+| `example-production-us` | `eastus` | `production` | Managed | a production Lake for the US region |
 
 Every managed cluster has the same platform layer (CloudNativePG, ingress-nginx, cert-manager, and
 the Strimzi, ClickHouse, K8ssandra, TiDB and Valkey operators) and the same operator version as the
 managing cluster. Each has one system node and a user pool that scales from zero.
 
-The instances are in four sets, one per kind per purpose: `lake-nonprod`, `v1-nonprod`,
-`lake-prod`, `v1-prod`.
-
-What the path was, and where it stands:
-
-1. **The existing cluster becomes the management cluster**, slowly and intentionally. It manages
-   the other three now. It still runs workloads, which is a leaf's job, so the conversion finishes
-   only when `Lake/prod` and the v1 sandbox have moved.
-2. **A non-production cluster**: done, `orama-nonprod-cluster-01`.
-3. **Production clusters**: done twice, in the EU and the US.
+The instances are in sets, one per kind per purpose, for example `lake-nonprod` and `lake-prod`.
+An existing cluster can become the management cluster; it should stop running workloads of its own,
+which are a leaf's job, once they have moved to the clusters it manages.
 
 What the production clusters are **not** yet:
 
@@ -468,7 +453,7 @@ What the production clusters are **not** yet:
   the mutable image tag `v1-sandbox`, and the component secrets the operator seeds for
   development.
 - **Their hostnames are in the dev zone** (`lake-eu`, `lake-us`, `app-eu`, `app-us` under
-  `oramadev.net`). No hostname that production traffic uses points at them.
+  `nonprod.example.com`). No hostname that production traffic uses points at them.
 - **The two v1 production instances are independent primaries.** v1's multi-region model is one
   primary and read regions joined by `spec.peers`; nothing joins `v1-eu` and `v1-us`.
 - **No customer data is on them.**
@@ -479,9 +464,9 @@ resources alone.
 
 ## Workloads on managed clusters: `LakeSet` and `OramaCloudV1Set`
 
-Steve, 2026-10-12: *"let's create "Lake Set" and an "Orama Cloud v1 Set" which will be CRs on the
-management cluster, that will install CRs of Lake and Orama Cloud v1 on the leaf clusters (and
-manage their versions, settings, etc)."* ([#391](https://github.com/oramasearch/orama-operator/issues/391))
+A `LakeSet` and an `OramaCloudV1Set` are resources on the management cluster that install `Lake` and
+`OramaCloudV1` resources on the leaf clusters, and manage their versions and settings
+([#391](https://github.com/oramasearch/orama-operator/issues/391)).
 
 A set is one template and a list of members. **A member is one instance on one cluster.** The
 managing cluster's operator applies each member's `Lake` (or `OramaCloudV1`) on its cluster, and
@@ -495,26 +480,26 @@ spec:
   template: {...}                 # a Lake spec, the default for every member
   secrets: [...]                  # copied from this cluster into each member's namespace
   clusters:                       # independent of each other
-    - clusterRef: orama-production-cluster-02
+    - clusterRef: example-production-eu
       name: shared                # general production, for all shared accounts
       spec: {host: lake.eu.example}
-    - clusterRef: orama-production-cluster-02
+    - clusterRef: example-production-eu
       name: enterprise-customer-1 # a dedicated instance
       spec: {host: customer-1.lake.eu.example}
       secrets:
         - {name: customer-1-openai, namespace: lake, as: lake-prod-openai}
 ```
 
-The rules, each as Steve stated it:
+The rules:
 
 | Rule | How it is held |
 |---|---|
-| *"lakesets would never combine nonprod and prod in a single lakeset (nor oramacloud v1)"* | Every member's `KubernetesCluster` must carry the same `purpose` tag. A set that mixes purposes, or names a cluster with no `purpose`, is refused whole: nothing is applied to any cluster, and the status names the clusters. |
-| *"nonprod might combine multiple environments... each environment needs to land in its own namespace"*; *"we could have multiple prod instances in a set, eg. general prod for all shared accounts, and separate lakes for dedicated instances"* | A set holds any number of members, on one cluster or several. Each gets its own namespace, `lake-<name>` (`v1-<name>`), overridable per member. Two members on one cluster that would share a name or a namespace are refused. |
-| *"I like the overridable spec from the cluster too"* | A member's `spec` is merged over the template: a field wins, an object is merged field by field, and a list replaces the template's list whole. |
-| *"the region is already defined by which cluster it is assigned to"* | An `OramaCloudV1`'s `region.name` is its `KubernetesCluster`'s region. It is never written, and a `spec` that states a different one is refused. Only the role (`primary` or `read`) is stated. |
-| *"a single lakeset can manage all regional deployments"* (2026-10-17, decision 64) | A Lake member that states `region.label` gets its cluster's region as `region.name`, and every labelled member gets the same `regions` list (label, host and location of each), which lake's region picker shows. At most one member sets `apexHost`, the picker's host. A picker lists the regions of one environment only, so a cloud region named by two labelled members refuses the set, as do a labelled member with no `host`, a region with no known location, a hand-stated `regions` and a second `apexHost`. See [`lake/README.md#regions`](../lake/README.md#regions). |
-| *"make secrets overridable too"* | A member's `secrets` are added to the set's. One whose name on the member's cluster (`as`, default `name`) matches a set secret replaces it for that member. |
+| A set never combines nonprod and production | Every member's `KubernetesCluster` must carry the same `purpose` tag. A set that mixes purposes, or names a cluster with no `purpose`, is refused whole: nothing is applied to any cluster, and the status names the clusters. |
+| A nonprod set may hold several environments, each in its own namespace; a production set may hold several production instances | A set holds any number of members, on one cluster or several. Each gets its own namespace, `lake-<name>` (`v1-<name>`), overridable per member. Two members on one cluster that would share a name or a namespace are refused. |
+| A member can override the template's spec | A member's `spec` is merged over the template: a field wins, an object is merged field by field, and a list replaces the template's list whole. |
+| The region is the member's cluster's | An `OramaCloudV1`'s `region.name` is its `KubernetesCluster`'s region. It is never written, and a `spec` that states a different one is refused. Only the role (`primary` or `read`) is stated. |
+| One set can run every regional deployment | A Lake member that states `region.label` gets its cluster's region as `region.name`, and every labelled member gets the same `regions` list (label, host and location of each), which lake's region picker shows. At most one member sets `apexHost`, the picker's host. A picker lists the regions of one environment only, so a cloud region named by two labelled members refuses the set, as do a labelled member with no `host`, a region with no known location, a hand-stated `regions` and a second `apexHost`. See [`lake/README.md#regions`](../lake/README.md#regions). |
+| A member can override the set's secrets | A member's `secrets` are added to the set's. One whose name on the member's cluster (`as`, default `name`) matches a set secret replaces it for that member. |
 
 What a set does for each member, in order:
 
@@ -535,8 +520,7 @@ What a set does for each member, in order:
 
 Further behavior:
 
-- **Members are independent** (Steve, 2026-10-12: *"staging should not need to wait for dev ...
-  they're independent"*). Every member is applied on every pass and none waits for another: one
+- **Members are independent**. Every member is applied on every pass and none waits for another: one
   that fails or starts slowly does not hold back the rest. A template change reaches all members
   at once, except those that pin the field.
 - **Pinning.** A member whose `spec` sets the version (a Lake's `image`) ignores the template's.
@@ -550,14 +534,14 @@ Further behavior:
   [#654](https://github.com/oramasearch/orama-operator/issues/654)): each is applied as an
   `OramaCloudV1Migration` in its member's namespace, after the member, and reported in the set's
   `status.migrations`. A member leaving the set, or the set being deleted, waits for its migrations
-  to be gone. See [`cloud-v1-migration.md`](../cloud-v1-migration.md#declared-in-the-set-oramacloudv1set).
+  to be gone.
 
 [`config/samples/lakeset-nonprod.yaml`](../../config/samples/lakeset-nonprod.yaml) is a nonprod set
 with two environments.
 
 ## Paid orders: `LakeOrderSource`
 
-A private warehouse or a dedicated cluster bought on lake.live is provisioned from lake's
+A private warehouse or a dedicated cluster bought on lake.example.com is provisioned from lake's
 control-plane `cloud_orders` table by the management cluster's operator, which reaches each leaf's
 control Postgres through a port-forward over the kubeconfig it already holds
 ([operator#634](https://github.com/oramasearch/orama-operator/issues/634)). An order becomes the same
@@ -568,8 +552,7 @@ the orders, not from `config/clusters/`. The design, the reasons and the open qu
 
 ## Left out on purpose
 
-**AKS add-ons are not set on a cluster the operator creates** (Steve, 2026-10-12: *"let's omit them
-for now"*). `orama-production-cluster-01` has four that `orama-nonprod-cluster-01` does not:
+**AKS add-ons are not set on a cluster the operator creates**. `example-management` has four that `example-nonprod` does not:
 
 | Add-on | What it does | CRD groups it brings |
 |---|---|---|
@@ -598,9 +581,7 @@ provides the address space; and how the existing cluster's workloads move.
 
 ## Where the decisions came from
 
-Every statement on this page is from Steve, 2026-10-12, recorded verbatim in
-[#351](https://github.com/oramasearch/orama-operator/issues/351). `DESIGN.md` carries it as
-decision 46.
+The design on this page is recorded in [#351](https://github.com/oramasearch/orama-operator/issues/351).
 
 ## Node-pool kernel settings
 

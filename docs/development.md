@@ -18,7 +18,6 @@ config/crd|samples/  # generated CRDs + example CRs (generated and committed)
 chart/               # the install Helm chart (operator + CRDs + RBAC; the ClusterRole is hand-maintained)
 helmfile.yaml        # composition: platform operators + this chart
 docs/                # this guide, the CRD reference, the component reconcilers, the Lake CR
-DESIGN.md            # architecture + decision log + open questions
 CLAUDE.md            # working rules (incl. docs discipline)
 Makefile             # standard kubebuilder targets (manifests/build/docker/helm)
 ```
@@ -217,7 +216,7 @@ and RBAC, plus permission to pull its private repository. Obtain both from the O
 maintainer before following [install.md](install.md). The chart's `v1-sandbox` default is mutable;
 it is not a release recommendation. This guide does not assert that any new tag is published.
 
-The development machine does not run Docker (bridge decision 33). Native build and verification:
+The development machine does not run Docker. Native build and verification:
 
 ```sh
 go build ./...
@@ -300,7 +299,7 @@ manager deliberately (e.g. debugging), override the ports:
 
 ## AKS smoke test
 
-Context `orama-production-cluster-01` is a fresh, empty, single-node **sandbox**
+Context `example-management` is a fresh, empty, single-node **sandbox**
 (`Standard_D8as_v7`, **no GPU**). Steps that were verified:
 
 ```sh
@@ -320,5 +319,4 @@ Result: the CRD installs, the sample CR is accepted, and the manager logs
 
 ## Ship
 
-Commit + push this repo → bump the pointer in `orama-cloud-v1-bridge` → bump the
-pointer in the umbrella `orama-bridge` (fast-forward to `main`). No AI attribution.
+Open a pull request against `dev` ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).

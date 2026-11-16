@@ -179,7 +179,7 @@ Native tests (`go test ./internal/controller/ -run 'Tunnel|Cloudflare'`):
   TunnelGrantsPgxStore`. It creates the 0084 and 0085 tunnel tables itself in a rolled-back scratch
   schema, because the vendored Lake schema changes only after Lake merges those migrations.
 
-Live acceptance on `orama-nonprod-cluster-01` (deferred to the rollout, after Lake's 0084/0085 are
+Live acceptance on `example-nonprod` (deferred to the rollout, after Lake's 0084/0085 are
 deployed there): a granted developer reaches the target with `zetta-tunnel client` and nothing else
 (another port, another service, and the endpoint directly are refused); after revocation and after
 expiry the client is refused; the relay's audit lines show every session.

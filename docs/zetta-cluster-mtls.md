@@ -236,4 +236,3 @@ set it on a cluster that wants the floor.
 
 - [`crd-reference.md`](crd-reference.md) — the `OramaZettaCluster` field reference.
 - [`zetta-datastore.md`](zetta-datastore.md) — Zetta as the operator's datastore (peer/reachability model).
-- [`DESIGN.md`](../DESIGN.md) — decision row 22.

@@ -269,11 +269,11 @@ Lake manifest when using the imported bundle; containerd resolves them locally w
 registry and create `oramasearch-dockerhub`-named pull Secrets in both `orama-system` and `lake-dev`
 using the internal registry credentials.
 
-An air-gapped Lake needs no `lake.live` access. Keep `ingressEnabled` false, omit `host` and
+An air-gapped Lake needs no `lake.example.com` access. Keep `ingressEnabled` false, omit `host` and
 `dnsSecretRef`, keep `LAKE_LOG_MODE=air-gapped`, and do not configure a TSA or transparency-log
 aggregator that points outside the site. Deny public egress at the site boundary, repeat the Ready
 and optional `LakeE2ETest` checks above, and capture firewall evidence showing no DNS lookup or
-connection to `lake.live` succeeded.
+connection to `lake.example.com` succeeded.
 
 ## Run records
 

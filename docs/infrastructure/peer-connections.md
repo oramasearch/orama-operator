@@ -143,6 +143,6 @@ Native tests (`go test ./internal/controller/ -run 'Peer'`):
   PeersPgxStore` creates the 0084 peer tables itself in a rolled-back scratch schema.
 
 Live acceptance, **rehearsed on two nonprod clusters first** (the issue's order): only one nonprod
-cluster exists today (`orama-nonprod-cluster-01`), so the rehearsal needs a second nonprod cluster
+cluster exists today (`example-nonprod`), so the rehearsal needs a second nonprod cluster
 or two namespaces whose `PeerConnection`s reach each other through their load balancers on the one
 cluster. Then: only the named services are reachable across, and setting the peer absent ends it.

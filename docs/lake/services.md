@@ -13,7 +13,7 @@ by a workspace's `zetta_service_id`: the workspace reconciler owns that cluster 
 `service_status`, while this poll only delivers its connection into the services Secret. The authoritative contract is
 lake's
 [`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/aee5cdada63cb6fed886c67a6fff86123b742bf5/docs/control-plane/services.md)
-(liquid-bridge decisions 46 and 47, amended; lake#195; lake branch `feat/duckdb-polars-kinds`); this page is the
+(lake#195); this page is the
 operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
 (`spec.services`). Workspace namespaces are reconciled separately from the
@@ -194,7 +194,7 @@ Anything else already holding the name fails the service and is never modified o
 | a sqlite service whose `spec.instances` is not 1 | `a sqlite service has exactly one instance, because SQLite has one writer; spec.instances is <n>` |
 | a duckdb service whose `spec.instances` is not 1 | `a duckdb service has exactly one instance, because one DuckDB process owns its database file; spec.instances is <n>` |
 
-## The catalog (decision 47)
+## The catalog
 
 Kafka, ClickHouse, TiDB, Cassandra and Valkey are each run by their own upstream operator, which the
 operator's `helmfile.yaml` installs cluster-wide. The Orama operator writes that operator's
@@ -406,7 +406,7 @@ Who reconnects by themselves:
 - **A pod outside the workspace and its Lake** that reached the listener before loses it when
   Strimzi rewrites the policy. That is the point of the change.
 
-## SQLite (decision 47, amended)
+## SQLite
 
 SQLite has no upstream operator, so the Orama operator runs it directly behind
 **[lake-sqlite](lake-sqlite.md)**, a small web service in its own private repository (`oramasearch/lake-sqlite`,
@@ -666,8 +666,7 @@ manager to start. SQLite, DuckDB and Polars need nothing new: the manager alread
 ## Known limits
 
 - lake receives each Zetta service's **admin** token, and the operator connects to lake's control
-  Postgres with lake's own owner credential (decision 46 explains why a narrower role was not worth
-  it yet).
+  Postgres with lake's own owner credential.
 - Postgres services get CloudNativePG's default resources and no backup; Zetta services have no
   backup either. Endpoints are in-cluster only.
 - `spec` cannot change after creation.

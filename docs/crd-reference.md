@@ -19,7 +19,7 @@ pointing at the primary); the full sample list is in
 | `jwtIssuer` | string | — | The issuer of the stack's write tokens: the shared ConfigMap's `JWT_ISSUER`, which the dashboard signs with, and the only issuer the writer accepts ([below](#speccomponentsenginewriterjwt)). At most 128 characters. No CRD default, because a production issuer is chosen on purpose: `engine.writer.jwt` refuses an empty one. With `engine.writer.jwt` unset an empty value gives `JWT_ISSUER: orama-cloud`. A change rolls the dashboard and, with `engine.writer.jwt` set, the writer. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.analytics-import` replaces the analytics import's `curlimages/curl:8.10.1` ([`analyticsProcessor.import`](#analyticsprocessorimport)). `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). `overrides.postgres-client` is the psql image of the control DB's `PostgresSchema` Job and its cluster-row Job, default `postgres:16-alpine` ([components.md](components.md#controldb-internalcontrollercontroldbgo)); additional helper override keys are `busybox`, `envoy`, `selenium`, `keycloak`, `pgadmin`, `demo-seed`, and `controldb` (CNPG `imageName`). Fixed upstream defaults are pinned by manifest digest; see [workload image integrity](components.md#workload-image-integrity-lsr-214). |
 | `images.requireDigests` | bool | `false` | Reject mutable images on rendered workload writes. With enforcement off, `ImagesPinned=False` / `ImagesNotPinned` and a Warning event report unpinned selections without blocking live production. Enable after configuring reviewed component and helper digests. Existing immutable tagged Jobs remain reported until their normal replacement. |
-| `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
+| `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's `build/images` tooling. Attached to every pod. |
 | `llm.providers[]` | list | Prod 1's four ([below](#specllm)) | **Multiple** LLM providers (`name`: `groq \| openai \| anthropic \| google \| vllm`, `models[]`, `apiKeySecretRef: {name}`, `gpu`) — end users pick per query. The first model is the provider's default model. |
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one; must be one of the providers. |
 | `llm.automaticEmbeddingsSelector` | `{provider, model}` | unset | Provider and model that choose the properties to embed for collections with automatic embeddings. Unset renders no selector. |
@@ -66,7 +66,7 @@ llm:
 
 `automaticEmbeddingsSelector` has no default: without it no selector is rendered, even on a CR
 with no `spec.llm`, so the defaults are Prod 1's providers and models but not its whole block.
-Production sets the block above explicitly (`config/clusters/sets/v1-prod.yaml`).
+A production stack sets the block above explicitly, in its set file.
 
 **Keys.** A provider's key comes from `<cr>-engine-secret` under `<PROVIDER>_API_KEY`
 (`GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`; the operator seeds missing
@@ -169,7 +169,7 @@ an add-on price row is seeded only when listed). `id` is the reference row's UUI
 a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
 Every control DB also declares the CNPG managed role `migration`, which signs in only while an
 [`OramaCloudV1Migration`](#oramacloudv1migration-separate-crd-namespaced--one-prod-1-team-copied-into-a-stack)
-targets the stack; it has no field ([`cloud-v1-migration.md`](cloud-v1-migration.md#what-the-stack-provides)).
+targets the stack; it has no field.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`, and each one's
@@ -182,8 +182,8 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
 | `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,resources,storage}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
-| `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
-| `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
+| `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.example.com (Next.js) |
+| `docs` | `host`, `extraHosts` | docs.example.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `ablyKeySecretRef`, `resources`, `hpesResources` | index-builder (Deployment) + HARVEST + HPES, the embeddings server index-builder calls (`hpesResources`: default 7Gi and 2 CPUs requested, 10Gi limit; [components](components.md#hpes-index-builders-embeddings-hpesgo-574)) |
 | `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `referenceRows`, `stripePrices` | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
@@ -227,7 +227,6 @@ Service, ConfigMap and retention Job, and reports no import error.
 
 One Deployment, `<cr>-import-consumer`, runs `deno run -A src/bucket-worker.ts` from the configured
 `oramasearch/airbyte-fargate-consumer` image. It lists the stack's R2 uploads bucket every ten seconds.
-Bucket provisioning, credential mappings and cutover: [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
 
 | Field | Default | Purpose |
 |---|---|---|
@@ -255,7 +254,7 @@ a Secret-backed dashboard API key, and reports configuration errors through `Rea
 `dashboard`, `docs`, `oramasearchApp`, `engine.writer` and `engine.reader` each take `extraHosts`
 beside `host` ([#313](https://github.com/oramasearch/orama-operator/issues/313)): further names the
 component's Ingress answers, each routed to the same backend as `host`. At the cutover
-`app.orama.com` is repointed to Prod 2 in Cloudflare while `app.orama.ing` keeps working, and an
+`app.example.com` is repointed to Prod 2 in Cloudflare while `app.example.org` keeps working, and an
 Ingress that answers only one name returns ingress-nginx's 404 for the other:
 
 ```yaml
@@ -263,13 +262,13 @@ spec:
   components:
     dashboard:
       enabled: true
-      host: app.orama.ing
+      host: app.example.org
       extraHosts:
-        - app.orama.com
+        - app.example.com
 ```
 
-For CR `v1-eu`, Ingress `v1-eu-dashboard` gets two Prefix `/` rules, `app.orama.ing` then
-`app.orama.com`, each to Service `v1-eu-dashboard` port 3000, and origin TLS for both (one TLS entry
+For CR `v1-eu`, Ingress `v1-eu-dashboard` gets two Prefix `/` rules, `app.example.org` then
+`app.example.com`, each to Service `v1-eu-dashboard` port 3000, and origin TLS for both (one TLS entry
 and Secret `<host>-tls` each). The rules are rebuilt from `host` then `extraHosts` in order on every
 reconcile, so removing an extra removes its rule and its certificate request. The writer's extras go
 to `<cr>-writer`:8080 and the readers' to `<cr>-reader`:80.
@@ -285,12 +284,12 @@ to `<cr>-writer`:8080 and the readers' to `<cr>-reader`:80.
   checks below, but the component stays unwired: no Ingress is created for it.
 - **Checks.** Each entry is 1 to 253 characters and a lowercase DNS name with at least one dot,
   the same pattern as `engine.writer.host` (`listType: set`); the CRD refuses anything else, so
-  `App.Orama.com` or `app.orama.com:443` never reaches the reconcile, which checks the pattern again. Before writing any child
+  `App.Orama.com` or `app.example.com:443` never reaches the reconcile, which checks the pattern again. Before writing any child
   resource the reconcile refuses, with phase `Degraded` and `Ready=False` reason
   `InvalidIngressHosts`: `extraHosts` without `host`; an empty or over-long entry; and any name,
   compared case-insensitively, that appears twice across the `host` and `extraHosts` of all five
   components, enabled or not. The message names both fields, for example
-  `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "app.orama.com"`.
+  `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "app.example.com"`.
   Only the status is written; existing children keep their last valid state until the spec is
   fixed.
 
@@ -300,8 +299,8 @@ Customers' SDKs and the search worker reach the engine through these names
 ([#385](https://github.com/oramasearch/orama-operator/issues/385)). Both are optional bare DNS
 names (lowercase, at least one dot, at most 253 characters; no scheme, path or port) with no
 default: empty keeps the component internal, so an existing CR gets no engine Ingress or record
-until a host is set. Production uses `writer.orama.ing` and `reader.orama.ing`, beside the
-dashboard's `app.orama.ing`.
+until a host is set. Production uses `writer.example.org` and `reader.example.org`, beside the
+dashboard's `app.example.org`.
 
 | Field | Published while | Ingress | Backend | Sandbox rule |
 |---|---|---|---|---|
@@ -310,7 +309,7 @@ dashboard's `app.orama.ing`.
 
 Each Ingress routes `/` on its host (Prefix) to its Service on the stack's ingress class, with origin
 TLS as above, and is controlled by the CR. The sandbox rule admits only ingress-nginx (never
-zetta-tunnel's ingress gateway, bridge decision 19 of 2026-10-17), only to this stack's pods; the internal-client rules and every egress
+zetta-tunnel's ingress gateway, of 2026-10-17), only to this stack's pods; the internal-client rules and every egress
 rule are unchanged. A read region never publishes its writer (it runs none). When an endpoint stops
 being published (host cleared, engine disabled, or the writer's region turned `read`), its Ingress and
 rule are removed and its DNS record is deleted, including on the disabled-engine teardown. An object
@@ -331,10 +330,10 @@ behaviour: zetta-tunnel's gateway cannot refuse a source and so serves none of t
 
 | Ingress | Host | Path | Backend |
 |---|---|---|---|
-| `v1-dev-writer` | `writer-dev.oramadev.net` | `/`, Prefix | `v1-dev-writer:8080` |
-| `v1-dev-writer-metrics` | `writer-dev.oramadev.net` | `/metrics`, Exact, deny all | `v1-dev-writer:8080` |
-| `v1-dev-reader` | `reader-dev.oramadev.net` | `/`, Prefix | `v1-dev-reader:80` |
-| `v1-dev-reader-metrics` | `reader-dev.oramadev.net` | `/metrics`, Exact, deny all | `v1-dev-reader:80` |
+| `v1-dev-writer` | `writer-dev.nonprod.example.com` | `/`, Prefix | `v1-dev-writer:8080` |
+| `v1-dev-writer-metrics` | `writer-dev.nonprod.example.com` | `/metrics`, Exact, deny all | `v1-dev-writer:8080` |
+| `v1-dev-reader` | `reader-dev.nonprod.example.com` | `/`, Prefix | `v1-dev-reader:80` |
+| `v1-dev-reader-metrics` | `reader-dev.nonprod.example.com` | `/metrics`, Exact, deny all | `v1-dev-reader:80` |
 
 With `writer.jwt` set, `https://<writer.host>` must be one of `writer.jwt.audiences`
 ([below](#speccomponentsenginewriterjwt)).
@@ -364,25 +363,25 @@ conflict. Deleting the CR removes its Ingresses and records through garbage coll
 endpoint's [`extraHosts`](#extra-hosts-extrahosts) get no record.
 
 With the worked example below (CR `v1-dev`, writer Ingress address `192.0.2.10`, reader `192.0.2.11`),
-the writer's Ingress routes `writer-dev.oramadev.net/` to `v1-dev-writer:8080`, the reader's
-`reader-dev.oramadev.net/` to `v1-dev-reader:80`, and `v1-dev-writer-dns` / `v1-dev-reader-dns`
+the writer's Ingress routes `writer-dev.nonprod.example.com/` to `v1-dev-writer:8080`, the reader's
+`reader-dev.nonprod.example.com/` to `v1-dev-reader:80`, and `v1-dev-writer-dns` / `v1-dev-reader-dns`
 point the hosts at `192.0.2.10` / `192.0.2.11`, proxied, with `secretRef: cloudflare-api-token`:
 
 ```yaml
 spec:
   region: {name: eu, role: primary}
-  jwtIssuer: https://app-dev.oramadev.net
+  jwtIssuer: https://app-dev.nonprod.example.com
   components:
     engine:
       enabled: true
       envoy: true
       writer:
-        host: writer-dev.oramadev.net
+        host: writer-dev.nonprod.example.com
         jwt:
-          audiences: [https://writer-dev.oramadev.net]
+          audiences: [https://writer-dev.nonprod.example.com]
       reader:
-        host: reader-dev.oramadev.net
-    dashboard: {enabled: true, host: app-dev.oramadev.net}
+        host: reader-dev.nonprod.example.com
+    dashboard: {enabled: true, host: app-dev.nonprod.example.com}
   cloudflare:
     enabled: true
     manageDNS: true
@@ -424,7 +423,7 @@ URL, the audiences, or setting or unsetting the block rolls the writer through
 Example for a CR named `v1-dev`:
 
 ```yaml
-jwtIssuer: https://app-dev.oramadev.net
+jwtIssuer: https://app-dev.nonprod.example.com
 components:
   dashboard:
     enabled: true
@@ -445,7 +444,7 @@ writer_side:
     providers:
       - name: dashboard
         jwks_url: "http://v1-dev-dashboard:3000/api/.well-known/jwks.json"
-        issuers: ["https://app-dev.oramadev.net"]
+        issuers: ["https://app-dev.nonprod.example.com"]
         audiences: ["https://writer.a.example", "https://writer.b.example"]
         refresh_interval: 1h
 ```
@@ -761,8 +760,7 @@ Every credential stays in a variable; failure messages replace `privateApiKey`, 
 Copies one Prod 1 team into the `OramaCloudV1` named by `spec.targetRef`, in the same namespace
 ([#653](https://github.com/oramasearch/orama-operator/issues/653)). Each step runs the
 `cloud-v1-migration` image's `run-step` as an owned Job, once per `(step, apply, attempt)`, and the
-tool's `status --json` becomes `status.result`. What it checks before a Job, the Job's environment,
-the migration role, the network paths and deletion: [`cloud-v1-migration.md`](cloud-v1-migration.md).
+tool's `status --json` becomes `status.result`.
 Short name `ocv1m`. Sample: [`../config/samples/oramacloudv1migration.yaml`](../config/samples/oramacloudv1migration.yaml).
 
 `targetRef`, `teamID`, `projectIDs`, `runID` and `source` cannot change after creation (CEL: *the
@@ -804,8 +802,8 @@ Print columns: Target, Step, Apply, Phase, Age. Status is written only on a real
 ## `OramaZettaCluster` (separate CRD) — step 1 of One Orama
 
 Deploys a **headless Orama Zetta cluster** (a StatefulSet of equal-peer CRDT nodes) from one CR — the
-first step of the [One Orama](https://github.com/oramasearch/orama-bridge/tree/main/docs/projects/one-orama)
-convergence ([orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)). It creates a
+first step of the One Orama
+convergence. It creates a
 **headless Service** (peer DNS on 7777), a **client Service** (the HTTP API on 4800 — MCP + REST +
 serving), and the **StatefulSet** (each node a per-node PVC at `/data`; `node-0` bootstraps, peers join
 it). With `spec.host` set it also fronts the host with an **nginx Ingress** and — when `spec.dnsSecretRef`
@@ -829,7 +827,7 @@ service. Sample: [`../config/samples/oramazettacluster.yaml`](../config/samples/
 | Field | Purpose |
 |---|---|
 | `spec.replicas` | Number of equal-peer headless zetta nodes (default 1). |
-| `spec.image` | Zetta-headless image (default `oramasearch/zetta:headless-v1-sandbox`), built by [`zetta-bridge/build/images/zetta-headless`](https://github.com/oramasearch/zetta-bridge/tree/main/build/images/zetta-headless). |
+| `spec.image` | Zetta-headless image (default `oramasearch/zetta:headless-v1-sandbox`), built by `zetta-bridge/build/images/zetta-headless`. |
 | `spec.pullSecretName` | Pull secret for the private zetta image. |
 | `spec.storage.size` / `.storageClassName` | Per-node PVC at `--data-dir` (`/data`) — the CRDT doc, `node_id`, certs, JSONL/large-object data. They shape the StatefulSet's claim template only when the StatefulSet is created: the template is immutable, so a later change is kept in the spec and never rewrites it. Whoever raises the size grows the existing claims in place (the Lake workspace reconciler does, operator#259); a replica added later starts at the template's size. While spec.storage differs from the template, `status.conditions[StorageTemplateCurrent]` is `False` with reason `ClaimTemplateUnchanged`, saying who grows the claims (the workspace reconciler, or nobody for any other cluster). |
 | _(pod security and volume ownership — automatic)_ | Zetta pods mount no ServiceAccount token, require non-root uid/gid/fsGroup 10001, use `RuntimeDefault` seccomp, disallow privilege escalation and drop all capabilities. `fsGroupChangePolicy: OnRootMismatch` avoids a recursive ownership change when a `/data` volume already has the correct group. This satisfies restricted Pod Security Admission when host networking is off. |
@@ -850,7 +848,7 @@ service. Sample: [`../config/samples/oramazettacluster.yaml`](../config/samples/
 | `spec.mcpTokenAuth` | **DEPRECATED / no-op** as of [zetta#799](https://github.com/oramasearch/zetta/issues/799). The engine made auth **mandatory** and removed the `--mcp-token` flag (passing it now crashes the node), so the operator no longer renders it or provisions a `<name>-zetta-mcp` Secret. Auth is enforced with the seeded admin token instead (see `spec.requireAuth`). Retained for API compatibility; setting it has no effect. |
 | `spec.requireAuth` | **DEPRECATED / no-op** as of [zetta#799](https://github.com/oramasearch/zetta/issues/799). The engine made auth **mandatory** and removed `--require-auth` — every node ALWAYS gates its HTTP/MCP/SQL surface on a bearer that resolves to a user; there is no unauthenticated/plaintext/legacy-shared-secret mode. The operator now **ALWAYS** mints a 64-hex admin token into Secret `<name>-zetta-admin` (key `token`, mint-once), injects it as env `ZETTA_ADMIN_TOKEN` on every node, from which the engine seeds the owner (never as `--admin-token`: argv is readable by every process on the node, [operator#279](https://github.com/oramasearch/orama-operator/issues/279); redacted to `****` in the pod log), authenticates its **own** Zetta SQL client + schema-provisioning Job with it, and the `ZettaClusterE2ETest` always runs its authz assertions (`ZETTA_E2E_REQUIRE_AUTH=1`). **Image requirement:** the target's image MUST be an **auth-capable build** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)) — the pre-#799 sandbox image rejects it. The field is retained for API compatibility; setting it has no effect (auth is enforced regardless). Sample: [`../config/samples/zetta-require-auth.yaml`](../config/samples/zetta-require-auth.yaml). |
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** When `true` **and** `spec.host` is set, the operator provisions the nginx Ingress (+ the Cloudflare DNS record below if `dnsSecretRef` is set), proxying the whole host to `:4800`. When `false` (or `host` empty) **nothing external is created and any previously created Ingress/DNS are torn down** — even if `host` is still set. Lets you keep `host` recorded while toggling exposure off, instead of overloading "empty host" as the off switch. |
-| `spec.host` | The **domain name** the API/UI (:4800) is exposed at (e.g. `zetta.oramadev.net`) when `ingressEnabled` is `true` — the whole host proxies to the node's `:4800`, so root `/` is the node's **web dashboard** and other paths are MCP/REST/serving. Requires an ingress controller. Names the endpoint; `ingressEnabled` is the on/off switch. |
+| `spec.host` | The **domain name** the API/UI (:4800) is exposed at (e.g. `zetta.nonprod.example.com`) when `ingressEnabled` is `true` — the whole host proxies to the node's `:4800`, so root `/` is the node's **web dashboard** and other paths are MCP/REST/serving. Requires an ingress controller. Names the endpoint; `ingressEnabled` is the on/off switch. |
 | `spec.ingressClassName` | `nginx` (default) or `zetta-tunnel`: which ingress serves the cluster's Ingress; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)). |
 | `spec.dnsSecretRef.name` | With `ingressEnabled` + `spec.host`, create a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord` CR, using the named Secret (keys `token`/`zoneID`/`accountID`) — normally the same `cloudflare-api-token` Secret the `OramaCloudV1` uses. |
 | `spec.capacity.karpenter.enabled` | **Default `false`. Opt-in elastic node capacity** ([operator#69](https://github.com/oramasearch/orama-operator/issues/69), first slice). When `true`, the operator owns a Karpenter **`NodePool`** and pins the Zetta pods onto it (a dedicated taint `orama.cloud/zetta:NoSchedule` + toleration and the `orama.cloud/zetta-pool` nodeSelector), so raising `spec.replicas` past current node capacity leaves pods **Pending → Karpenter provisions matching nodes just-in-time →** the new pods schedule and join the CRDT cluster. Scheduling-driven scale-up; the Zetta-signal-driven trigger (`orama_control.scale_requests`) is a later slice. |
@@ -874,9 +872,9 @@ service. Sample: [`../config/samples/oramazettacluster.yaml`](../config/samples/
 | `status.identity` | `adminTokenGeneration` (the generation in `<name>-zetta-admin`), `clusterCA` (the enrollment CA's public key given as `ZETTA_CLUSTER_CA`) and `clusterCASource` (`Operator`: a seed in `<name>-zetta-cluster-ca` the nodes hold; `Members`: the CA the nodes generated, read from node 0's join command; `Sibling`: another slice's). See [the enrollment CA](zetta-cluster-mtls.md#the-enrollment-ca). |
 | `PeerAddressesValid` condition | Whether every peer address the slice uses is a valid `host:port` ([operator#279](https://github.com/oramasearch/orama-operator/issues/279)). `True`/`Valid` normally. `False`/`InvalidSpecPeerAddress`: an invalid `spec.externalPeers` or `spec.wanAddress` — the StatefulSet is not updated until the spec is fixed and `status.phase` is `Degraded`. `False`/`InvalidTopologyPeerDropped`: rows read from the shared `orama_control.topology` table carried invalid addresses; they were dropped (quoted in the message) and the cluster reconciles with the remaining peers. Left unchanged on a round where the topology could not be read, so a flaky read does not flap it — except a stale `InvalidSpecPeerAddress`, which clears as soon as the spec is valid. Values in the message are Go-quoted (no raw newlines). |
 
-**Live (`oramadev.net` sandbox):** `GET https://zetta.oramadev.net/` returns the node's **web dashboard**,
-and `GET https://zetta.oramadev.net/v1/server_info` returns the node's server info from the Zetta API —
-both through Cloudflare (proxied), the same reachability path as `app.oramadev.net` → the dashboard.
+**Live (`nonprod.example.com` sandbox):** `GET https://zetta.nonprod.example.com/` returns the node's **web dashboard**,
+and `GET https://zetta.nonprod.example.com/v1/server_info` returns the node's server info from the Zetta API —
+both through Cloudflare (proxied), the same reachability path as `app.nonprod.example.com` → the dashboard.
 
 ## `ZettaClusterE2ETest` (separate CRD)
 
@@ -965,9 +963,9 @@ No ID means no Cloudflare calls. Missing credentials with an ID retain the final
 and retry in five minutes. Install this CRD update through the approved rollout
 mechanism before the controller, so Kubernetes preserves `ownerComment`.
 
-The `app.orama.com` cutover repoint is a reviewed Cloudflare change in the bridge
-[cutover runbook](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md),
-listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
+The `app.example.com` cutover repoint is a reviewed Cloudflare change in the bridge
+cutover runbook,
+listed in production changes.
 The operator cannot adopt that existing record.
 
 ## `CloudflareR2Bucket` (separate CRD, namespaced) — an R2 bucket, its deletion policy and scoped credentials
@@ -990,7 +988,7 @@ A Cloudflare-enabled stack with the dashboard enabled owns `<cr>-uploads`, with 
 `<cr>-uploads-r2`, PUT CORS for the dashboard host and extra hosts, seven-day expiry, and deletion
 policy `Delete` because these objects are import staging. The dashboard, crawler and import consumer
 share the one bucket-scoped token. The dashboard's references are optional to preserve startup before
-provisioning succeeds; when the Secret appears its credential hash rolls the dashboard onto R2. See [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
+provisioning succeeds; when the Secret appears its credential hash rolls the dashboard onto R2.
 
 On deletion the finalizer revokes the bucket token whatever the policy, and deletes the bucket only
 with `Delete`.
@@ -998,7 +996,7 @@ with `Delete`.
 ## `StatusPage` (separate CRD, namespaced) — external checks, alerts and a public status page
 
 Checks public endpoints from the operator that holds the resource, alerts when a component changes
-state, and writes a static page to a bucket. Runbook and the lake.live page:
+state, and writes a static page to a bucket. Runbook and the lake.example.com page:
 [`infrastructure/status-pages.md`](infrastructure/status-pages.md).
 
 | Field | Meaning |
@@ -1098,7 +1096,7 @@ lake#798), and Always Use HTTPS, each done only when its check passes, and never
 | `status.authenticatedOriginPulls`, `status.originClientCAPEM` | Whether the edge presents a client certificate that `originClientCAPEM` verifies, and that bundle: Cloudflare's global origin-pull CA and the zone's CA until the zone presents its own certificate, then the zone's CA alone. Lake Ingresses require the certificate once this is on. False while the zone may present a certificate of another CA. |
 | `status.zoneOriginPulls` | Whether the edge presents the zone's own client certificate, signed by the zone's CA (zone-level authenticated origin pulls). |
 | `status.alwaysUseHTTPS` | Whether the edge redirects plain HTTP. |
-| `status.zone` | The zone's name (`lake.live`), read with Zone > Zone > Read. The owning Lake's `Issuer` solves DNS-01 for this zone and every name under it, and HTTP-01 for any other name; empty keeps DNS-01 for every name ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). A refused read keeps the last name. |
+| `status.zone` | The zone's name (`lake.example.com`), read with Zone > Zone > Read. The owning Lake's `Issuer` solves DNS-01 for this zone and every name under it, and HTTP-01 for any other name; empty keeps DNS-01 for every name ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). A refused read keeps the last name. |
 | `status.proxiedHosts`, `status.hosts[]` | How many proxied hosts the zone has, and up to 50 that fail a check: `{name, origin, edge}` with the reason for each leg. |
 | `status.conditions` | `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`, `AuthenticatedOriginPulls`, `ZoneOriginPulls` (zone-level pulls on, or what they wait for), `EdgeCertificateOrders` (the edge certificates ordered, pending, or why an order is refused), `AlwaysUseHTTPS`, `ZoneName` (False names the missing Zone > Zone > Read; it does not change the phase). |
 
@@ -1181,8 +1179,7 @@ a zone the token can read):
 
 ## `PaymentProvider` (separate CRD, namespaced) — the vendor, account and key for payment resources
 
-Principle 10's provider resource for the payment kinds (operator#637, the Stripe epic
-orama-bridge#199). It checks its key against the vendor and changes nothing there. Short name
+Principle 10's provider resource for the payment kinds (operator#637). It checks its key against the vendor and changes nothing there. Short name
 `payprov`; `kubectl get payprov -A` shows `Type`, `Account`, `Live`, `Credentials`, `Reason`.
 The check, its reasons and the Secret it reads are in
 [`infrastructure/payments.md`](infrastructure/payments.md).
@@ -1305,7 +1302,7 @@ Sample: [`../config/samples/cloudflareloadbalancer.yaml`](../config/samples/clou
 | Field | Purpose |
 |---|---|
 | `spec.secretRef` | Secret with the Cloudflare credentials (keys `token`/`zoneID`/`accountID`) — normally the `cloudflare-api-token` Secret. |
-| `spec.hostname` | The FQDN the load balancer answers on (e.g. `zetta.oramadev.net`). Cloudflare owns this DNS entry — do **not** also manage it with a `CloudflareDNSRecord`. |
+| `spec.hostname` | The FQDN the load balancer answers on (e.g. `zetta.nonprod.example.com`). Cloudflare owns this DNS entry — do **not** also manage it with a `CloudflareDNSRecord`. |
 | `spec.steeringPolicy` | `off` (failover order) `\| geo` (by region via `regionPools`) `\| dynamic` (by measured latency; sent as `dynamic_latency`) `\| proximity` (nearest origin) `\| random`. Default `geo`. |
 | `spec.fallbackPool` | Pool name (`pools[].name`) used as the last resort when all default pools are unhealthy. Empty = the last declared pool. |
 | `spec.regionPools` | Map of Cloudflare region code (e.g. `ENAM`, `WEUR`) → ordered list of pool names — for `geo` steering. |
@@ -1602,7 +1599,7 @@ with the native bearer/session token still the on-prem fallback. A node with no 
 bearer-only.
 ## `Lake` (separate CRD, cluster-scoped) — the lake service
 
-Deploys **lake** — the hosted service behind `lake.live` (control plane on Postgres via CNPG, data plane on Zetta) (forge, drive, platform, identity, secrets,
+Deploys **lake** — the hosted service behind `lake.example.com` (control plane on Postgres via CNPG, data plane on Zetta) (forge, drive, platform, identity, secrets,
 PKI, registry and search over one content-addressed store; specified in
 [`oramasearch/liquid`](https://github.com/oramasearch/liquid) `docs/features/18-lake-service.md`) — from
 one **cluster-scoped** CR. It creates the target **Namespace** (if missing; not owned, so deleting a
@@ -1647,12 +1644,12 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | _(schema — automatic)_ | With Postgres on and an image that has `lake manifest` (lake#1147 onward), the Lake reads the image's manifest once (Job `lake-<name>-manifest`, cached in `status.imageManifest`) and owns a `lake-<name>-controldb-schema` **`PostgresSchema`** with `spec.migrate` running `lake migrate --wait-seconds 600` from the image by digest, versioned `image:<digest>`; see [the schema guide](lake/schema.md#a-lake-release-is-only-its-image-orama-operator936) ([#936](https://github.com/oramasearch/orama-operator/issues/936)). For an older image, the Lake owns a `lake-<name>-controldb-migrations` ConfigMap holding lake's control-plane schema (vendored byte-identical from `oramasearch/lake` `db/schema.sql`) and a `lake-<name>-controldb-schema` **`PostgresSchema`** that applies it in one transaction, guarded on the newest migration table (`workspace_volumes_guard` for `0069_workspace_volumes`) plus every migration the file records being present in `schema_migrations`, and versioned by a hash of SQL plus guard. Schema completion gates Deployment creation and updates. Re-vendor lake `db/schema.sql` unchanged, update the pinned source and guard, and run the checks in [the schema guide](lake/schema.md). Incremental migrations remain #126. |
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. The Ingress permits `64m` request bodies and disables request/response buffering for Lake's streaming transfers. |
 | `spec.tls.secretName` | Optional hand-supplied `kubernetes.io/tls` Secret in `spec.namespace` for `host` and `apexHost`. Empty (the normal case) uses the certificates the operator issues: every Lake Ingress serves HTTPS either way. Without it, the Lake's `Issuer` issues every host: DNS-01 in the `dnsSecretRef` zone, HTTP-01 for any other host and for a Lake with no `dnsSecretRef` ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). See [`lake/origin-tls.md`](lake/origin-tls.md). |
-| `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
+| `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.example.com`) when `ingressEnabled` is `true`. |
 | `spec.ingressClassName` | `nginx` (default) or `zetta-tunnel`: which ingress serves the Lake's Ingress and its environments'. DNS follows, because it is written from the Ingress's address. The per-cluster cutover sets it in the cluster's set member ([`infrastructure/ingress.md`](infrastructure/ingress.md)). |
-| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`, for names in the zone; other names and a Lake without `dnsSecretRef` use HTTP-01), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit, **Zone > Zone Settings > Edit**, Zone > Zone > Read and **Zone > SSL and Certificates > Edit** (edge certificates for app hosts, lake#798, and zone-level authenticated origin pulls, operator#633). |
-| `spec.region` | `{name, label}`: where the Lake runs, for its region picker (decision 64). Rendered as `LAKE_REGION` and `LAKE_REGION_LABEL`. In a LakeSet, `name` comes from the member's cluster ([`lake/README.md#regions`](lake/README.md#regions)). |
+| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.example.com` host needs a `lake.example.com`-zone Secret, not the `nonprod.example.com` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`, for names in the zone; other names and a Lake without `dnsSecretRef` use HTTP-01), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit, **Zone > Zone Settings > Edit**, Zone > Zone > Read and **Zone > SSL and Certificates > Edit** (edge certificates for app hosts, lake#798, and zone-level authenticated origin pulls, operator#633). |
+| `spec.region` | `{name, label}`: where the Lake runs, for its region picker. Rendered as `LAKE_REGION` and `LAKE_REGION_LABEL`. In a LakeSet, `name` comes from the member's cluster ([`lake/README.md#regions`](lake/README.md#regions)). |
 | `spec.regions` | The deployment's regions as the picker offers them, `[{name, label, host, latitude, longitude}]`, rendered as `LAKE_REGIONS` (JSON). A LakeSet computes it from its members. |
-| `spec.apexHost` | A second host the Lake answers (the region picker, e.g. `lake.live`). With `ingressEnabled` + `host`, adds an Ingress rule (and TLS host) and, with `dnsSecretRef`, an owned proxied `<lake>-apex-dns` record; rendered as `LAKE_APEX_HOST`. Removing it removes both. |
+| `spec.apexHost` | A second host the Lake answers (the region picker, e.g. `lake.example.com`). With `ingressEnabled` + `host`, adds an Ingress rule (and TLS host) and, with `dnsSecretRef`, an owned proxied `<lake>-apex-dns` record; rendered as `LAKE_APEX_HOST`. Removing it removes both. |
 | `spec.customDomain.host` | A host in a zone the **customer** owns (white label, [operator#947](https://github.com/oramasearch/orama-operator/issues/947)). Needs `host` and `ingressEnabled`; must differ from `host` and `apexHost`; `spec.env` may not then set `LAKE_PUBLIC_HOST`, `LAKE_HOST_ALIASES` or `LAKE_CONTROL_HOST` (CEL). The operator writes no record in the customer's zone: it publishes a routing CNAME (to the DNS-only origin record `<host label>.origin.<zone>` it keeps as an owned `CloudflareDNSRecord` `lake-<name>-custom-domain-origin`, or to the load balancer without `dnsSecretRef`) and an ownership TXT `_orama-verification.<host>` in `status.customDomain.records`, looks both up, and once both are found creates the Ingress `lake-<name>-custom-domain` (no Cloudflare edge settings) and a `Certificate` `<host>-tls` solved with HTTP-01. Once that is `Ready` it renders `LAKE_PUBLIC_HOST=<customer host>`, `LAKE_HOST_ALIASES=<host>` and `LAKE_CONTROL_HOST=<host>`. Clerk allows the customer origin once verified, and a Clerk production instance's records in the customer's zone are published, not written. Condition `CustomDomainReady`. Removing it removes the Ingress, the certificate, its Secret and the origin record. See [`lake/custom-domains.md`](lake/custom-domains.md). |
 | `spec.clerk.secretKeySecretRef.name` | A Secret in `spec.namespace` holding a Clerk instance's Backend API secret key (key `secretKey`, optional `publishableKey`). The operator keeps the instance configured for lake through the Backend API (the `lake` JWT template, the host and apex as allowed origins, a webhook endpoint at `https://<host>/identity/clerk-webhook`), writes a production instance's DNS records as owned, unproxied, `Retain` `CloudflareDNSRecord`s with `dnsSecretRef`, and renders the reserved `LAKE_CLERK_PUBLISHABLE_KEY`, `LAKE_CLERK_SECRET_KEY` (from this Secret's `secretKey`) and `LAKE_CLERK_WEBHOOK_SECRET` (from the owned Secret `lake-<name>-clerk`). Condition `ClerkReady`. Without `spec.clerk` nothing changes. See [`lake/clerk.md`](lake/clerk.md) ([operator#541](https://github.com/oramasearch/orama-operator/issues/541)). |
 | `spec.payments` | `{mode, secretRef}`: the Stripe account the Lake bills through ([operator#639](https://github.com/oramasearch/orama-operator/issues/639)). `mode` is `test` or `live`; `secretRef.name` is a Secret in `spec.namespace` with `accountID` (`acct_…`), `operatorKey` and `appKey`, both keys of `mode`. Requires `spec.host` and `spec.billing.enabled: true` (the API server refuses it otherwise). The Lake owns a `PaymentProvider` and a `PaymentWebhookEndpoint` `lake-<name>-payments` (`https://<host>/billing/stripe/webhook`, Lake's invoice and Checkout events, `apiVersion: 2024-06-20`, signing secret in `lake-<name>-payments-webhook`) and a `PaymentCatalog` `lake-<name>-catalog` (`lake_usage`, `lake_private_warehouse`, `lake_dedicated_cluster`, no prices), checks that `appKey` sees `lake_usage`, and once all of that is in place renders the reserved `LAKE_STRIPE_SECRET_KEY` (`appKey`) and `LAKE_STRIPE_WEBHOOK_SECRET` (`signingSecret`), with pod annotation `orama.cloud/payments-secret-hash`. Condition `PaymentsReady`; a payments failure never fails the Lake. Removing it deletes the endpoint before the provider. Without `spec.payments` nothing changes. See [`lake/payments.md`](lake/payments.md). |
@@ -1660,7 +1657,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.previewWildcard` | DNS suffix for preview environments. `preview.example.com` yields `<change-short>.preview.example.com`; with Lake ingress and DNS enabled, the Lake owns one `*.preview.example.com` Cloudflare record and previews do not create records per change. |
 | _(every feature — no switch)_ | **Every `Lake` runs every feature** ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)): apps, builds, methodology runs and deployments, agents (the whole Agent Library and user-created launches and schedules), managed services and stores, workspaces, connections, egress rules, tunnels, peers and volume snapshots. There is no per-Lake `enabled` field; the old `apps`, `builds`, `services`, `workspaces` and `snapshots` `enabled` fields were removed and the CRD prunes stored values. Every image has an operator default, one table in `internal/controller/lake_defaults.go` (listed in [`lake/README.md`](lake/README.md#default-images)); a spec image overrides its default. The one prerequisite is the control Postgres (`spec.postgres.enabled`, default `true`): without it, condition `FeaturesReady` is `False` with reason `PostgresDisabled` and names the features that cannot run. |
 | `spec.apps.runtimeImage` | Private app-runtime image used by `LakeApp` resources in runtime mode. Empty uses the operator default (`internal/controller/lake_defaults.go`). Injected into lake as the reserved `LAKE_APPS_RUNTIME_IMAGE`, which lake uses as the base image for generated app builds. Apps-table synchronization from Lake control Postgres uses `lake_apps` notifications and a 60-second fallback list. |
-| `spec.apps.wildcard` | DNS suffix for apps. An app without `spec.host` uses `<app>.<wildcard>`. **Empty uses the Lake's `spec.host`**, so an app is `<app>.<lake host>` (`myapp.lake-dev.oramadev.net`); HTTPS on such two-level names needs a certificate per zone ([#515](https://github.com/oramasearch/orama-operator/issues/515)). The operator injects it into lake as `LAKE_APPS_WILDCARD`; an explicit `spec.env` entry wins and is rendered once. With `dnsSecretRef`, the shared `*.<wildcard>` DNS record is owned by the apps-table sync path. |
+| `spec.apps.wildcard` | DNS suffix for apps. An app without `spec.host` uses `<app>.<wildcard>`. **Empty uses the Lake's `spec.host`**, so an app is `<app>.<lake host>` (`myapp.lake-dev.nonprod.example.com`); HTTPS on such two-level names needs a certificate per zone ([#515](https://github.com/oramasearch/orama-operator/issues/515)). The operator injects it into lake as `LAKE_APPS_WILDCARD`; an explicit `spec.env` entry wins and is rendered once. With `dnsSecretRef`, the shared `*.<wildcard>` DNS record is owned by the apps-table sync path. |
 | `spec.apps.ingressClass` | Ingress class for apps; empty defaults to `nginx`. |
 | `spec.builds` | Every Lake reconciles lake's in-cluster build rows; lake gets its Service address as `LAKE_INTERNAL_URL`, which it uses as the registry authority. Each queued row becomes one isolated rootless BuildKit Job. See [`lake/builds.md`](lake/builds.md). |
 | `spec.builds.builderImage` | Private `oramasearch/lake-builder:<tag>` image used for every build. Empty uses the operator default (`internal/controller/lake_defaults.go`). When `spec.pullSecretName` is set, the operator copies that Secret from the Lake namespace to each build namespace as `builder-pull`; the Job references the local copy because image pull Secrets cannot cross namespaces, mounts its `.dockerconfigjson` read-only at `/etc/lake-builder/pull/.dockerconfigjson`, and sets `BASE_REGISTRY_AUTH` to that path for private base-image pulls. With no Lake pull Secret, the auth mount and environment variable are absent. |
@@ -1677,7 +1674,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.agents.openaiSecretName` | A Secret in `spec.namespace` with `OPENAI_API_KEY`, the general Orama key; people provide it. Only the library agents in `spec.namespace` get it: it is never copied into a workspace namespace or given to a launch or schedule pod, and copies an earlier operator made are deleted ([orama-operator#779](https://github.com/oramasearch/orama-operator/issues/779), `docs/lake/agents.md`). |
 | `spec.agents.model` | The frontier model agents default to (default `gpt-6.1-sol`). |
 | `spec.agents.jobDeadlineSeconds` | `activeDeadlineSeconds` of a job launch (default 3600, minimum 60). |
-| `spec.services` | Managed services, run by every Lake ([`lake/services.md`](lake/services.md), liquid-bridge decision 46); needs `spec.postgres` enabled. Every row requires `workspace_id` and joins the operator-written workspace namespace; there is no Lake-namespace fallback. The operator creates the selected Zetta, Postgres, catalog, SQLite, DuckDB or Polars resource there with Lake, workspace, customer, service and kind labels. The Zetta named by `workspaces.zetta_service_id` is excluded because the workspace reconciler owns its cluster and status. Connections are projected into Lake's trusted `lake-<name>-services` Secret for the control plane. Status is generation guarded. An `absent` row irreversibly removes only resources that pass ownership checks. See the service guide for catalog resources, readiness, credentials and deletion order. |
+| `spec.services` | Managed services, run by every Lake ([`lake/services.md`](lake/services.md)); needs `spec.postgres` enabled. Every row requires `workspace_id` and joins the operator-written workspace namespace; there is no Lake-namespace fallback. The operator creates the selected Zetta, Postgres, catalog, SQLite, DuckDB or Polars resource there with Lake, workspace, customer, service and kind labels. The Zetta named by `workspaces.zetta_service_id` is excluded because the workspace reconciler owns its cluster and status. Connections are projected into Lake's trusted `lake-<name>-services` Secret for the control plane. Status is generation guarded. An `absent` row irreversibly removes only resources that pass ownership checks. See the service guide for catalog resources, readiness, credentials and deletion order. |
 | `spec.services.maxServices` | Cap on live services for this Lake (`int32`, minimum `0`). `0` is unlimited. A **new** service past the cap creates nothing and is `Failed` with message `service quota reached (<n>)`; it starts on a later poll once there is room. Existing services are never refused or removed. Workspace count has its own `spec.workspaces.maxWorkspaces`. |
 | `spec.services.zettaImage` | Image for Zetta services and workspace Zettas. Empty falls back to `spec.workspaces.image`, then the operator default (`internal/controller/lake_defaults.go`). |
 | `spec.services.zettaEnv[]` | Kubernetes `EnvVar` entries copied to `spec.env` on every managed Zetta service, including the workspace-owned cluster through the workspace reconciler, followed by the operator's default Zetta env for each name the list does not set (`ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864`, `MALLOC_ARENA_MAX=2`, and `ZETTA_EGRESS_ALLOW` rendered for each Zetta from the EgressRules, Connections and `internetEgress` its workspace NetworkSandbox carries for it; see [egress rules](infrastructure/egress-rules.md#a-lake-zettas-own-allowlist-defense-in-depth)). Last comes `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`, always the operator's (a stated value is dropped): the exact `host:port` of each postgres, tidb, sqlite, duckdb and polars service in the Zetta's workspace namespace, empty when there are none ([connector destinations](infrastructure/egress-rules.md#a-workspace-zettas-approved-connector-destinations), [#882](https://github.com/oramasearch/orama-operator/issues/882)). Changes roll each service cluster's StatefulSet. Reserved-name handling and collision status follow the `OramaZettaCluster` contract. |
@@ -1992,7 +1989,7 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). A `LakeSet` also copies one Secret on its own: each member whose `dnsSecretRef` names a Secret the set copies gets its zone's origin-pull Secret `orama-edge-origin-pull-<zone ID>` (CA certificate and client certificate, never the CA key), which the set creates once in the operator's namespace on this cluster and renews; it is labelled with the purpose of the first member that needed it and refused for a member of another purpose ([operator#633](https://github.com/oramasearch/orama-operator/issues/633), [`lake/origin-tls.md`](lake/origin-tls.md#zone-level-authenticated-origin-pulls-the-operators-own-certificate)). A Secret listed under that name is replaced by it. |
 | `spec.clusters[]` | The members, 1 to 64. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). The cap of 64 holds for both kinds because they share this shape: the `OramaCloudV1Set` rule that each migration names one member loops over the members, and the API server refuses a CEL rule over an unbounded list. |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
-| `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members ([`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)). `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |
+| `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members. `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |
 | `spec.e2eTests[]` | `LakeSet` only, at most 16, keyed by `name`: lake's end-to-end suite run against a member, the testing → staging gate of a substantial lake release ([#589](https://github.com/oramasearch/orama-operator/issues/589); [`lake/README.md#service-e2e`](lake/README.md#service-e2e)). Each becomes a cluster-scoped [`LakeE2ETest`](#lakee2etest-separate-crd-cluster-scoped) named `name` (DNS label, at most 52) on the member's cluster, labelled `orama.cloud/managed-by-set=LakeSet.<set>`. `member` names exactly one `clusters[].name` (CEL: *every e2eTests[].member must name exactly one clusters[].name*). `spec` is the `LakeE2ETest`'s spec without `member` and `targetRef`: the set fills in `member` as `{lakeSet: <set>, name: <member>}`, and refuses a `targetRef` or a different `member`. A Secret it names (`LAKE_E2E_CLERK_SECRET_KEY` from `clerk-secret-key`) must be in the member's namespace, which the set's or the member's `secrets` provide; the entry copies none of its own. Applying the entry starts a run; changing its `spec` (`runID`) starts another; removing it deletes the test and its Job there; deleting the set deletes its tests first. |
 | `status.phase` | `Ready` (every member `Ready`), `Progressing`, or `Degraded` (the set was refused, or a member failed). |
 | `status.purpose` | The `purpose` tag all the members' clusters share. A set whose clusters differ in purpose, or lack one, applies nothing. |
@@ -2010,9 +2007,9 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 ### Production credentials never reach a nonprod member
 
 [orama-operator#787](https://github.com/oramasearch/orama-operator/issues/787) and
-[#789](https://github.com/oramasearch/orama-operator/issues/789) (findings LSR-038 and LSR-040 of the
+[#789](https://github.com/oramasearch/orama-operator/issues/789) (findings and of the
 Lake pre-launch security review), and [#790](https://github.com/oramasearch/orama-operator/issues/790)
-(LSR-041: lake-nonprod copied lake-prod's Stripe and OpenAI Secrets). Before copying a Secret into a member (as a set, member or
+(lake-nonprod copied lake-prod's Stripe and OpenAI Secrets). Before copying a Secret into a member (as a set, member or
 migration Secret), the operator refuses it, and copies nothing for that member or migration, when:
 
 | The Secret on the managing cluster | Refused for a member whose cluster is |
@@ -2047,7 +2044,7 @@ the managing cluster only, and a `KubernetesCluster`'s kubeconfig is written the
 `config/clusters/sets/` and `config/clusters/<cluster>/operator.yaml`: no Secret source is named by
 sets or `OramaOperator`s of two purposes.
 
-## `LakeOrderSource` (separate CRD, cluster-scoped) — paid lake.live orders
+## `LakeOrderSource` (separate CRD, cluster-scoped) — paid lake.example.com orders
 
 Short name `lorders`. Provisions the paid orders a `LakeSet`'s Lakes record in lake's `cloud_orders`
 ([operator#634](https://github.com/oramasearch/orama-operator/issues/634), lake#831). Design:

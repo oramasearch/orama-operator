@@ -89,7 +89,7 @@ refuses such an update with `CustomKubeletConfigOrCustomLinuxOSConfigCanNotBeCha
 guide says node image upgrades reapply the configuration and scale-out preserves it.
 
 An existing cluster therefore gets the setting only through a pool created with it. How the
-operator does that is designed in [#579](https://github.com/oramasearch/orama-operator/issues/579), awaiting Steve's approval, in
+operator does that is designed in [#579](https://github.com/oramasearch/orama-operator/issues/579), awaiting the maintainers' approval, in
 [node-pool replacement](node-pool-replacement.md): replacing and draining the shared pools
 cannot finish because the writer and data stores have `maxUnavailable: 0` budgets, so the
 recommendation is to add a reader pool with the setting and place the readers on it. Until that
@@ -98,7 +98,7 @@ is approved and implemented, the setting reaches only clusters created after it 
 ## Which pools
 
 Readers have no node placement today, so they can run on any pool: `agentpool` and `userpool`
-on `orama-nonprod-cluster-01`, `orama-production-cluster-02` and `orama-production-cluster-03`.
+on `example-nonprod`, `example-production-eu` and `example-production-us`.
 Declaring `vm.max_map_count: 4194304` on both pools of each cluster is the change that would
 cover them without placement. It is not committed: applied today it would only turn `InSync`
 False, and a file that differs from what is applied is state the repository misstates. With the
@@ -117,8 +117,8 @@ by whoever holds Prod 1 access: `/proc/sys/vm/max_map_count`, the reader process
 and its line count in `/proc/<pid>/maps`, twice at least an hour apart. Keep customer paths and
 command-line secrets out of what is recorded.
 
-Roll out through the resources in `config/clusters/`: `orama-nonprod-cluster-01` first, then,
-with production approval, `orama-production-cluster-02` and `orama-production-cluster-03`.
+Roll out through the resources in `config/clusters/`: `example-nonprod` first, then,
+with production approval, `example-production-eu` and `example-production-us`.
 Verify the node kernel value (`/proc/sys/vm/max_map_count` from a pod on the pool), that readers
 run on the configured pool, and `InSync=True`. No cluster resource or live setting was changed
 for this implementation.

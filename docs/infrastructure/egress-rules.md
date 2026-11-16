@@ -214,7 +214,7 @@ Separately from egress, a Zetta dials a **private or loopback connector source**
 MySQL-protocol TiDB, or one of lake's SQLite, DuckDB and Polars services) only when
 `ZETTA_CONNECTOR_ALLOW_DESTINATIONS` names it as an exact `host:port`, comma-separated. Metadata and
 link-local addresses are refused whatever it says (zetta
-[#1469](https://github.com/oramasearch/zetta/pull/1469), LSR-241,
+[#1469](https://github.com/oramasearch/zetta/pull/1469),
 [zetta#1414](https://github.com/oramasearch/zetta/issues/1414)). Without the variable, a workspace's
 in-cluster sources stop working once a Zetta image with that change rolls.
 
@@ -273,6 +273,6 @@ nothing read before `network_guard`. The opt-in `TestEgressRulesPgxStoreAgainstP
 0084 egress tables itself. The opt-in `TestEgressGatewayAgainstZettaTunnel` runs the real
 zetta-tunnel binary (commit 933d6fc, the image's) with the operator's arguments and snapshot.
 
-The named acceptance probe on `orama-nonprod-cluster-01` is deferred to rollout: a workload with a
+The named acceptance probe on `example-nonprod` is deferred to rollout: a workload with a
 name rule reaches the name through the gateway, is refused another name (including one resolving to
 the same address) and an IP literal, and reaches an address directly only with a CIDR rule.

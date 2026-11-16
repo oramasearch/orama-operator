@@ -37,7 +37,7 @@ only asks for "the operator Zetta service URL".
 
 ## The row contract: lake's format, the operator conforms
 
-[operator#560](https://github.com/oramasearch/orama-operator/issues/560), decided by Steve on 2026-10-17:
+[operator#560](https://github.com/oramasearch/orama-operator/issues/560):
 lake's format is the contract and the operator conforms. lake's side is
 `include/lake/control/zetta_control.hpp` (the columns), `src/control/platform.cpp` (`PlatformService::sync`,
 the reads and the row order) and `docs/api/platform.md` in `oramasearch/lake`. The operator's copy of
@@ -114,7 +114,7 @@ the newest row per `(repository, environment, host)`:
 - **Platform hosts are refused** (#776), whatever lake accepted. For every Lake on the cluster, a domain
   may not equal or be beneath its `spec.host`, its `LAKE_PUBLIC_HOST`, its `spec.apexHost`, its apps
   wildcard, its preview wildcard, or, when it has a `dnsSecretRef`, the zone of each of its hosts (the
-  host's registrable domain: `lake.live` for `eu.lake.live`, `oramadev.net` for `lake-dev.oramadev.net`),
+  host's registrable domain: `lake.example.com` for `eu.lake.example.com`, `nonprod.example.com` for `lake-dev.nonprod.example.com`),
   because that zone is where the operator writes records with the Lake's token. A domain equal to a
   `LakeApp`'s host, to another environment's named host, or to a domain of another Lake's environment is
   refused too. A Lake on its own corporate zone therefore cannot route tenant domains in that zone: name
@@ -142,7 +142,7 @@ proxy in front of it. `tls` is carried in `spec.domains` for when the Ingress te
 
 ## Control-plane model
 
-Liquid-bridge decision 22 makes Zetta, not Lake's HTTP API, the deployment intake path. An
+Liquid-makes Zetta, not Lake's HTTP API, the deployment intake path. An
 `OramaZettaCluster` with `spec.provisionOperatorSchema` enabled creates the append-only
 `orama_control` tables. The deployment contract writes one `desired` row; the operator reads lake's
 three tables over Zetta's authenticated `/v1/sql` capability and creates or updates a `LakeEnvironment`.
@@ -179,7 +179,7 @@ cluster-scoped Namespace or objects in another namespace through Kubernetes owne
 object carries `orama.cloud/lake-environment=<cr-namespace>/<cr-name>` and teardown is guarded by a
 finalizer that verifies that exact annotation before deleting the Namespace.
 
-The Namespace profile matches k0s decision 31:
+The Namespace profile matches the liquid k0s distribution's multi-tenancy model:
 
 - `liquid.oramasearch.com/environment=true`, which selects both k0s environment admission policies;
 - Pod Security Standards `restricted` in enforce, audit and warn modes, all at `latest`;
@@ -258,8 +258,7 @@ label and a `LakeSealedSecret` controller reference; the Pod policy requires the
 volume and environment references. Neither policy validates owner existence, the referenced Secret,
 or the annotation's author.
 
-Under [liquid-bridge decision 38](https://github.com/oramasearch/liquid-bridge/blob/main/docs/decisions.md#38-who-may-write-secrets-in-a-liquid-environment--decided-steve-2026-09-07-rbac-is-the-control-admission-is-defence-in-depth),
-RBAC is authoritative and admission is defence in depth. The
+Who may write secrets in a liquid environment: RBAC is authoritative and admission is defence in depth. The
 [k0s tenant contract at PR #41](https://github.com/oramasearch/k0s/blob/cc922054ad10fd1991ab1077bb8a2c3bf3eeeae2/docs/liquid/platform-surface.md#environment-policy)
 grants the `liquid:tenant:<namespace>` group workload lifecycle and selected reads, with **no Secret
 access**. The profile's RoleBinding must be the tenant's only grant there: RBAC is additive. The

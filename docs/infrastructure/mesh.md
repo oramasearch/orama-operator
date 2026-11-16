@@ -26,7 +26,7 @@ installation paths install the operator chart; the image is `networking.zettaTun
 
 Workloads stay under restricted Pod Security with no `NET_ADMIN`; only the agent is privileged.
 
-**A node receives only its own workloads' keys** (orama-operator#788, finding LSR-039 of the Lake
+**A node receives only its own workloads' keys** (orama-operator#788, finding of the Lake
 pre-launch security review). The kubelet fetches a Secret only for a pod bound to its node that
 mounts it, and the node authorizer refuses it any other, so root on one node, by container escape,
 reads the private keys of the workloads on that node and no other's. Until #788 one DaemonSet
@@ -110,5 +110,5 @@ for the first two beyond declaring the peers once zetta-tunnel can take them.
   checks the rendered policies and the DaemonSet against a real API server.
 
 Live acceptance (fail closed under node churn, pod restarts, enrolment races and an agent crash, with
-escaped traffic refused) is a cluster test on `orama-nonprod-cluster-01` with a test namespace whose
+escaped traffic refused) is a cluster test on `example-nonprod` with a test namespace whose
 workloads have no probes and talk only to each other, until the three blockers above are resolved.

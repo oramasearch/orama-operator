@@ -1,7 +1,6 @@
 # Payments: `PaymentProvider` and the payment kinds
 
-Cloud v1 and Lake bill through one shared Stripe account
-([orama-bridge#199](https://github.com/oramasearch/orama-bridge/issues/199)). The operator manages
+Cloud v1 and Lake bill through one shared Stripe account. The operator manages
 what they need in that account from committed resources, in the shape of principle 10 in
 [`CLAUDE.md`](../../CLAUDE.md): a provider resource, an abstract kind and a concrete kind, as the
 edge kinds do ([`README.md`](README.md#abstract-kinds-and-concrete-providers)).
@@ -77,7 +76,7 @@ and reason.
    account in the same mode passes. `ModeVerified` means the key lacks Accounts: Read
    (`connected_account_read`); add that permission in the Dashboard so the provider checks the
    account and reports `Verified`. The restricted-key account check was confirmed by the
-   [account inventory](https://github.com/oramasearch/orama-bridge/issues/200) §2.
+   account inventory §2.
 5. **A Stripe error.** Any other failure is `False`, reason `StripeAPIError`, with the HTTP status and
    Stripe's error type and code. HTTP 401 means Stripe does not accept the key: it is revoked, expired
    or mistyped.
@@ -285,7 +284,7 @@ and `kubectl get stripecat -A` show both.
 
 A price is a flat amount in one currency, one-time, monthly or yearly. Metered prices, Meters,
 tiers, `transform_quantity`, `currency_options` and Billing Portal configurations are out of scope;
-[orama-bridge#204](https://github.com/oramasearch/orama-bridge/issues/204) decides whether Cloud v1
+ decides whether Cloud v1
 needs Meters, which would be a new optional field.
 
 ### What goes in a catalog
@@ -298,7 +297,7 @@ needs Meters, which would be a new optional field.
 - **Lake's catalog lists products and no prices.** Lake's products have fixed IDs (`lake_usage`,
   `lake_private_warehouse`, `lake_dedicated_cluster`). Its prices stay in Lake's own price list and
   order sheet, and its invoice lines reference the product with an inline price (rule 5 of the
-  [epic](https://github.com/oramasearch/orama-bridge/issues/199)), so there are no Lake usage prices
+  epic), so there are no Lake usage prices
   for a catalog to hold.
 
 ### What the catalog controller does
