@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.12.0](v0.12.0.md) — 2026-11-16. A minor: ready for the open-source release (MIT license, notices, contributor
+  documents, a public README, no internal material), Pixie and the observability kinds removed, tenant-isolation,
+  datastore-credential and Zetta secret fixes, and zetta-tunnel v0.2.0.
 - [v0.11.12](v0.11.12.md) — 2026-10-31. A patch: the production Pixie hub takes the managing cluster and nonprod clusters too,
   agents may name their own alert receivers, and the bootstrap writes each user's settings rows.
 - [v0.11.11](v0.11.11.md) — 2026-10-31. A patch: Envoy's CORS allows the hub's domain, so the UI runs scripts; every Pixie
