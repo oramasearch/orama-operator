@@ -2029,8 +2029,8 @@ spec:
                     - enabled
                     type: object
                   pgAdmin:
-                    description: PgAdminSpec is pgAdmin's toggle plus the address of
-                      its login.
+                    description: PgAdminSpec is pgAdmin's toggle plus the address
+                      of its login.
                     properties:
                       email:
                         description: |-
