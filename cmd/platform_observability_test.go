@@ -23,7 +23,7 @@ import (
 // AGPL-3.0, and kube-prometheus-stack installs Grafana as a subchart unless told not to.
 func TestEveryClusterRunsPermissiveMetricsAlertingAndDashboards(t *testing.T) {
 	paths := map[string]map[string]platformRelease{"helmfile.yaml": helmfilePlatform(t)}
-	leaves, err := filepath.Glob(filepath.Join("..", "config", "clusters", "*", "platform.yaml"))
+	leaves, err := filepath.Glob(filepath.Join(clustersDir(), "*", "platform.yaml"))
 	if err != nil || len(leaves) == 0 {
 		t.Fatalf("found no config/clusters/*/platform.yaml: %v", err)
 	}

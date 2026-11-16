@@ -238,7 +238,7 @@ func TestAMigrationsProd1CredentialsReachAProductionMember(t *testing.T) {
 // and orama-operator#832 for the OramaOperators' pull Secrets). A set's purpose is its clusters'
 // purpose tag, read from config/clusters/<cluster>/cluster.yaml; an OramaOperator's is its cluster's.
 func TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes(t *testing.T) {
-	root := filepath.Join("..", "..", "config", "clusters")
+	root := clustersDir()
 	purposeOf := map[string]string{}
 	clusterFiles, err := filepath.Glob(filepath.Join(root, "*", "cluster.yaml"))
 	if err != nil || len(clusterFiles) == 0 {

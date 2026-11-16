@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -20,7 +21,7 @@ import (
 // Each nonprod Lake must use its own test account and operator-managed webhook, including after
 // member overrides are merged. A shared signing secret cannot authenticate three endpoints.
 func TestCommittedNonprodLakesUseSeparateManagedPayments(t *testing.T) {
-	raw, err := os.ReadFile("../../config/clusters/sets/lake-nonprod.yaml")
+	raw, err := os.ReadFile(filepath.Join(clustersDir(), "sets", "lake-nonprod.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

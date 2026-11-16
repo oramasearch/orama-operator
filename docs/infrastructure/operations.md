@@ -7,6 +7,11 @@ instances on it, by editing resources on the managing cluster. The design and th
 (https://github.com/oramasearch/orama-bridge/blob/main/.claude/skills/orama-clusters/SKILL.md) is the
 short form of this page.
 
+> **Where the files this page names are.** Orama's own cluster resources, named on this page as
+> `config/clusters/...`, are in the private [`orama-infra`](https://github.com/oramasearch/orama-infra) repository, at the
+> same paths. This repository's [`config/clusters/`](../../config/clusters/README.md) is an example of the same shape, with
+> placeholder values.
+
 ## The rule before any procedure: nothing is changed by hand
 
 Steve, 2026-10-13: *"the operator is how we affect change (or changing the CRs for the lakeset or

@@ -1,10 +1,12 @@
+# An example, in the shape of a real deployment. The values are not Orama's: every name,
+# host and id is a placeholder. See README.md in this folder.
 apiVersion: orama.cloud/v1alpha1
 kind: LakeSet
 metadata:
   name: lake-nonprod
 spec:
   clusters:
-  - clusterRef: orama-nonprod-cluster-01
+  - clusterRef: example-nonprod
     name: dev
     spec:
       args:
@@ -16,16 +18,16 @@ spec:
       - name: LAKE_LOG_MODE
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
-        value: lake-dev.oramadev.net
+        value: lake-dev.nonprod.example.com
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      host: lake-dev.oramadev.net
+      host: lake-dev.nonprod.example.com
       clerk:
         secretKeySecretRef: {name: clerk-secret-key}
     secrets:
     - {name: clerk-lake-dev, namespace: lake, as: clerk-secret-key}
     - {name: stripe-dev, namespace: lake, as: lake-prod-stripe}
-  - clusterRef: orama-nonprod-cluster-01
+  - clusterRef: example-nonprod
     name: staging
     spec:
       args:
@@ -37,16 +39,16 @@ spec:
       - name: LAKE_LOG_MODE
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
-        value: lake-staging.oramadev.net
+        value: lake-staging.nonprod.example.com
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      host: lake-staging.oramadev.net
+      host: lake-staging.nonprod.example.com
       clerk:
         secretKeySecretRef: {name: clerk-secret-key}
     secrets:
     - {name: clerk-lake-staging, namespace: lake, as: clerk-secret-key}
     - {name: stripe-staging, namespace: lake, as: lake-prod-stripe}
-  - clusterRef: orama-nonprod-cluster-01
+  - clusterRef: example-nonprod
     name: testing
     spec:
       args:
@@ -58,45 +60,23 @@ spec:
       - name: LAKE_LOG_MODE
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
-        value: lake-testing.oramadev.net
+        value: lake-testing.nonprod.example.com
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      host: lake-testing.oramadev.net
+      host: lake-testing.nonprod.example.com
       clerk:
         secretKeySecretRef: {name: clerk-secret-key}
     secrets:
     - {name: clerk-lake-testing, namespace: lake, as: clerk-secret-key}
     - {name: stripe-testing, namespace: lake, as: lake-prod-stripe}
   deletionPolicy: Retain
-  # The testing -> staging gate of a substantial lake release (orama-operator#589,
-  # docs/lake/README.md#service-e2e). Not active yet: oramasearch/lake-e2e has no image in Docker
-  # Hub, and the managing cluster's operator must know spec.e2eTests before this file carries it.
-  # When both are true, uncomment, put in the pushed image's digest, set runID to the release being
-  # gated, apply this file to the managing cluster with Steve's consent, and commit it.
-  # e2eTests:
-  # - name: testing-gate
-  #   member: testing
-  #   spec:
-  #     image: oramasearch/lake-e2e@sha256:<digest>
-  #     runID: "<release>"
-  #     env:
-  #     - name: LAKE_E2E_CLERK_SECRET_KEY
-  #       valueFrom: {secretKeyRef: {name: clerk-secret-key, key: secretKey}}
-  # Nonprod's own Secrets: none of these is one lake-prod copies (orama-operator#789). The operator
-  # refuses to copy a production set's Secret into a nonprod member, and
-  # TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes fails on one. The pull and OpenAI
-  # Secrets keep the names the Lakes already mount, replacing their production copies in place.
-  # Stripe is member-specific above: each sandbox supplies its own
-  # accountID, operatorKey and appKey, replacing the old Stripe Secret under the same target name.
-  # spec.payments owns each endpoint and signing Secret (#884).
   secrets:
-  - name: oramasearch-dockerhub-nonprod   # a Docker Hub pull token for nonprod only
+  - name: oramasearch-dockerhub-nonprod
     namespace: lake
     as: oramasearch-dockerhub
-  - name: cloudflare-api-token            # already nonprod's own: oramadev.net only
+  - name: cloudflare-api-token
     namespace: lake
-  # Juan chose the existing Prod1 OpenAI key for this separate source (#884); key reuse is intentional.
-  - name: lake-nonprod-openai             # OPENAI_API_KEY; keep the OpenAI provider
+  - name: lake-nonprod-openai
     namespace: lake
     as: lake-prod-openai
   template:
@@ -108,12 +88,8 @@ spec:
     dnsSecretRef:
       name: cloudflare-api-token
     image: oramasearch/lake:v0.8.1
-    # app-runtime v0.1.3 (2026-10-27): Streamlit page updates over 1 MiB reach the browser (#26); before it, v0.1.2 exact file bytes (#22).
     apps:
       runtimeImage: oramasearch/app-runtime:v0.1.3
-    # The agents' releases (2026-10-25), after dev and testing ran them.
-    # lake v0.7.3 (hotfix, lake#1245): agents on gpt-5.5, because gpt-6.x refuses tools with reasoning_effort on Chat
-    # Completions; gpt-6.1-sol is the default again once the gateway uses the Responses API (v0.8.0). People choose per workspace.
     agents:
       model: gpt-6.1-sol
       runtimeImage: oramasearch/agent-runtime:v0.2.0
@@ -133,9 +109,6 @@ spec:
       instances: 1
       storageSize: 10Gi
     pullSecretName: oramasearch-dockerhub
-    # Workspace and managed-service Zettas stay on the image the data-plane Zetta runs until a
-    # Zetta release is rolled on purpose: without this they would follow the operator's default
-    # (orama-operator#588) the moment a new operator rolls.
     services:
       zettaImage: oramasearch/zetta:v0.5.0
     store:
