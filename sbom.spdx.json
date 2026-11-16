@@ -2,17 +2,17 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "orama-operator-699b5649d00f",
-  "documentNamespace": "https://github.com/oramasearch/orama-operator/sbom/699b5649d00f31a239ddeac46b459861095c00f1",
+  "name": "orama-operator-d1ca12c5dca4",
+  "documentNamespace": "https://github.com/oramasearch/orama-operator/sbom/d1ca12c5dca46161f0479c40da81a73d5899dd0f",
   "creationInfo": {
-    "created": "2026-11-15T17:24:09Z",
+    "created": "2026-11-16T01:55:49Z",
     "creators": [
       "Organization: OramaSearch, Inc.",
       "Tool: tools/sbom.py",
       "Tool: syft"
     ],
     "licenseListVersion": "3.29",
-    "comment": "Made from source commit 699b5649d00f31a239ddeac46b459861095c00f1 by tools/sbom.py."
+    "comment": "Made from source commit d1ca12c5dca46161f0479c40da81a73d5899dd0f by tools/sbom.py."
   },
   "documentDescribes": [
     "SPDXRef-DocumentRoot"
@@ -3702,7 +3702,7 @@
     {
       "name": "orama-operator",
       "SPDXID": "SPDXRef-DocumentRoot",
-      "versionInfo": "699b5649d00f",
+      "versionInfo": "d1ca12c5dca4",
       "downloadLocation": "git+https://github.com/oramasearch/orama-operator.git",
       "homepage": "https://github.com/oramasearch/orama-operator",
       "filesAnalyzed": false,
