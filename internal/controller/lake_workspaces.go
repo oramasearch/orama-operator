@@ -1308,6 +1308,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 	cluster := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: namespace}}
 	operatorSchema := false
 	var egressAllow string
+	var egressGateway zettaEgressGateway
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		if cluster.ResourceVersion != "" && cluster.Labels[workspaceLabel] != row.ID {
 			return fmt.Errorf("OramaZettaCluster %s/%s is not owned by workspace %s", namespace, clusterName, row.ID)
@@ -1329,6 +1330,12 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 		current, known := currentZettaEgressAllow(ctx, r.Client, cluster)
 		var egressErr error
 		egressAllow, egressErr = workspaceZettaEgressAllow(ctx, r.Client, namespace, row.ZettaServiceID, current, known)
+		// The name rules' routes through the workspace egress gateway (operator#1179).
+		var gatewayErr error
+		egressGateway, gatewayErr = workspaceZettaEgressGateway(ctx, r.Client, cluster, namespace, row.ZettaServiceID)
+		if gatewayErr != nil {
+			logf.FromContext(ctx).Error(gatewayErr, "Zetta egress gateway routes kept or emptied", "cluster", cluster.Name)
+		}
 		if egressErr != nil {
 			logf.FromContext(ctx).Error(egressErr, "workspace Zetta egress allowlist kept or denied", "workspace", row.ID)
 		}
@@ -1350,7 +1357,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 	}
 	// The egress allowlist file (operator#724): written once the cluster exists, which owns it. The
 	// cluster's StatefulSet waits for it.
-	if err := reconcileZettaEgressConfigMap(ctx, r.Client, r.Scheme, cluster, egressAllow); err != nil {
+	if err := reconcileZettaEgressConfigMapWithGateway(ctx, r.Client, r.Scheme, cluster, egressAllow, egressGateway); err != nil {
 		return nil, err
 	}
 	return cluster, nil

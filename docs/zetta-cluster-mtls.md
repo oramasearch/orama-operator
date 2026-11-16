@@ -148,6 +148,90 @@ The reachability model — which node advertises what — lives in [`zetta-datas
 ("Peering across clusters"); the operator already knows each slice's `spec.reachability` and passes each
 wan-accessible node its own `--advertise` address ([operator#104](https://github.com/oramasearch/orama-operator/issues/104)).
 
+## Identity root and enrollment CA (operator#1174)
+
+[operator#1174](https://github.com/oramasearch/orama-operator/issues/1174), for zetta
+[#1512](https://github.com/oramasearch/zetta/pull/1512) ([zetta#1342](https://github.com/oramasearch/zetta/issues/1342),
+[#1360](https://github.com/oramasearch/zetta/issues/1360), [#1319](https://github.com/oramasearch/zetta/issues/1319),
+[#1320](https://github.com/oramasearch/zetta/issues/1320)) and [#1514](https://github.com/oramasearch/zetta/pull/1514)
+([zetta#1513](https://github.com/oramasearch/zetta/issues/1513)). The code is
+`internal/controller/zetta_identity.go`. Each setting follows what the image's own `zetta --help` lists
+(`status.imageFeatures`, Job `<name>-zetta-features`, which now runs for **every** cluster, once per
+image), never a flag.
+
+| The image's usage lists | `status.imageFeatures` | What the operator does |
+|---|---|---|
+| `ZETTA_IDENTITY_MIN_EPOCH` (zetta PR #1512, the release with `rotate_identity_root`) | `identityRootRotation` | carries out a raised `spec.identity.adminTokenGeneration` |
+| `ZETTA_CLUSTER_CA` (zetta PR #1514) | `clusterCA` | gives the nodes the enrollment CA's public key, once known |
+| `ZETTA_CLUSTER_CA_SEED_FILE` (zetta PR #1514) | `clusterCASeedFile` | mints a CA seed for a new cluster and mounts it |
+
+### Rotating the admin token
+
+The identity root is derived from `ZETTA_ADMIN_TOKEN` and moves by succession: `rotate_identity_root`
+must run on a node that still holds the current root **before** any pod starts with a new token, or
+every pod comes back verify-only. So the token in Secret `<name>-zetta-admin` is never edited by hand.
+Raise **`spec.identity.adminTokenGeneration`** (1 is the token minted with the cluster; it cannot be
+lowered) and the operator:
+
+1. waits until the image lists `ZETTA_IDENTITY_MIN_EPOCH`, the cluster is one slice (no
+   `spec.clusterName` naming another, no `spec.externalPeers`: other slices hold tokens this operator
+   does not), and every node is ready on the current template;
+2. mints the new token into the Secret under key `next` (with `next-generation`). The pods read key
+   `token`, so nothing starts with it yet;
+3. calls `POST /v1/rotate_identity_root {new_admin_token}` on **node 0**
+   (`<sts>-0.<headless>:4800`) with the current token as bearer. `revoke_tokens` is never sent: the
+   old token keeps working for every other holder of the Secret (lake's data-plane variables,
+   workspace credentials) until they restart. An answer that the new token "derives the current root"
+   is a call that already went through, so a retry after a crash is safe;
+4. moves `next` into `token`, records `generation`, and stamps `orama.cloud/zetta-admin-generation` on
+   the pod template, so the StatefulSet rolls the new token. Each pod follows the succession and issues
+   identity again.
+
+Condition **`IdentityRootRotated`** (present only with `spec.identity.adminTokenGeneration`) is
+`Current`, `Rotated`, or `False` with `ImageNotSupported`, `MultiSliceNotSupported`, `WaitingForNodes` or
+`RotationFailed` (zetta's reason, never a token). `status.identity.adminTokenGeneration` is the
+generation in the Secret. A rotation after a compromise, which revokes every token
+(`revoke_tokens: true`), is not offered: every holder of the old token would have to restart first.
+
+### The enrollment CA
+
+After zetta PR #1514 a node that is not enrolled joins only through a member the enrollment CA signed.
+Joiners need **`ZETTA_CLUSTER_CA`**, the CA's public key (64 hex; public, like
+`ZETTA_IDENTITY_ROOT`, so a literal variable). In an operator-run cluster every pod gets the join token
+from outside, so no pod creates the CA: some must hold its seed. Secret **`<name>-zetta-cluster-ca`**,
+owned by the `OramaZettaCluster`, records it once:
+
+- **A new cluster** (no StatefulSet yet) whose image lists `ZETTA_CLUSTER_CA_SEED_FILE` gets a seed:
+  32 random bytes as 64 lowercase hex, key `seed`, minted once, and its Ed25519 public key, key
+  `public`. Every node of the slice mounts the seed read-only at `/run/secrets/zetta-cluster-ca/seed`
+  (mode `0440`, root and fsGroup 10001; never a variable) named by `ZETTA_CLUSTER_CA_SEED_FILE`, holds
+  the CA, and signs enrollments. **A new cluster's StatefulSet waits for its image's `--help` answer**,
+  so it is never created without the seed it needs. Never roll such a cluster back to an image before
+  zetta PR #1514: that image generates its own CA, and the seed then no longer matches.
+- **A cluster that already ran zetta PR #1512** holds a CA its nodes generated (`cluster-ca.json` in each
+  data dir). A seed would differ from it and stop the node, so none is minted. Once node 0 runs an image
+  that lists `ZETTA_CLUSTER_CA`, the operator reads the key from node 0's printed join command
+  (`--cluster-ca <key>`) and records it under `public`; the nodes then get `ZETTA_CLUSTER_CA` (one
+  roll), so a replaced or added node enrolls.
+- **An ephemeral (burst) slice** never holds the CA: it gets `ZETTA_CLUSTER_CA` of a non-ephemeral
+  slice of the same cluster (`spec.clusterName`) in its namespace, and enrolls through those nodes. A
+  slice in another Kubernetes cluster is not looked up (the same limit as the connection root secret).
+- `status.identity.clusterCA` and `clusterCASource` (`Operator`, `Members` or `Sibling`) say what the
+  nodes are given. `ZETTA_CLUSTER_CA` and `ZETTA_CLUSTER_CA_SEED_FILE` are operator-owned: `spec.env`
+  cannot set them.
+- **Order** (zetta's): roll zetta PR #1514 only after the PR #1512 release has run on every pod of the
+  cluster, so each pod has enrolled. This operator rolls before either.
+
+### Identity epoch floor: not set
+
+`ZETTA_IDENTITY_MIN_EPOCH` ([zetta#1360](https://github.com/oramasearch/zetta/issues/1360)) is optional,
+and the operator does not set it. Decided under Steve's 2026-11-14 delegation, because the safe option
+is to keep today's behaviour: a recorded floor makes a node honor no account, role or token until it
+holds an epoch at least that high, so a cluster rebuilt from nothing, restored from an older backup, or a
+one-node workspace Zetta that lost its volume would refuse every token, the operator's included, until
+the floor was cleared by hand. Without the variable, zetta's behaviour is unchanged. `spec.env` can still
+set it on a cluster that wants the floor.
+
 ## Related
 
 - [`crd-reference.md`](crd-reference.md) — the `OramaZettaCluster` field reference.
