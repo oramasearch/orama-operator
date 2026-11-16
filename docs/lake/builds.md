@@ -31,11 +31,21 @@ spec:
 
 An empty `builderImage` uses the operator's default (`internal/controller/lake_defaults.go`). The operator copies the Lake's image pull Secret
 into each build namespace as the Lake-owned Secret `builder-pull`; the builder Job references that
-local copy because Kubernetes image pull Secrets cannot cross namespaces. The same Secret is mounted
-read-only at `/etc/lake-builder/pull/.dockerconfigjson` and identified by `BASE_REGISTRY_AUTH`, so
-lake-builder can merge private base-image credentials into its writable Docker configuration. When
-`spec.pullSecretName` is empty, the Job gets no pull-secret reference, auth mount, or
-`BASE_REGISTRY_AUTH`. Resource entries override
+local copy as its `imagePullSecrets`, because Kubernetes image pull Secrets cannot cross namespaces.
+**It is never mounted into the builder container** (orama-operator#758): tenant source runs there,
+and a build step can read anything the container holds, so Orama's registry credential stays with the
+kubelet.
+
+Base images that need a credential use **`spec.builds.baseImagePullSecretName`** instead: a
+dockerconfigjson Secret in the Lake namespace holding a **read-only token scoped to exactly the base
+repositories** builds start `FROM` (the app and methodology runtimes). The operator copies it as
+`builder-base-pull`, mounts it read-only at `/etc/lake-builder/pull/.dockerconfigjson` and names it with
+`BASE_REGISTRY_AUTH`, so lake-builder merges it into its writable Docker configuration. It may not be
+the Lake's `pullSecretName` (the build fails with that message). When it is empty the builder gets no
+mount and no `BASE_REGISTRY_AUTH`, and the copy is removed. Creating the scoped token is a human step:
+[`../operations/build-base-image-credential.md`](../operations/build-base-image-credential.md).
+
+Resource entries override
 the bounded defaults shown above one key at a time, so CPU, memory, and ephemeral-storage remain
 bounded when a partial override is supplied. Concurrency defaults to four active Jobs for the Lake
 and two for one registry space. Both configured limits must be positive. Registry cache
@@ -87,7 +97,7 @@ The Job receives the lake-builder contract exactly as environment variables:
 | `SOURCE_TOKEN` / `PUSH_TOKEN` / `EVENTS_TOKEN` | Secret key references |
 | `CACHE_REF` | `<registry>/<space>/cache/<name>`, or empty when caching is disabled |
 | `DOCKER_CONFIG` | writable `/home/user/.docker` |
-| `BASE_REGISTRY_AUTH` | read-only `/etc/lake-builder/pull/.dockerconfigjson` when the Lake has `spec.pullSecretName`; omitted otherwise |
+| `BASE_REGISTRY_AUTH` | read-only `/etc/lake-builder/pull/.dockerconfigjson` when the Lake has `spec.builds.baseImagePullSecretName`; omitted otherwise. Never the Lake's `pullSecretName` (#758) |
 
 lake-builder fetches the repository tree and files from Lake REST at the pinned revision, validates
 every build argument against `BUILD_ARG_ALLOW`, runs rootless BuildKit through

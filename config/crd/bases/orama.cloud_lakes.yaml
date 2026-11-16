@@ -197,6 +197,15 @@ spec:
                   The operator creates short-lived source, registry-push, and event credentials and reports
                   the Job's observed outcome to the row. See docs/lake/builds.md.
                 properties:
+                  baseImagePullSecretName:
+                    description: |-
+                      BaseImagePullSecretName names a dockerconfigjson Secret in the Lake namespace that the
+                      builder may use to pull the base images a build starts FROM (the app and methodology
+                      runtimes). It must be a read-only credential scoped to exactly those repositories, and never
+                      the Lake's pullSecretName: tenant code runs in the builder and can read it (orama-operator#758).
+                      Empty: builds pull base images without a credential. The pullSecretName copy pulls only the
+                      builder image itself, through the kubelet, and is never mounted.
+                    type: string
                   builderImage:
                     description: |-
                       BuilderImage is the private oramasearch/lake-builder image run for every build. Empty uses

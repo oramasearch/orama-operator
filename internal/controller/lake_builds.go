@@ -45,29 +45,31 @@ const (
 	buildDesiredQueued    = "queued"
 	buildDesiredCancelled = "cancelled"
 
-	buildIDLabel          = "orama.cloud/build-id"
-	buildLakeLabel        = "orama.cloud/build-lake"
-	buildSpaceLabel       = "orama.cloud/build-space"
-	buildOwnerAnnotation  = "orama.cloud/build-owner"
-	buildSpaceAnnotation  = "orama.cloud/build-space"
-	buildEventAnnotation  = "orama.cloud/build-event-"
-	buildTokenSourceKey   = "SOURCE_TOKEN"
-	buildTokenPushKey     = "PUSH_TOKEN"
-	buildTokenEventsKey   = "EVENTS_TOKEN"
-	buildArgAllow         = "PYTHON_VERSION,APP_DEPS,APP_RUNTIME_IMAGE,METHODOLOGY_RUNTIME_IMAGE,METHODOLOGY_PACKAGES"
-	buildDefaultPerLake   = int32(4)
-	buildDefaultPerSpace  = int32(2)
-	buildDeadlineSeconds  = int64(3600)
-	buildJobTTLSeconds    = int32(3600)
-	buildRootlessUser     = int64(1000)
-	buildRootlessGroup    = int64(1000)
-	buildNetworkPolicy    = "build-network"
-	buildDefaultDeny      = "build-default-deny"
-	buildPullSecretName   = "builder-pull"
-	buildDockerConfigPath = "/home/user/.docker"
-	buildBaseAuthVolume   = "base-registry-auth"
-	buildBaseAuthDir      = "/etc/lake-builder/pull"
-	buildBaseAuthPath     = buildBaseAuthDir + "/.dockerconfigjson"
+	buildIDLabel         = "orama.cloud/build-id"
+	buildLakeLabel       = "orama.cloud/build-lake"
+	buildSpaceLabel      = "orama.cloud/build-space"
+	buildOwnerAnnotation = "orama.cloud/build-owner"
+	buildSpaceAnnotation = "orama.cloud/build-space"
+	buildEventAnnotation = "orama.cloud/build-event-"
+	buildTokenSourceKey  = "SOURCE_TOKEN"
+	buildTokenPushKey    = "PUSH_TOKEN"
+	buildTokenEventsKey  = "EVENTS_TOKEN"
+	buildArgAllow        = "PYTHON_VERSION,APP_DEPS,APP_RUNTIME_IMAGE,METHODOLOGY_RUNTIME_IMAGE,METHODOLOGY_PACKAGES"
+	buildDefaultPerLake  = int32(4)
+	buildDefaultPerSpace = int32(2)
+	buildDeadlineSeconds = int64(3600)
+	buildJobTTLSeconds   = int32(3600)
+	buildRootlessUser    = int64(1000)
+	buildRootlessGroup   = int64(1000)
+	buildNetworkPolicy   = "build-network"
+	buildDefaultDeny     = "build-default-deny"
+	buildPullSecretName  = "builder-pull"
+	// The scoped base-image credential, the only registry credential mounted into the builder.
+	buildBasePullSecretName = "builder-base-pull"
+	buildDockerConfigPath   = "/home/user/.docker"
+	buildBaseAuthVolume     = "base-registry-auth"
+	buildBaseAuthDir        = "/etc/lake-builder/pull"
+	buildBaseAuthPath       = buildBaseAuthDir + "/.dockerconfigjson"
 )
 
 var (
@@ -332,17 +334,38 @@ func (r *LakeReconciler) reconcileBuildMetadataDeny(ctx context.Context, lake *o
 	return nil
 }
 
+// reconcileBuildPullSecret copies the Lake's pullSecretName into the build namespace for the
+// kubelet to pull the builder image (never mounted), and the scoped base-image credential, when one
+// is named, as the only credential the builder container sees (orama-operator#758).
 func (r *LakeReconciler) reconcileBuildPullSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace, space string) error {
-	if lake.Spec.PullSecretName == "" {
-		return nil
+	base := lake.Spec.Builds.BaseImagePullSecretName
+	if base != "" && base == lake.Spec.PullSecretName {
+		return fmt.Errorf("spec.builds.baseImagePullSecretName must not be the Lake's pullSecretName: tenant code runs in the builder")
+	}
+	if err := r.copyBuildSecret(ctx, lake, namespace, space, lake.Spec.PullSecretName, buildPullSecretName); err != nil {
+		return err
+	}
+	return r.copyBuildSecret(ctx, lake, namespace, space, base, buildBasePullSecretName)
+}
+
+// copyBuildSecret keeps destinationName in the build namespace a copy of the Lake-namespace Secret
+// sourceName, or removes this Lake's copy when sourceName is empty.
+func (r *LakeReconciler) copyBuildSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace, space, sourceName, destinationName string) error {
+	if sourceName == "" {
+		stale := &corev1.Secret{}
+		err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: destinationName}, stale)
+		if err == nil && metav1.IsControlledBy(stale, lake) {
+			return client.IgnoreNotFound(r.Delete(ctx, stale))
+		}
+		return client.IgnoreNotFound(err)
 	}
 	source := &corev1.Secret{}
-	sourceKey := client.ObjectKey{Namespace: lakeNamespace(lake), Name: lake.Spec.PullSecretName}
+	sourceKey := client.ObjectKey{Namespace: lakeNamespace(lake), Name: sourceName}
 	if err := r.Get(ctx, sourceKey, source); err != nil {
 		return fmt.Errorf("read builder image pull Secret %s: %w", sourceKey, err)
 	}
 	destination := &corev1.Secret{}
-	destinationKey := client.ObjectKey{Namespace: namespace, Name: buildPullSecretName}
+	destinationKey := client.ObjectKey{Namespace: namespace, Name: destinationName}
 	if err := r.Get(ctx, destinationKey, destination); err == nil {
 		if !metav1.IsControlledBy(destination, lake) {
 			return fmt.Errorf("Secret %s exists and is not this Lake's builder pull Secret", destinationKey)
@@ -489,7 +512,7 @@ func buildEnv(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget) []
 		// sandbox; the pod's user namespace is the isolation boundary instead.
 		{Name: "BUILDKITD_FLAGS", Value: "--oci-worker-no-process-sandbox"},
 	}
-	if lake.Spec.PullSecretName != "" {
+	if lake.Spec.Builds.BaseImagePullSecretName != "" {
 		env = append(env, corev1.EnvVar{Name: "BASE_REGISTRY_AUTH", Value: buildBaseAuthPath})
 	}
 	return env
@@ -547,7 +570,10 @@ func buildPod(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget, la
 		},
 	}
 	if lake.Spec.PullSecretName != "" {
+		// The kubelet pulls the builder image with it; the container never sees it.
 		pod.ImagePullSecrets = []corev1.LocalObjectReference{{Name: buildPullSecretName}}
+	}
+	if lake.Spec.Builds.BaseImagePullSecretName != "" {
 		pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts, corev1.VolumeMount{
 			Name:      buildBaseAuthVolume,
 			MountPath: buildBaseAuthDir,
@@ -556,7 +582,7 @@ func buildPod(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget, la
 		pod.Volumes = append(pod.Volumes, corev1.Volume{
 			Name: buildBaseAuthVolume,
 			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-				SecretName: buildPullSecretName,
+				SecretName: buildBasePullSecretName,
 				Items: []corev1.KeyToPath{{
 					Key:  corev1.DockerConfigJsonKey,
 					Path: ".dockerconfigjson",

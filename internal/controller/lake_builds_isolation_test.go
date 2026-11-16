@@ -137,7 +137,7 @@ func TestBuilderPodHasNoHostAccessOrExtraPrivilege(t *testing.T) {
 			if volume.EmptyDir.SizeLimit == nil {
 				t.Fatalf("emptyDir %s has no size limit", volume.Name)
 			}
-		case volume.Secret != nil && volume.Name == buildBaseAuthVolume && volume.Secret.SecretName == buildPullSecretName:
+		case volume.Secret != nil && volume.Name == buildBaseAuthVolume && volume.Secret.SecretName == buildBasePullSecretName:
 		default:
 			t.Fatalf("builder pod mounts an unexpected volume: %+v", volume)
 		}
