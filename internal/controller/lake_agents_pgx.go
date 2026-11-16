@@ -24,7 +24,7 @@ const listAgentLaunchesSQL = `SELECT l.id::text, l.customer_id::text, l.workspac
        COALESCE(ls.result, 'null'::jsonb)::text, COALESCE(ls.credential_sha256, ''),
        COALESCE(ls.observed_generation, 0)
   FROM agent_launches l
-  JOIN workspaces w ON w.id = l.workspace_id
+  JOIN workspaces w ON w.id = l.workspace_id AND w.customer_id = l.customer_id
   LEFT JOIN agent_launch_status ls ON ls.launch_id = l.id
  WHERE l.desired = 'present'
     OR ls.launch_id IS NULL
@@ -107,7 +107,7 @@ const listAgentSchedulesSQL = `SELECT s.id::text, s.customer_id::text, s.workspa
        COALESCE((SELECT json_object_agg(r.id::text, r.phase) FROM (SELECT id, phase FROM agent_cron_runs
                   WHERE schedule_id = s.id ORDER BY started_at DESC LIMIT 20) r), '{}')::text
   FROM agent_cron_schedules s
-  JOIN workspaces w ON w.id = s.workspace_id
+  JOIN workspaces w ON w.id = s.workspace_id AND w.customer_id = s.customer_id
   LEFT JOIN agent_cron_schedule_status ss ON ss.schedule_id = s.id
  WHERE s.desired = 'present'
     OR ss.schedule_id IS NULL

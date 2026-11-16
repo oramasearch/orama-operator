@@ -33,6 +33,7 @@ func TestLakeConnectionsGuardedRolloutAndAbsentRow(t *testing.T) {
 		Name: testWorkspaceName,
 		Labels: map[string]string{
 			workspaceLabel:          testWorkspaceID,
+			workspaceCustomerLabel:  testServiceCustomer,
 			workspaceLakeLabel:      lake.Name,
 			workspaceManagedByLabel: "orama-operator",
 		},

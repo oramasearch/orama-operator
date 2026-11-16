@@ -59,8 +59,10 @@ the bus.
 
 On every services poll, after the services and stores, the operator reads lake's `agent_launches`
 (migration `0030`; a schema without it is skipped and logged). Every row requires `workspace_id`;
-the query joins the operator-written `workspaces.namespace`, and there is no Lake-namespace
-fallback. For each present launch:
+the query joins the operator-written `workspaces.namespace` on the row's own customer, the namespace
+must carry that workspace's labels ([workspace routing](workspaces.md#workspace-routing-is-checked-by-the-operator-operator781)),
+and there is no Lake-namespace fallback. Every agent pod requests 100m CPU and 256Mi and is limited
+to 1 CPU and 1Gi (the CPU limit since operator#782). For each present launch:
 
 1. **Its credential.** A Secret `<lake>-<slug>-credential` (key `token`) holding
    `lal.<launch id>.<32 random hex>`, created once, controlled by the Lake and labelled

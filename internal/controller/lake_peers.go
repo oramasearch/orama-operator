@@ -202,6 +202,11 @@ func (r *LakeReconciler) syncLakePeer(ctx context.Context, lake *oramav1alpha1.L
 	if message != "" {
 		return LakePeerStatus{PeerID: row.ID, Phase: oramav1alpha1.PeerPhaseFailed, Message: message, ObservedGeneration: row.Generation}, nil
 	}
+	if refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, row.WorkspaceNamespace, row.WorkspaceID, row.CustomerID); err != nil {
+		return LakePeerStatus{}, err
+	} else if refusal != "" {
+		return LakePeerStatus{PeerID: row.ID, Phase: oramav1alpha1.PeerPhaseFailed, Message: refusal, ObservedGeneration: row.Generation}, nil
+	}
 	peer := &oramav1alpha1.PeerConnection{ObjectMeta: metav1.ObjectMeta{Name: lakePeerName(row.ID), Namespace: row.WorkspaceNamespace}}
 	err := r.Get(ctx, client.ObjectKeyFromObject(peer), peer)
 	exists := err == nil

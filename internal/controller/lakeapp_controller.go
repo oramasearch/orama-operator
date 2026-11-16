@@ -591,7 +591,7 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		}
 	}
 
-	reason, message, err := r.reconcileLakeAppLakeSecrets(ctx, lake, app)
+	reason, message, err := r.reconcileLakeAppLakeSecrets(ctx, lake, app, namespace)
 	if err != nil || reason != "" {
 		return result, reason, message, err
 	}
@@ -944,7 +944,7 @@ const lakeAppLakeSecretLabel = "lake.orama.cloud/app-lake-secret"
 // names; the environment copy below then carries the field into the app namespace, and its digest
 // rolls the pods when a new secret version is delivered. The user's secret stays in lake's store,
 // sealed in its workspace Zetta: the Secret is only this projection, rewritten on rotation.
-func (r *LakeAppReconciler) reconcileLakeAppLakeSecrets(ctx context.Context, lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) (string, string, error) {
+func (r *LakeAppReconciler) reconcileLakeAppLakeSecrets(ctx context.Context, lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, namespace string) (string, string, error) {
 	wanted := map[string]oramav1alpha1.LakeAppLakeSecretReference{}
 	for _, variable := range app.Spec.SecretEnv {
 		if variable.LakeSecret != nil {
@@ -959,6 +959,7 @@ func (r *LakeAppReconciler) reconcileLakeAppLakeSecrets(ctx context.Context, lak
 	labels := lakeAppLabels(app)
 	labels[lakeAppLakeSecretLabel] = "true"
 	pending := ""
+	var revoked []string
 	for _, name := range names {
 		reference := wanted[name]
 		sealed := &oramav1alpha1.LakeSealedSecret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: app.Namespace}}
@@ -985,8 +986,28 @@ func (r *LakeAppReconciler) reconcileLakeAppLakeSecrets(ctx context.Context, lak
 			return "", "", fmt.Errorf("reconcile LakeSealedSecret %q: %w", name, err)
 		}
 		ready := apimeta.FindStatusCondition(sealed.Status.Conditions, "Ready")
+		if sealed.Status.Phase == "Error" && ready != nil && ready.Reason == lakeSealedSecretRevoked {
+			revoked = append(revoked, name)
+		}
 		if sealed.Status.Phase == "Error" && ready != nil && pending == "" {
 			pending = fmt.Sprintf("lake secret %q in mount %s: %s", reference.Name, reference.Mount, ready.Message)
+		}
+	}
+	// A secret lake no longer delivers leaves no copy in the app namespace either (operator#777):
+	// the projection in the Lake namespace is already gone, and the copy would keep its value.
+	for _, name := range revoked {
+		copied := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAppEnvSecretName(app, name), Namespace: namespace}}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(copied), copied); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return "", "", err
+		}
+		if copied.Annotations[lakeAppOwnerAnnotation] != lakeAppOwner(app) {
+			continue
+		}
+		if err := r.Delete(ctx, copied); err != nil && !apierrors.IsNotFound(err) {
+			return "", "", err
 		}
 	}
 	var existing oramav1alpha1.LakeSealedSecretList

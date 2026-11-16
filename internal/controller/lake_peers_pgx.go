@@ -11,7 +11,7 @@ const listPeersSQL = `SELECT p.id::text, p.customer_id::text, p.workspace_id::te
        p.exports::text, p.imports::text, p.desired, p.generation,
        st.peer_id IS NOT NULL, COALESCE(st.phase, ''), COALESCE(st.message, ''), COALESCE(st.observed_generation, 0)
   FROM network_peers p
-  JOIN workspaces w ON w.id = p.workspace_id
+  JOIN workspaces w ON w.id = p.workspace_id AND w.customer_id = p.customer_id
   LEFT JOIN network_peer_status st ON st.peer_id = p.id
  WHERE NOT (p.desired = 'absent' AND COALESCE(st.phase, '') = 'Deleted' AND st.observed_generation = p.generation)
  ORDER BY p.created_at, p.id`

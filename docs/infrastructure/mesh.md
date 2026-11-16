@@ -20,7 +20,7 @@ installation paths install the operator chart; the image is `networking.zettaTun
 | Namespace `zetta-tunnel-mesh` | The agent's own system namespace, Pod Security `privileged`. Nothing else runs there. |
 | DaemonSet `zetta-tunnel-mesh-<node key>`, one per node | Each pinned to its node by a required node affinity on `metadata.name` (tolerates every taint, `system-node-critical`), host network, no service-account token. `<node key>` is FNV-1a 64 of the node name in hex; the full name is in the `orama.cloud/mesh-node-name` annotation. A node joining gets its own; a node leaving takes its DaemonSet and Secret with it. |
 | — container `agent` | `zetta-tunnel mesh --configuration /run/zetta-mesh/mesh.json --health-listen 127.0.0.1:15020 --audit -`, privileged, root: entering pod network namespaces and installing nftables capture needs it (zetta-tunnel `docs/mesh.md`). Mounts the host's `/proc` and the projection read-only. Probes on `127.0.0.1:15020`, private to the node. |
-| — container `projector` | The operator's own image, `/mesh-projector`: restricted (non-root, no privilege escalation, no capabilities, read-only root). Reads this node's template from this node's Secret, the only one it mounts, finds each enrolled pod's network namespace in the host's `/proc` (the lowest PID whose cgroup names the pod UID, systemd or cgroupfs layout), and publishes the agent's projection and certificate files into the shared in-memory directory, files first and `mesh.json` last, each by atomic rename. It has no credential and makes no API call. |
+| — container `projector` | The operator's own image, `/mesh-projector`: root with only `CAP_SYS_PTRACE` (every other capability dropped, no privilege escalation, read-only root, the runtime's seccomp profile), which the kernel requires to open another process's `ns/net`. Reads this node's template from this node's Secret, the only one it mounts, finds each enrolled pod's network namespace in the host's `/proc` (the lowest PID whose cgroup names exactly that pod UID and no other pod, systemd or cgroupfs layout; a UID prefix is not membership), pins it as the agent checks it (opens the process directory once, reads `cgroup` through it, opens `ns/net` relative to it and reads its inode with `fstat`, reads `cgroup` again, and skips a process that changed), writes each workload's `pod_uid` and `network_namespace_inode` beside `network_namespace` (orama-operator#869; zetta-tunnel LSR-264 refuses a projection without them), and publishes the agent's projection and certificate files into the shared in-memory directory, files first and `mesh.json` last, each by atomic rename. It has no credential and makes no API call. |
 | Secret `mesh-node-<node key>`, one per node | That node's template, the certificates and private keys of the workloads on that node only, and the workload CA certificate. Always present (possibly empty), mounted optional and only by that node's agent. |
 | Secret `zetta-tunnel-mesh-pki` in the operator's namespace | The mesh's workload CA, minted once. Its key never leaves the operator's namespace. |
 
@@ -94,7 +94,8 @@ for the first two beyond declaring the peers once zetta-tunnel can take them.
 
 ## Verify
 
-- `go test ./internal/meshprojection/`: the `/proc` resolver (systemd and cgroupfs layouts, lowest PID),
+- `go test ./internal/meshprojection/`: the `/proc` resolver (systemd and cgroupfs layouts, lowest PID,
+  exact pod membership, the pinned namespace's inode, a process without a namespace skipped),
   rendering zetta-tunnel's exact projection and leaving out pods not on the node, publishing files
   before the projection and removing stale ones, reading only a node's own template and refusing a
   template that names a path outside its shard.
@@ -102,7 +103,8 @@ for the first two beyond declaring the peers once zetta-tunnel can take them.
   projected before the sandbox's mesh-only policies are rendered; routes and sources only for declared
   paths; one identity per replica; certificates signed by the projected CA, stable across passes; the
   CA key never in a shard; a gone pod leaves the projection; unenrolment stops it and the polling; the
-  agent is privileged in its own privileged namespace and the projector is not; declared Connections
+  agent is privileged in its own privileged namespace and the projector is not (root with only
+  `SYS_PTRACE`); declared Connections
   in an enrolled sandbox render only 15008 while other allowances are unchanged; the Lake override
   enrols and unenrols the workspace sandbox. `TestMeshEnvtestRendersMeshOnlyPoliciesAndAValidAgent`
   checks the rendered policies and the DaemonSet against a real API server.

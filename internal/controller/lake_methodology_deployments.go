@@ -185,7 +185,9 @@ func methodologyServeIngressPolicy(lake *oramav1alpha1.Lake, namespace string) *
 // methodologyDeploymentStagePod pages the model in. For a GPU model its zones are where nodes of
 // its GPU class are (the model volume's first consumer decides its zone), as for a run.
 func methodologyDeploymentStagePod(lake *oramav1alpha1.Lake, deployment *LakeMethodologyDeployment, zones []string) corev1.PodSpec {
-	pod := methodologyPod(deployment.RuntimeImage,
+	// The stage pod holds the deployment's credential: the Lake's runtime image, never the row's
+	// (operator#782).
+	pod := methodologyPod(lakeMethodologyRuntimeImage(lake),
 		[]string{methodologyCLI, "stage-model", "--lake", "$(LAKE_URL)", "--deployment", "$(DEPLOYMENT_ID)",
 			"--credential-file", methodologyCredentialDir + "/" + methodologyCredentialFile, "--out", methodologyModelPath},
 		[]corev1.EnvVar{
@@ -337,9 +339,17 @@ func (r *LakeReconciler) reconcileMethodologyDeployment(ctx context.Context, lak
 	case deployment.CPUMillis <= 0 || deployment.MemoryBytes <= 0 || deployment.GPUs < 0:
 		status.Phase, status.Message = DeploymentPhaseFailed, "the deployment's CPU and memory must be positive"
 		return status, false, nil
+	case methodologySizeRefusal(deployment.CPUMillis, deployment.MemoryBytes, deployment.GPUs, 0) != "":
+		status.Phase, status.Message = DeploymentPhaseFailed, "the deployment's "+methodologySizeRefusal(deployment.CPUMillis, deployment.MemoryBytes, deployment.GPUs, 0)
+		return status, false, nil
 	}
 
 	image := deployment.Image
+	if image != "" {
+		if refusal := methodologyImageRefusal(lake, image); refusal != "" {
+			return fail(refusal)
+		}
+	}
 	if image == "" {
 		build := deployment.Build
 		switch {

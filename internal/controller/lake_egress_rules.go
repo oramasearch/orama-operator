@@ -101,6 +101,15 @@ func (r *LakeReconciler) syncLakeEgressRules(
 			}
 			continue
 		}
+		if refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, row.WorkspaceNamespace, row.WorkspaceID, row.CustomerID); err != nil || refusal != "" {
+			if err != nil {
+				log.Error(err, "egress rule reconciliation deferred", "rule", row.ID)
+				changing = true
+			} else if writeEgressRuleStatus(ctx, store, row, failedEgressRuleStatus(row, refusal)) != nil {
+				changing = true
+			}
+			continue
+		}
 		keep[workspace.Namespace][lakeEgressRuleName(row.ID)] = true
 		status, err := r.syncLakeEgressRule(ctx, lake, row)
 		if err != nil {

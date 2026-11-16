@@ -300,6 +300,9 @@ func libraryAgentEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar
 	return env
 }
 
+// agentCPULimit caps an agent pod's CPU.
+const agentCPULimit = "1"
+
 // agentPodSpec is an agent pod: non-root with a read-only root filesystem and a writable /tmp, the
 // Lake's pull Secret, no Kubernetes token.
 func agentPodSpec(lake *oramav1alpha1.Lake, image string, env []corev1.EnvVar, service bool) corev1.PodSpec {
@@ -317,7 +320,8 @@ func agentPodSpec(lake *oramav1alpha1.Lake, image string, env []corev1.EnvVar, s
 		Env:             env,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
-			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			// A CPU limit too, so one agent cannot take its node's CPU from the workspace (operator#782).
+			Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(agentCPULimit), corev1.ResourceMemory: resource.MustParse("1Gi")},
 		},
 		VolumeMounts: []corev1.VolumeMount{{Name: agentTempVolume, MountPath: "/tmp"}},
 		SecurityContext: &corev1.SecurityContext{
@@ -820,6 +824,12 @@ func (r *LakeReconciler) reconcileLakeAgentLaunches(ctx context.Context, lake *o
 			}
 			status, err = r.stopAgentLaunch(ctx, lake, launch.WorkspaceNamespace, launch)
 		case serviceDesiredPresent:
+			var refusal string
+			if refusal, err = workspaceNamespaceRefusal(ctx, r.Client, lake, launch.WorkspaceNamespace, launch.WorkspaceID, launch.CustomerID); err != nil || refusal != "" {
+				status = LakeAgentLaunchStatus{LaunchID: launch.ID, Phase: AgentPhaseFailed, Result: "null",
+					Message: refusal, ObservedGeneration: launch.Generation}
+				break
+			}
 			var still bool
 			status, still, err = r.reconcileAgentLaunch(ctx, lake, launch.WorkspaceNamespace, workspaceLabels, launch)
 			changing = changing || still

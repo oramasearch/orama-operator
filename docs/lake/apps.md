@@ -101,7 +101,12 @@ reason `SecretDeliveryPending` and no workload is created; a failed delivery say
 reason. An unpinned lake source is delivered again every five minutes ([sealed
 secrets](sealed-secrets.md#rotation-of-a-lake-source)), so a new version changes the copy and the pod
 template's credential digest and the pods roll. Removing the reference deletes the
-`LakeSealedSecret`, its produced Secret and the copy.
+`LakeSealedSecret`, its produced Secret and the copy. When lake answers that the secret is gone (`not_found`: deleted,
+destroyed, or its mount removed), the `LakeSealedSecret` reports `Revoked` and deletes its produced
+Secret, and the LakeApp deletes its copy in the workspace namespace and takes the workload down with
+`SecretDeliveryPending`, so no pod keeps the withdrawn value
+([orama-operator#777](https://github.com/oramasearch/orama-operator/issues/777); see
+[sealed secrets](sealed-secrets.md#when-lake-stops-delivering-a-secret-orama-operator777)).
 
 Lake must authorize these references and detect secret env values before writing them; plaintext
 credentials belong in lake's secret store, never these JSON columns. `bindings_json` is:

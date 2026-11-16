@@ -119,6 +119,16 @@ func (r *LakeReconciler) syncLakeConnections(
 			ready[row.WorkspaceID] = false
 			continue
 		}
+		if refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, row.WorkspaceNamespace, row.WorkspaceID, row.CustomerID); err != nil || refusal != "" {
+			if err != nil {
+				log.Error(err, "connection reconciliation deferred", "connection", row.ID)
+				changing = true
+			} else if writeNetworkConnectionStatus(ctx, store, row, failedNetworkConnectionStatus(row, refusal)) != nil {
+				changing = true
+			}
+			ready[row.WorkspaceID] = false
+			continue
+		}
 		name := lakeConnectionName(row.ID)
 		keep[workspace.Namespace][name] = true
 		status, err := r.syncLakeConnection(ctx, lake, row)
