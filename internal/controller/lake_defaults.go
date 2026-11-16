@@ -25,15 +25,19 @@ const (
 	// lakeDefaultZettaImage is the Zetta of the Lake's own data plane, of every workspace and of
 	// every managed Zetta service.
 	lakeDefaultZettaImage = "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"
+	// The images that run tenant code (apps, builds, methodologies, user-created agents) are pinned
+	// by digest, never a tag alone, so a re-pushed tag cannot change what every tenant runs
+	// (orama-operator#765). The tag is kept for readers; the digest is what is pulled.
+	//
 	// lakeDefaultAppsRuntimeImage runs runtime-mode apps (spec.apps.runtimeImage).
-	lakeDefaultAppsRuntimeImage = "oramasearch/app-runtime:976e6a8"
+	lakeDefaultAppsRuntimeImage = "oramasearch/app-runtime:976e6a8@sha256:ee7222fbbccdcd9dc4ec88c7ee6856b81aa876366a4abeae2bc6d13fda2146b3"
 	// lakeDefaultBuilderImage runs every image build (spec.builds.builderImage).
-	lakeDefaultBuilderImage = "oramasearch/lake-builder:31a48d9"
+	lakeDefaultBuilderImage = "oramasearch/lake-builder:31a48d9@sha256:35cc44ca93a191a2832d0e03e4c7c83946eb44ae917215cd7d52b8711f9d09c0"
 	// lakeDefaultMethodologyRuntimeImage is the base of every methodology image and runs its stage
 	// and collect pods (spec.methodologies.runtimeImage).
-	lakeDefaultMethodologyRuntimeImage = "oramasearch/methodology-runtime:ac58062"
+	lakeDefaultMethodologyRuntimeImage = "oramasearch/methodology-runtime:ac58062@sha256:ee64b81a97a46917cfb278e3db3bf4692794ff3dba47ff9e05c3e436af97d1ed"
 	// lakeDefaultAgentRuntimeImage runs every user-created agent (spec.agents.runtimeImage).
-	lakeDefaultAgentRuntimeImage = "oramasearch/agent-runtime:v0.1.0"
+	lakeDefaultAgentRuntimeImage = "oramasearch/agent-runtime:v0.1.0@sha256:f14cbc7b7f82d3a9bb54635011d9b5daf019cd89c41e38dce7b00185e297e73f"
 	// lakeDefaultMCPRunnerImage is LAKE_MCP_RUNNER_IMAGE, the image lake runs MCP servers on.
 	// spec.env may still set the variable, which wins. Lake runs a stdio MCP connection as an image
 	// App on it, so it is pinned by digest: lake refuses a stdio connection otherwise, and

@@ -163,10 +163,10 @@ start on `lake-dev` is the check:
 |---|---|---|
 | Zetta: the Lake's data plane | `spec.zetta.image` | `oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a` |
 | Zetta: every workspace and managed Zetta service | `spec.services.zettaImage`, then `spec.workspaces.image` | `oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a` |
-| Runtime-mode apps (`LAKE_APPS_RUNTIME_IMAGE`) | `spec.apps.runtimeImage` | `oramasearch/app-runtime:976e6a8` |
-| Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9` |
-| Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |
-| User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:v0.1.0` |
+| Runtime-mode apps (`LAKE_APPS_RUNTIME_IMAGE`) | `spec.apps.runtimeImage` | `oramasearch/app-runtime:976e6a8@sha256:ee7222fbbccdcd9dc4ec88c7ee6856b81aa876366a4abeae2bc6d13fda2146b3` |
+| Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9@sha256:35cc44ca93a191a2832d0e03e4c7c83946eb44ae917215cd7d52b8711f9d09c0` |
+| Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062@sha256:ee64b81a97a46917cfb278e3db3bf4692794ff3dba47ff9e05c3e436af97d1ed` |
+| User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:v0.1.0@sha256:f14cbc7b7f82d3a9bb54635011d9b5daf019cd89c41e38dce7b00185e297e73f` |
 | MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892` |
 | `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:v0.1.0` |
 | `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:v0.1.0` |
