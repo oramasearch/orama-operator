@@ -258,7 +258,8 @@ spec:
                 minimum: 1
                 type: integer
               title:
-                description: Title is the page's heading, for example "example.com status".
+                description: Title is the page's heading, for example "example.com
+                  status".
                 minLength: 1
                 type: string
             required:

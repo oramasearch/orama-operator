@@ -4,8 +4,8 @@
 
 A Kubernetes operator, written in Go with kubebuilder, and the Helm chart that installs it. You
 describe a Lake, its datastores and the clusters it runs on as custom resources in the
-`orama.cloud` group; the operator creates and keeps everything they need, reports each component's
-readiness in the resource's status, and writes nothing while the stack is steady.
+`orama.cloud` group. The operator creates and keeps everything they need, reports each
+component's readiness in the resource's status, and writes nothing while the stack is steady.
 
 Part of [Orama Lake](https://github.com/oramasearch/lake-platform), the sovereign AI stack.
 MIT-licensed.
@@ -38,7 +38,7 @@ MIT-licensed.
 Every kind and field is in [the CRD reference](docs/crd-reference.md). What each reconciler creates,
 and how far each one has been tested, is in [the components page](docs/components.md); what each
 release contains is in [the release notes](docs/releases/README.md). The current release is
-[v0.11.12](docs/releases/v0.11.12.md).
+[v0.12.0](docs/releases/v0.12.0.md).
 
 ## Quickstart
 
@@ -47,8 +47,8 @@ You need a Kubernetes cluster (1.29 or later) whose network plugin is **Cilium**
 its Postgres databases through CloudNativePG, and it does not start without either
 ([#1200](https://github.com/oramasearch/orama-operator/issues/1200)).
 
-From this checkout, with your kube-context on that cluster, install the CRDs and run the manager
-on your machine:
+From this checkout, install the CRDs and run the manager on your machine. It reconciles against your
+**current kube-context**, so point that at a cluster you mean to change:
 
 ```sh
 kubectl apply --server-side -f chart/crds/
@@ -104,7 +104,7 @@ peer links, ingress and mesh it configures.
   both with Cilium. A cluster without Cilium or CloudNativePG stops the manager
   ([#1200](https://github.com/oramasearch/orama-operator/issues/1200)).
 - **Alerts are not delivered.** Each cluster's Alertmanager evaluates the rules, but no receiver is
-  configured since the previous observability stack was removed
+  configured since the previous observability stack was removed in v0.12.0
   ([#1192](https://github.com/oramasearch/orama-operator/issues/1192)).
 - **Orama Cloud v1 kinds** (`OramaCloudV1`, `OramaCloudV1Set`, `OramaCloudV1Migration`) run Orama's
   previous product and are not part of the Orama Lake release.
@@ -128,8 +128,9 @@ peer links, ingress and mesh it configures.
 
 ## Contributing
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test, sign
-your work and open a pull request (against `dev`). Good places to start are labelled
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and open
+a pull request (against `dev`). Contributions are made under the [CLA](CLA.md), signed once. Good
+places to start are labelled
 [good first issue](https://github.com/oramasearch/orama-operator/labels/good%20first%20issue).
 
 Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).

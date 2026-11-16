@@ -242,8 +242,8 @@ spec:
                     minLength: 1
                     type: string
                   settings:
-                    description: |-
-                      Settings reaches the Prod 1 writer's per-index info.json through one read-only SSM document.
+                    description: Settings reaches the Prod 1 writer's per-index info.json
+                      through one read-only SSM document.
                     properties:
                       credentialsSecretRef:
                         description: |-
