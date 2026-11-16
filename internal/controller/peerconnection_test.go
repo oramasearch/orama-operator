@@ -492,3 +492,17 @@ func TestLakePeerRowsAreValidatedAndReadOnlyAfterTheGuard(t *testing.T) {
 		}
 	}
 }
+
+// orama-operator#783: a tenant-named peer remote that is an address must be a public one.
+func TestAPeerRemoteAddressMustBePublic(t *testing.T) {
+	for _, refused := range []string{"10.224.0.5:10250", "169.254.169.254:80", "127.0.0.1:443", "192.168.1.10:443", "100.64.0.1:443", "[fd00::1]:443"} {
+		if message := validatePeerRemote(refused); message == "" {
+			t.Errorf("remote %s was accepted", refused)
+		}
+	}
+	for _, accepted := range []string{"93.184.216.34:443", "peer.example.com:443", "[2606:4700::1]:443"} {
+		if message := validatePeerRemote(accepted); message != "" {
+			t.Errorf("remote %s was refused: %s", accepted, message)
+		}
+	}
+}
