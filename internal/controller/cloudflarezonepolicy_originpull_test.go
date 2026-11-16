@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -97,14 +94,14 @@ func TestZoneOriginPullsWaitUntilEveryOriginTrustsTheCA(t *testing.T) {
 	var c client.Client
 	prober := fakeEdgeProber{clientCAs: func(name string) (bool, [][]byte, error) {
 		acceptable := [][]byte{globalCASubject(t)}
-		if trusting && name == "eu.lake.live" {
+		if trusting && name == "eu.lakelive.example" {
 			ca, _ := zoneCA(t, c)
 			acceptable = append(acceptable, ca.RawSubject)
 		}
-		if name == "lake.live" {
+		if name == "lakelive.example" {
 			return false, nil, nil // an origin that asks for no client certificate
 		}
-		return name == "eu.lake.live", acceptable, nil
+		return name == "eu.lakelive.example", acceptable, nil
 	}}
 	c, _, reconcile := newZonePolicyFixture(t, zone, prober)
 	policy := reconcile()
@@ -119,7 +116,7 @@ func TestZoneOriginPullsWaitUntilEveryOriginTrustsTheCA(t *testing.T) {
 	if st.OriginClientCAPEM != joinPEM(cloudflareOriginPullCA, string(secret.Data["ca.crt"])) || len(pemSubjects(t, st.OriginClientCAPEM)) != 2 {
 		t.Fatalf("bundle does not accept both CAs")
 	}
-	if conditionStatus(policy, edgeConditionZoneOriginPulls) != "False" || !strings.Contains(st.Message, "not yet: eu.lake.live") {
+	if conditionStatus(policy, edgeConditionZoneOriginPulls) != "False" || !strings.Contains(st.Message, "not yet: eu.lakelive.example") {
 		t.Fatalf("message = %q", st.Message)
 	}
 	trusting = true
@@ -133,14 +130,14 @@ func TestZoneOriginPullsWaitUntilEveryOriginTrustsTheCA(t *testing.T) {
 func TestZoneOriginPullsWaitForAnUnreachableOrigin(t *testing.T) {
 	zone := strictZone()
 	prober := fakeEdgeProber{clientCAs: func(name string) (bool, [][]byte, error) {
-		if name == "lake.live" {
+		if name == "lakelive.example" {
 			return false, nil, errors.New("i/o timeout")
 		}
 		return false, nil, nil
 	}}
 	_, _, reconcile := newZonePolicyFixture(t, zone, prober)
 	policy := reconcile()
-	if len(zone.clientCerts) != 0 || zone.zoneAOP || !strings.Contains(policy.Status.Message, "lake.live (no answer)") {
+	if len(zone.clientCerts) != 0 || zone.zoneAOP || !strings.Contains(policy.Status.Message, "lakelive.example (no answer)") {
 		t.Fatalf("status = %+v, patches = %v", policy.Status, zone.patches)
 	}
 }

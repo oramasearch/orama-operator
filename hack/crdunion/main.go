@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 // crdunion writes the CRDs to apply before a new operator rolls onto a cluster: each chart CRD
 // widened by every field the cluster's copy still declares (internal/crdrollout.Union). Applying

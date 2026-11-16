@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -161,10 +158,10 @@ func TestCloudOrdersPgxStoreAgainstPostgres(t *testing.T) {
 	}
 
 	// Only the holder moves it on, and only once.
-	if moved, err := restarted.MarkReady(ctx, paid, loser, "x.lake.live"); err != nil || moved {
+	if moved, err := restarted.MarkReady(ctx, paid, loser, "x.lakelive.example"); err != nil || moved {
 		t.Fatalf("a non-holder moved the order: %v %v", moved, err)
 	}
-	if moved, err := restarted.MarkReady(ctx, paid, winner, "order-0a1b2c3d4e5f.lake.live"); err != nil || !moved {
+	if moved, err := restarted.MarkReady(ctx, paid, winner, "order-0a1b2c3d4e5f.lakelive.example"); err != nil || !moved {
 		t.Fatalf("the holder could not mark it ready: %v %v", moved, err)
 	}
 	if moved, err := restarted.MarkFailed(ctx, paid, winner, "late"); err != nil || moved {
@@ -182,7 +179,7 @@ func TestCloudOrdersPgxStoreAgainstPostgres(t *testing.T) {
 		Scan(&state, &host, &reason, &subscription, &email); err != nil {
 		t.Fatal(err)
 	}
-	if state != cloudOrderReady || host != "order-0a1b2c3d4e5f.lake.live" || reason != "" || subscription != "sub_a" || email != "a@example.com" {
+	if state != cloudOrderReady || host != "order-0a1b2c3d4e5f.lakelive.example" || reason != "" || subscription != "sub_a" || email != "a@example.com" {
 		t.Fatalf("ready row: %s %s %q %s %s", state, host, reason, subscription, email)
 	}
 	if err := db.QueryRow(ctx, `SELECT state, COALESCE(host, ''), failure_reason, stripe_subscription_id FROM cloud_orders WHERE id = $1`, second).

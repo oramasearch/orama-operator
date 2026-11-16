@@ -46,8 +46,8 @@ cluster can differ only by their own `dnsSecretRef`.
 | Has a `dnsSecretRef`, zone not read yet (or never readable) | DNS-01 alone, no selector | Every name uses DNS-01, as before HTTP-01 existed. A name outside the zone cannot be issued until the zone is read |
 | Has no `dnsSecretRef` (an install that brings its own DNS) | HTTP-01 alone | Every host is issued through HTTP-01. The Lake renders no wildcard Ingress and asks for no wildcard certificate: wildcards need DNS-01 |
 
-Each environment therefore uses its own zone's token: `lake.live` Lakes the `lake.live` token,
-nonprod Lakes the `oramadev.net` one. The zone's name is read by `CloudflareZonePolicy` with
+Each environment therefore uses its own zone's token: `lake.example.com` Lakes the `lake.example.com` token,
+nonprod Lakes the `nonprod.example.com` one. The zone's name is read by `CloudflareZonePolicy` with
 `GET /zones/<zoneID>`, which needs Zone > Zone > Read; cert-manager's Cloudflare DNS-01 solver
 already needs the same permission to find a name's zone, so a token that issues certificates today
 has it. A token without it is named in the policy's `ZoneName` condition, and the Lake keeps DNS-01
@@ -153,8 +153,8 @@ on only when it is safe, in this order:
   conditions; the zone is not downgraded. Deleting a policy changes nothing in Cloudflare. Several
   policies may name one zone (one per Lake, on several clusters); they ask for the same settings.
 - **Edge certificates for app hosts (lake#798).** Universal SSL covers the apex and one level below
-  it (`oramadev.net`, `*.oramadev.net`), so a Lake's apps wildcard (`*.lake-testing.oramadev.net`,
-  `*.eu.lake.live`) has no edge certificate and the edge refuses the handshake (alert 40). For each
+  it (`nonprod.example.com`, `*.nonprod.example.com`), so a Lake's apps wildcard (`*.lake-testing.nonprod.example.com`,
+  `*.eu.lake.example.com`) has no edge certificate and the edge refuses the handshake (alert 40). For each
   proxied host two or more levels below the apex whose edge check fails, the policy reads the zone's
   certificate packs (`status=all`) and, when no live pack lists the host (or, for a plain name, the
   wildcard one level above it), orders one: `type: advanced`, hosts *apex, the host, and for a
@@ -244,10 +244,10 @@ certificate; with the redirect on it serves only redirects.
 `internal/controller/cloudflarezonepolicy_originpull.go` (the zone policy) and
 `internal/controller/managedset_origin_pull.go` (the LakeSet's copy).
 
-- **One CA per zone, made by the managing cluster** (Steve's option (a), 2026-10-23). Cloudflare
+- **One CA per zone, made by the managing cluster**. Cloudflare
   presents one client certificate per zone, and a zone may be served by several clusters
-  (`lake.live` by `orama-production-cluster-02` and `-03`; `oramadev.net` by the managing cluster's
-  `Lake/prod` and `orama-nonprod-cluster-01`). So every cluster serving a zone must present and
+  (for example `lake.example.com` by `example-production-eu` and `example-production-us`, and a
+  nonprod zone by a Lake on the managing cluster and by `example-nonprod`). So every cluster serving a zone must present and
   trust the same CA. The managing cluster's operator keeps it: the Secret
   `orama-edge-origin-pull-<zone ID>` in its namespace (`ca.crt`, `ca.key`, `tls.crt`, `tls.key`).
 - **How it reaches every cluster serving the zone.** A `LakeSet` reads each member's zone from the
@@ -267,10 +267,10 @@ certificate; with the redirect on it serves only redirects.
   for the zone, and never writes the Secret. While the Secret is missing (or holds no valid client
   certificate) the `ZoneOriginPulls` condition says it waits for the managing cluster
   (`WaitingForDistributedCA`) and the zone stays on global pulls; while its CA cannot be read the
-  policy fails. A zone policy without `originPullSecretRef` (a Lake no set manages, such as the
-  managing cluster's `Lake/prod`) uses the operator's own Secret in its namespace, creating it once.
-  On the managing cluster that is the very Secret the sets copy, so `Lake/prod` and the
-  `lake-nonprod` members present and trust the same `oramadev.net` CA.
+  policy fails. A zone policy without `originPullSecretRef` (a Lake no set manages, such as a Lake on the
+  managing cluster) uses the operator's own Secret in its namespace, creating it once.
+  On the managing cluster that is the very Secret the sets copy, so a development Lake and the
+  `lake-nonprod` members present and trust the same `nonprod.example.com` CA.
 - **The CA and the leaf.** The CA (RSA 2048, valid 10 years, a subject unique to it) is created once
   and never replaced; a Secret whose CA cannot be read fails rather than making a new CA, which would
   break every origin that trusts the old one. The client leaf (RSA 2048, `clientAuth`, valid one year)
@@ -326,7 +326,7 @@ What a release containing this does on a cluster, in order (no step is done by h
    operator does not serve (or whose certificate is not valid) stays where it is and lists the host.
 4. The Lakes see the zone's state and turn on the redirect and the client-certificate requirement.
 5. Always Use HTTPS waits until every proxied host has an edge certificate. App hosts two levels
-   below the zone apex (`<app>.eu.lake.live`, `<app>.lake-dev.oramadev.net`) are not covered by
+   below the zone apex (`<app>.eu.lake.example.com`, `<app>.lake-dev.nonprod.example.com`) are not covered by
    Universal SSL, so the zone policy orders an Advanced Certificate for the apps wildcard, which
    covers them (step 4 of the policy, lake#798), and this step waits until Cloudflare has validated and deployed them. That
    needs Advanced Certificate Manager on the zone and Zone > SSL and Certificates > Edit on the

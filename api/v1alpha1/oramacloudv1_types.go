@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package v1alpha1
 
@@ -263,21 +260,21 @@ type ComponentsSpec struct {
 	// +optional
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
-	Dashboard DashboardSpec  `json:"dashboard,omitempty"` // app.orama.com (Next.js)
-	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
+	Dashboard DashboardSpec  `json:"dashboard,omitempty"` // app.example.com (Next.js)
+	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.example.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
 	// ControlDB is the Postgres control plane, always in-cluster.
 	// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode == 'in-cluster'",message="controlDB.mode external is not supported: the control DB is always in-cluster"
 	ControlDB ControlDBSpec `json:"controlDB,omitempty"`
-	PgAdmin   Toggle        `json:"pgAdmin,omitempty"` // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
+	PgAdmin   PgAdminSpec   `json:"pgAdmin,omitempty"` // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
 	Cache     DataStoreSpec `json:"cache,omitempty"`   // Redis (+ QStash shim)
 	Broker    DataStoreSpec `json:"broker,omitempty"`  // RabbitMQ
 	Search    DataStoreSpec `json:"search,omitempty"`  // Typesense hosted-search clusters
 	Disco     Toggle        `json:"disco,omitempty"`   // DISCO semantic cache
 	Workers   WorkersSpec   `json:"workers,omitempty"` // the ported CF workers (one bundled image)
 
-	// Additional v1 components (gap fill — techops-docs issues #5–#7):
+	// Additional v1 components (gap fill, operator issues #5–#7):
 	AnalyticsProcessor AnalyticsProcessorSpec `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
 	// Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
 	// the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
@@ -371,7 +368,7 @@ type WriterSpec struct {
 	// Unset renders no writer_side.jwt block.
 	// +optional
 	JWT *WriterJWTSpec `json:"jwt,omitempty"`
-	// Host publishes the writer on this public DNS name (for example writer.orama.ing), without a
+	// Host publishes the writer on this public DNS name (for example writer.example.org), without a
 	// scheme, path or port: an owned Ingress with origin TLS to the writer Service on 8080 and, with
 	// Cloudflare DNS managed, a proxied DNS record. Only a primary region publishes its writer.
 	// Empty keeps the writer internal.
@@ -381,7 +378,7 @@ type WriterSpec struct {
 	Host string `json:"host,omitempty"`
 	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
 	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
-	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
 	// host; no name may repeat across the hosts and extra hosts of every component.
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
@@ -418,7 +415,7 @@ type ReaderSpec struct {
 	Storage *VolumeSpec `json:"storage,omitempty"`
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-	// Host publishes the readers on this public DNS name (for example reader.orama.ing), without a
+	// Host publishes the readers on this public DNS name (for example reader.example.org), without a
 	// scheme, path or port: an owned Ingress with origin TLS to the reader Service on 80 (through
 	// Envoy when it is enabled) and, with Cloudflare DNS managed, a proxied DNS record. Empty keeps
 	// the readers internal.
@@ -428,7 +425,7 @@ type ReaderSpec struct {
 	Host string `json:"host,omitempty"`
 	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
 	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
-	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
 	// host; no name may repeat across the hosts and extra hosts of every component.
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
@@ -506,6 +503,16 @@ type SecretKeyRef struct {
 // dashboard reference rows the operator seeds (operator#378).
 type ControlDBSpec struct {
 	DataStoreSpec `json:",inline"`
+	// ReferenceRows is this stack's catalog: the dashboard reference rows (subscription_plans,
+	// stripe_addon_prices, llms) the operator seeds, one statement per line, in the shape
+	// hack/export-dashboard-reference-rows.sh prints:
+	// INSERT INTO reference_<table> SELECT * FROM json_populate_record(NULL::reference_<table>, '<row JSON>');
+	// Lines starting with "--" and blank lines are allowed; any other line fails the stack's
+	// reconcile, visibly. The rows must include the default plan the dashboard's migration 0008
+	// names. Empty seeds the operator's built-in example catalog.
+	// +kubebuilder:validation:MaxLength=262144
+	// +optional
+	ReferenceRows string `json:"referenceRows,omitempty"`
 	// StripePrices are this stack's Stripe price IDs for the seeded reference rows: test-mode IDs on
 	// a nonprod stack, live-mode IDs on production. They are never part of the operator's committed
 	// rows. Empty leaves every plan's Stripe columns NULL and seeds no add-on price.
@@ -602,6 +609,18 @@ type Toggle struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// PgAdminSpec is pgAdmin's toggle plus the address of its login.
+type PgAdminSpec struct {
+	Toggle `json:",inline"`
+	// Email is the address of pgAdmin's login (PGADMIN_DEFAULT_EMAIL); its password is generated into
+	// the stack's pgAdmin Secret. pgAdmin refuses an address without a public top-level domain (such
+	// as .local). Empty is admin@example.com.
+	// +kubebuilder:validation:Pattern=`^[^@\s]+@[^@\s]+\.[^@\s]+$`
+	// +kubebuilder:validation:MaxLength=254
+	// +optional
+	Email string `json:"email,omitempty"`
+}
+
 // AnalyticsProcessorSpec is the analytics processor's toggle plus its scheduled import.
 type AnalyticsProcessorSpec struct {
 	Toggle `json:",inline"`
@@ -630,7 +649,7 @@ type ToggleWithHost struct {
 	Host string `json:"host,omitempty"`
 	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
 	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
-	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
 	// host; no name may repeat across the hosts and extra hosts of every component.
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1

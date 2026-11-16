@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -25,8 +22,8 @@ import (
 // the Secret's own orama.cloud/purpose label.
 
 const (
-	scopeNonprodCluster = "orama-nonprod-cluster-01"
-	scopeProdCluster    = "orama-production-cluster-02"
+	scopeNonprodCluster = "example-nonprod"
+	scopeProdCluster    = "example-production-eu"
 )
 
 // operatorOn is an OramaOperator for cluster that copies orama-system/<pullSecret>.

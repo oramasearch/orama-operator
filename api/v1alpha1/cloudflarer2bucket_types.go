@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package v1alpha1
 
@@ -55,7 +52,7 @@ type CloudflareR2BucketSpec struct {
 
 // CloudflareR2CustomDomain is a public host for a bucket, in a zone on the same Cloudflare account.
 type CloudflareR2CustomDomain struct {
-	// Domain is the host, for example status.lake.live. Cloudflare creates its DNS record.
+	// Domain is the host, for example status.example.com. Cloudflare creates its DNS record.
 	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$`
 	Domain string `json:"domain"`
 	// ZoneID is the Cloudflare zone the domain is in. Not a secret.

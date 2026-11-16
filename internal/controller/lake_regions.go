@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -16,7 +13,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// A Lake's regions (decision 64, operator#512): one Lake per region, each at its own host, and a
+// A Lake's regions (operator#512): one Lake per region, each at its own host, and a
 // region picker at the apex host that preselects the region closest to the visitor. The operator
 // supplies everything the picker needs, so lake has no region setting of its own.
 
@@ -77,7 +74,7 @@ var cloudRegionLocations = map[string][2]string{
 // not exist yet is left out until it does. It refuses the set when the list cannot be right: a
 // labelled member with no host, a region with no known location, a list stated by hand, two
 // apex hosts, or one region named twice: a picker chooses between the regions of one environment,
-// never between environments in one region (decision 64; Steve, 2026-10-17, #532).
+// never between environments in one region (#532).
 func prepareLakeRegions(template map[string]any, members []resolvedMember) (any, error) {
 	var regions []oramav1alpha1.LakeRegion
 	var apexes []string

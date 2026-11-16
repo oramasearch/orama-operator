@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -306,7 +303,7 @@ func TestALakeWithoutClerkIsUntouched(t *testing.T) {
 
 func TestAClerkDevelopmentInstanceIsConfiguredForLakeAndTheLakeGetsItsKeys(t *testing.T) {
 	clerk, server := newFakeClerk(t, "development")
-	lake := clerkTestLake("dev", "lake-dev", "lake-dev.oramadev.net")
+	lake := clerkTestLake("dev", "lake-dev", "lake-dev.nonprod.example")
 	h := newClerkHarness(t, lake, clerk, server, clerkKeySecret("lake-dev"))
 	h.reconcile()
 
@@ -325,11 +322,11 @@ func TestAClerkDevelopmentInstanceIsConfiguredForLakeAndTheLakeGetsItsKeys(t *te
 		!reflect.DeepEqual(template["claims"], map[string]any{"aud": "lake", "email": "{{user.primary_email_address}}", "name": "{{user.full_name}}"}) {
 		t.Errorf("template = %v", template)
 	}
-	if want := []string{"http://localhost:3000", "https://lake-dev.oramadev.net"}; !reflect.DeepEqual(clerk.origins, want) {
+	if want := []string{"http://localhost:3000", "https://lake-dev.nonprod.example"}; !reflect.DeepEqual(clerk.origins, want) {
 		t.Errorf("allowed origins = %v, want %v (existing kept)", clerk.origins, want)
 	}
 	endpoint := clerk.endpoints[0]
-	if endpoint["url"] != "https://lake-dev.oramadev.net/identity/clerk-webhook" ||
+	if endpoint["url"] != "https://lake-dev.nonprod.example/identity/clerk-webhook" ||
 		!reflect.DeepEqual(endpoint["eventTypes"], []any{"session.ended", "session.removed", "session.revoked", "user.created", "user.deleted", "user.updated"}) {
 		t.Errorf("endpoint = %v", endpoint)
 	}
@@ -404,22 +401,22 @@ func TestAClerkDevelopmentInstanceIsConfiguredForLakeAndTheLakeGetsItsKeys(t *te
 func TestAProductionInstanceAdoptsItsWebhookAndWritesClerksDNS(t *testing.T) {
 	clerk, server := newFakeClerk(t, "production")
 	clerk.secretKey = "sk_live_lake"
-	clerk.frontend = "https://clerk.lake.live"
+	clerk.frontend = "https://clerk.lakelive.example"
 	clerk.targets = []map[string]any{
-		{"host": "clerk.lake.live", "value": "frontend-api.clerk.services", "record_type": "CNAME", "required": true, "automation_disposition": "safe_to_create"},
-		{"host": "accounts.lake.live", "value": "accounts.clerk.services", "record_type": "CNAME", "required": true},
-		{"host": "clk._domainkey.lake.live", "value": "dkim1.example.clerk.services", "record_type": "CNAME", "required": true},
+		{"host": "clerk.lakelive.example", "value": "frontend-api.clerk.services", "record_type": "CNAME", "required": true, "automation_disposition": "safe_to_create"},
+		{"host": "accounts.lakelive.example", "value": "accounts.clerk.services", "record_type": "CNAME", "required": true},
+		{"host": "clk._domainkey.lakelive.example", "value": "dkim1.example.clerk.services", "record_type": "CNAME", "required": true},
 	}
 	// The instance is already partly configured: the template with an old lifetime, the origin,
 	// and an endpoint at the Lake's URL with fewer events.
 	clerk.templates = []map[string]any{{"id": "jtmp_old", "name": "lake", "lifetime": 60,
 		"claims": map[string]any{"aud": "lake", "email": "{{user.primary_email_address}}", "name": "{{user.full_name}}"}}}
-	clerk.origins = []string{"https://eu.lake.live", "https://lake.live"}
+	clerk.origins = []string{"https://eu.lakelive.example", "https://lakelive.example"}
 	clerk.svixApp = true
-	clerk.endpoints = []map[string]any{{"id": "ep_existing", "url": "https://eu.lake.live/identity/clerk-webhook", "eventTypes": []any{"user.created"}, "disabled": false}}
+	clerk.endpoints = []map[string]any{{"id": "ep_existing", "url": "https://eu.lakelive.example/identity/clerk-webhook", "eventTypes": []any{"user.created"}, "disabled": false}}
 
-	lake := clerkTestLake("shared", "lake-shared", "eu.lake.live")
-	lake.Spec.ApexHost = "lake.live"
+	lake := clerkTestLake("shared", "lake-shared", "eu.lakelive.example")
+	lake.Spec.ApexHost = "lakelive.example"
 	secret := clerkKeySecret("lake-shared")
 	secret.Data["secretKey"] = []byte("sk_live_lake")
 	h := newClerkHarness(t, lake, clerk, server, secret)
@@ -429,7 +426,7 @@ func TestAProductionInstanceAdoptsItsWebhookAndWritesClerksDNS(t *testing.T) {
 	if got := writes(clerk.log()); !reflect.DeepEqual(got, wantWrites) {
 		t.Fatalf("writes = %v, want %v (origins already there, endpoint adopted)", got, wantWrites)
 	}
-	if pk := h.env()["LAKE_CLERK_PUBLISHABLE_KEY"].Value; !strings.HasPrefix(pk, "pk_live_") || issuerFromPublishableKey(pk) != "https://clerk.lake.live" {
+	if pk := h.env()["LAKE_CLERK_PUBLISHABLE_KEY"].Value; !strings.HasPrefix(pk, "pk_live_") || issuerFromPublishableKey(pk) != "https://clerk.lakelive.example" {
 		t.Errorf("publishable key = %q", pk)
 	}
 	records := h.clerkRecords()
@@ -442,7 +439,7 @@ func TestAProductionInstanceAdoptsItsWebhookAndWritesClerksDNS(t *testing.T) {
 			t.Errorf("record %s = %+v owners %v", rec.Name, rec.Spec, rec.OwnerReferences)
 		}
 	}
-	if records[0].Spec.Name != "accounts.lake.live" || records[1].Spec.Name != "clerk.lake.live" {
+	if records[0].Spec.Name != "accounts.lakelive.example" || records[1].Spec.Name != "clerk.lakelive.example" {
 		t.Errorf("record names = %s, %s", records[0].Spec.Name, records[1].Spec.Name)
 	}
 
@@ -460,7 +457,7 @@ func TestAProductionInstanceAdoptsItsWebhookAndWritesClerksDNS(t *testing.T) {
 func TestAClerkFailureIsReportedAndDoesNotStopTheLake(t *testing.T) {
 	clerk, server := newFakeClerk(t, "development")
 	clerk.secretKey = "sk_test_other" // the Lake's key is refused
-	lake := clerkTestLake("dev", "lake-dev", "lake-dev.oramadev.net")
+	lake := clerkTestLake("dev", "lake-dev", "lake-dev.nonprod.example")
 	h := newClerkHarness(t, lake, clerk, server, clerkKeySecret("lake-dev"))
 	h.reconcile()
 	condition := apimeta.FindStatusCondition(h.getLake().Status.Conditions, "ClerkReady")
@@ -486,7 +483,7 @@ func TestClerkKeysAndSvixAddressesAreDerivedAsClerkAndSvixDo(t *testing.T) {
 	if pk != "pk_test_"+base64.StdEncoding.EncodeToString([]byte("above-seahorse-7535.clerk.accounts.dev$")) {
 		t.Errorf("pk = %s", pk)
 	}
-	if got := issuerFromPublishableKey(clerkPublishableKey("production", "https://clerk.lake.live")); got != "https://clerk.lake.live" {
+	if got := issuerFromPublishableKey(clerkPublishableKey("production", "https://clerk.lakelive.example")); got != "https://clerk.lakelive.example" {
 		t.Errorf("issuer = %s", got)
 	}
 	for token, want := range map[string]string{
@@ -523,7 +520,7 @@ func TestARetainedDNSRecordStaysInCloudflare(t *testing.T) {
 	ctx := context.Background()
 	rec := &oramav1alpha1.CloudflareDNSRecord{
 		ObjectMeta: metav1.ObjectMeta{Name: "lake-shared-clerk-1", Namespace: "lake-shared"},
-		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "clerk.lake.live", Type: "CNAME",
+		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "clerk.lakelive.example", Type: "CNAME",
 			Content: "frontend-api.clerk.services", Proxied: false, DeletionPolicy: "Retain"},
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cf", Namespace: "lake-shared"},

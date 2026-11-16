@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package imagepolicy checks the executable image references in rendered workloads.
 package imagepolicy
 

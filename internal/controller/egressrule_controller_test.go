@@ -1,13 +1,11 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -280,7 +278,8 @@ func TestNameRuleAllowsTheSourceOnlyTheGateway(t *testing.T) {
 }
 
 // TestAnIPLiteralNeedsACIDRRule: a name rule never takes an address, and only a CIDR rule opens a
-// direct path, minus every cluster address inside its range.
+// direct path, to public addresses only (LSR-217): private, CGNAT, ULA and metadata ranges are
+// refused, and a wider range is opened minus them.
 func TestAnIPLiteralNeedsACIDRRule(t *testing.T) {
 	for _, literal := range []string{"93.184.216.34", "2001:db8::1", "*.example.com", "localhost", "example.123"} {
 		if _, err := normalizeEgressDNSName(literal); err == nil {
@@ -297,7 +296,7 @@ func TestAnIPLiteralNeedsACIDRRule(t *testing.T) {
 		RuleID:     testEgressCIDRRuleID,
 		SourceKind: oramav1alpha1.EgressRuleSourceService,
 		SourceID:   testEgressSourceID,
-		CIDR:       "10.224.0.0/16",
+		CIDR:       "93.184.216.0/24",
 		Ports:      []int32{5432},
 	})
 	rule := f.reconcile(t, name)
@@ -309,12 +308,39 @@ func TestAnIPLiteralNeedsACIDRRule(t *testing.T) {
 		t.Fatalf("cidr policy = %#v", policy)
 	}
 	block := policy.Spec.Egress[0].To[0].IPBlock
-	if block.CIDR != "10.224.0.0/16" || !reflect.DeepEqual(block.Except, []string{"10.224.0.4/32"}) ||
+	if block.CIDR != "93.184.216.0/24" || len(block.Except) != 0 ||
 		policy.Spec.Egress[0].Ports[0].Port.IntVal != 5432 || policy.Spec.PodSelector.MatchLabels[serviceIDLabel] != testEgressSourceID {
 		t.Fatalf("cidr policy = %#v", policy.Spec)
 	}
 	if _, found := f.snapshot(t); found {
 		t.Fatal("a CIDR rule started an egress gateway")
+	}
+
+	// Private infrastructure is never a rule's destination (LSR-217): each range is refused.
+	for i, private := range []string{"10.224.0.0/16", "172.16.5.0/24", "192.168.1.0/24", "100.64.0.0/16", "fd00::/64"} {
+		id := fmt.Sprintf("e0000000-0000-4000-8000-%012d", i)
+		privateName := lakeEgressRuleName(id)
+		f.add(t, privateName, oramav1alpha1.EgressRuleSpec{RuleID: id, CIDR: private, Ports: []int32{5432}})
+		if rule := f.reconcile(t, privateName); rule.Status.Phase != oramav1alpha1.EgressRulePhaseFailed || f.policy(t, privateName) != nil {
+			t.Errorf("private range %s = %+v", private, rule.Status)
+		}
+	}
+	// A wider range is opened minus every private range inside it.
+	wide := lakeEgressRuleName("f0000000-0000-4000-8000-00000000000f")
+	f.add(t, wide, oramav1alpha1.EgressRuleSpec{RuleID: "f0000000-0000-4000-8000-00000000000f", CIDR: "0.0.0.0/0", Ports: []int32{443}})
+	f.reconcile(t, wide)
+	if policy := f.policy(t, wide); policy == nil {
+		t.Fatal("0.0.0.0/0 was refused")
+	} else {
+		excepted := map[string]bool{}
+		for _, value := range policy.Spec.Egress[0].To[0].IPBlock.Except {
+			excepted[value] = true
+		}
+		for _, private := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"} {
+			if !excepted[private] {
+				t.Errorf("0.0.0.0/0 does not except %s", private)
+			}
+		}
 	}
 
 	// A range wholly inside an address no rule may reach is refused.

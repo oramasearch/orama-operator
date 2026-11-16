@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -10,6 +7,8 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -40,7 +39,7 @@ const (
 	// scramIterations matches PostgreSQL's default scram_iterations.
 	scramIterations = 4096
 	// trustedSearchPath is the only search_path a superuser session against a service uses
-	// (operator#800, LSR-138). The service's database belongs to the tenant, and its owner may set
+	// (operator#800). The service's database belongs to the tenant, and its owner may set
 	// the database's default search_path and create objects in its own schemas; a superuser session
 	// that resolved a name through that path would run the owner's look-alike of a catalog view,
 	// function or operator with superuser rights. pg_temp is listed last so a temporary object can
@@ -59,6 +58,10 @@ type ConnectionPostgresTarget struct {
 	Database string
 	User     string
 	Password string
+	// CA is the PEM of the CNPG cluster's CA (Secret <cluster>-ca, key ca.crt). The operator verifies
+	// the server against it and the host name before sending the superuser password
+	// (orama-operator#775); without it no session is opened.
+	CA []byte
 }
 
 // PostgresRoleManager is the injected dependency through which the Connection controller manages
@@ -159,14 +162,25 @@ func connectionPostgresConfig(target ConnectionPostgresTarget) (*pgx.ConnConfig,
 		Host:   net.JoinHostPort(target.Host, strconv.Itoa(target.Port)),
 		Path:   "/" + target.Database,
 	}
+	// orama-operator#775: verify-full against the cluster's own CA and its host name, with no
+	// plaintext or unverified fallback, so nothing on the path can read the superuser password.
+	if len(target.CA) == 0 {
+		return nil, errors.New("no CA for the service's Postgres: the operator never signs in without verifying the server")
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(target.CA) {
+		return nil, errors.New("the service's Postgres CA is not a PEM certificate")
+	}
 	query := url.Values{}
-	query.Set("sslmode", "prefer")
+	query.Set("sslmode", "verify-full")
 	query.Set("application_name", "orama-operator-connections")
 	uri.RawQuery = query.Encode()
 	config, err := pgx.ParseConfig(uri.String())
 	if err != nil {
 		return nil, err
 	}
+	config.TLSConfig = &tls.Config{RootCAs: roots, ServerName: target.Host, MinVersion: tls.VersionTLS12}
+	config.Fallbacks = nil
 	config.RuntimeParams["search_path"] = trustedSearchPath
 	return config, nil
 }

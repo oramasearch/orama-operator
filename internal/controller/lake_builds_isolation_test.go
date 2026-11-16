@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -21,8 +18,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// The isolation rules the tenant-build security review (orama-operator#712,
-// docs/security/deep-search-712-tenant-builds.md) relies on. Each test names the rule it holds,
+// The isolation rules the tenant-build security review relies on. Each test names the rule it holds,
 // so a change that weakens one fails here instead of silently widening what tenant source can do.
 
 // Rule: a build step reaches no private, link-local or cloud platform address on its public
@@ -137,7 +133,7 @@ func TestBuilderPodHasNoHostAccessOrExtraPrivilege(t *testing.T) {
 			if volume.EmptyDir.SizeLimit == nil {
 				t.Fatalf("emptyDir %s has no size limit", volume.Name)
 			}
-		case volume.Secret != nil && volume.Name == buildBaseAuthVolume && volume.Secret.SecretName == buildPullSecretName:
+		case volume.Secret != nil && volume.Name == buildBaseAuthVolume && volume.Secret.SecretName == buildBasePullSecretName:
 		default:
 			t.Fatalf("builder pod mounts an unexpected volume: %+v", volume)
 		}

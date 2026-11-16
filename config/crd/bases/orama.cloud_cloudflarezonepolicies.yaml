@@ -233,7 +233,7 @@ spec:
                 type: integer
               zone:
                 description: |-
-                  Zone is the zone's name (its apex domain, such as lake.live) as the provider reports it. A
+                  Zone is the zone's name (its apex domain, such as example.com) as the provider reports it. A
                   Lake's Issuer solves DNS-01 for this zone and every name under it, and HTTP-01 for any other
                   name; until the zone is known it solves DNS-01 for every name (operator#632).
                 type: string

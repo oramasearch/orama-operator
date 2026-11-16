@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -65,7 +62,7 @@ const (
 	leafAPITimeout = 30 * time.Second
 	// How long Helm waits for a chart's hooks (a Job that installs CRDs, for one). It is not the
 	// API timeout: on a new cluster a hook's image is pulled alongside everything else, and the
-	// ClickHouse operator's took over 30 seconds on orama-production-cluster-03, where a
+	// ClickHouse operator's took over 30 seconds on a new production cluster, where a
 	// 30-second limit failed the release 26 times in a row before one attempt got through.
 	leafHookTimeout = 10 * time.Minute
 )
@@ -342,8 +339,8 @@ func (g *kubeconfigGetter) ToRESTMapper() (meta.RESTMapper, error) {
 func (g *kubeconfigGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig { return g.config }
 
 // leafScheme is the kinds a leaf client knows: Kubernetes' own and Orama's. client.New's default
-// knows only Kubernetes', and a typed read of an Orama kind on a leaf (the observability agent
-// reading the hub's PixieCloud) failed with "no kind is registered".
+// knows only Kubernetes', and a typed read of an Orama kind on a leaf failed with "no kind is
+// registered".
 var leafScheme = func() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))

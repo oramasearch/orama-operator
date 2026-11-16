@@ -27,7 +27,7 @@ For lake-prod, the rehearsal is declared in its set file and applied on the memb
 managing operator; the runbook, with what is missing today, is
 [restore rehearsals](../restore-rehearsals.md).
 
-Never run a rehearsal against `Lake/prod` on AKS unless that operation is deliberately approved.
+Never run a rehearsal against a production-like Lake unless that operation is deliberately approved.
 Use the disposable k0s or `kind` cluster described in the work order when its R2 Secret is
 available.
 

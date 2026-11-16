@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -234,13 +231,85 @@ func (r *LakeSealedSecretReconciler) recordsForDelivery(
 		return nil, nil, nil, &result, nil
 	}
 	minted, err := r.mintSealedSecret(ctx, lake, resource)
+	if refusal, revoked := lakeMintRevocation(err); revoked {
+		// Lake no longer delivers this secret (operator#777): it, its version or its mount is
+		// deleted or destroyed. The Kubernetes Secret is only a projection, so it goes too, and
+		// every copy made from it with it; the source is asked again on the refresh interval.
+		result, revokeErr := r.revoke(ctx, resource, produced, producedExists, refusal)
+		return nil, nil, nil, &result, revokeErr
+	}
 	if err != nil {
+		// Anything else (lake unreachable, store_unavailable, the operator's own credential
+		// refused) keeps the last delivered value and retries.
 		if _, statusErr := r.fail(ctx, resource, "MintFailed", err.Error()); statusErr != nil {
 			return nil, nil, nil, nil, statusErr
 		}
 		return nil, nil, nil, nil, err
 	}
 	return minted.Data, minted.Lease, &lakeDelivery{Version: minted.Version}, nil, nil
+}
+
+// lakeMintRefusal is a refusal lake answered with its own error code.
+type lakeMintRefusal struct {
+	Code    string
+	Message string
+}
+
+func (e *lakeMintRefusal) Error() string { return fmt.Sprintf("lake %s: %s", e.Code, e.Message) }
+
+// lakeMintRevokedCodes are lake's definite answers that the secret is gone. read_secret answers
+// not_found for a missing mount or secret and for a deleted or destroyed version alike. unauthorized
+// is not one: mint_sealed_secret is called with the operator's own credential, so unauthorized says
+// that credential is wrong, never that the user's secret was withdrawn, and deleting every
+// projection on it would turn an operator fault into an outage of every app.
+var lakeMintRevokedCodes = map[string]bool{"not_found": true}
+
+// lakeMintRevocation reports whether err is lake's definite answer that the secret is gone.
+func lakeMintRevocation(err error) (*lakeMintRefusal, bool) {
+	var refusal *lakeMintRefusal
+	if errors.As(err, &refusal) && lakeMintRevokedCodes[refusal.Code] {
+		return refusal, true
+	}
+	return nil, false
+}
+
+// lakeSealedSecretRevoked is the Ready reason of a resource whose secret lake no longer delivers.
+const lakeSealedSecretRevoked = "Revoked"
+
+// revoke deletes the produced Secret of a resource whose secret lake refused as gone, and reports
+// Revoked. The resource stays, so a secret created again under the same name is delivered again.
+func (r *LakeSealedSecretReconciler) revoke(
+	ctx context.Context,
+	resource *oramav1alpha1.LakeSealedSecret,
+	produced *corev1.Secret,
+	producedExists bool,
+	refusal *lakeMintRefusal,
+) (ctrl.Result, error) {
+	if producedExists && metav1.IsControlledBy(produced, resource) {
+		if err := r.Delete(ctx, produced); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete revoked Secret %s/%s: %w", produced.Namespace, produced.Name, err)
+		}
+	}
+	desired := resource.Status.DeepCopy()
+	desired.Phase = "Error"
+	desired.ObservedGeneration = resource.Generation
+	// The Secret holds no version and no lease any more.
+	desired.Version = 0
+	desired.Lease = nil
+	apimeta.SetStatusCondition(&desired.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             lakeSealedSecretRevoked,
+		Message:            "lake no longer delivers this secret; its Secret was deleted: " + refusal.Error(),
+		ObservedGeneration: resource.Generation,
+	})
+	if !apiequality.Semantic.DeepEqual(resource.Status, *desired) {
+		resource.Status = *desired
+		if err := r.Status().Update(ctx, resource); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{RequeueAfter: r.lakeSourceRefresh()}, nil
 }
 
 func (r *LakeSealedSecretReconciler) reconcileProducedSecret(
@@ -421,7 +490,7 @@ func (r *LakeSealedSecretReconciler) secretContentMACValid(
 
 // lakeMintRequest is the body of a mint call. It carries no attestation: the operator's own
 // service-account token authorizes cluster-wide Secret and workload access and must never leave the
-// operator (LSR-042, orama-operator#791). Lake authenticates the call with its admin bearer alone.
+// operator (orama-operator#791). Lake authenticates the call with its admin bearer alone.
 type lakeMintRequest struct {
 	Recipient lakeMintRecipient                    `json:"recipient"`
 	Source    oramav1alpha1.LakeSealedSecretSource `json:"source"`
@@ -501,18 +570,21 @@ func (r *LakeSealedSecretReconciler) mintSealedSecret(
 		return lakeMintResult{}, fmt.Errorf("call lake mint_sealed_secret: %w", err)
 	}
 	defer response.Body.Close()
+	decoded := lakeMintResponse{}
+	decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1024*1024)).Decode(&decoded)
+	// Lake's refusal names its code in the body, whatever the HTTP status; only a body that is
+	// lake's own error envelope counts as lake's answer.
+	if decodeErr == nil && !decoded.OK && decoded.Error != nil && decoded.Error.Code != "" {
+		return lakeMintResult{}, &lakeMintRefusal{Code: decoded.Error.Code, Message: decoded.Error.Message}
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return lakeMintResult{}, fmt.Errorf("lake mint_sealed_secret returned %s", response.Status)
 	}
-	decoded := lakeMintResponse{}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1024*1024)).Decode(&decoded); err != nil {
-		return lakeMintResult{}, fmt.Errorf("decode lake mint_sealed_secret response: %w", err)
+	if decodeErr != nil {
+		return lakeMintResult{}, fmt.Errorf("decode lake mint_sealed_secret response: %w", decodeErr)
 	}
 	if !decoded.OK {
-		if decoded.Error == nil {
-			return lakeMintResult{}, errors.New("lake mint_sealed_secret failed without an error")
-		}
-		return lakeMintResult{}, fmt.Errorf("lake %s: %s", decoded.Error.Code, decoded.Error.Message)
+		return lakeMintResult{}, errors.New("lake mint_sealed_secret failed without an error")
 	}
 	result := lakeMintResult{Data: decoded.Value.Data, Version: decoded.Value.Version}
 	if len(result.Data) == 0 {

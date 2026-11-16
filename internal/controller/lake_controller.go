@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -31,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -106,6 +104,10 @@ type LakeReconciler struct {
 	LakeManifestLogs func(ctx context.Context, namespace, podName string) (string, error)
 	// BuildEventClient posts best-effort pod-level events to lake. Nil uses a bounded client.
 	BuildEventClient *http.Client
+	// Recorder records events on the Lake: Warnings such as a tenant service object found in the Lake
+	// namespace (lake_tenant_isolation.go), and Normal ones such as a service's administrator
+	// password being rotated (operator#1172). SetupWithManager sets it; nil records none.
+	Recorder record.EventRecorder
 }
 
 const (
@@ -384,6 +386,13 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeLibraryAgents(ctx, &lake, ns, labels); err != nil {
 		log.Error(err, "library agents deferred")
 	}
+	// The Lake's agent service token never stays in a workspace namespace (agent-runtime#14).
+	if err := r.removeWorkspaceServiceTokenCopies(ctx, &lake); err != nil {
+		log.Error(err, "removing agent service token copies from workspace namespaces deferred")
+	}
+	// No tenant service object is left in the Lake namespace (orama-operator#778): reported as the
+	// TenantServicesIsolated condition and a Warning event, never deleted.
+	tenantIsolationCondition := r.reconcileLakeTenantIsolation(ctx, &lake, ns)
 	// Orama's provider key never stays in a workspace namespace (orama-operator#779).
 	if err := r.removeWorkspaceProviderKeyCopies(ctx, &lake); err != nil {
 		log.Error(err, "removing provider key copies from workspace namespaces deferred")
@@ -445,6 +454,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		conditionsChanged = true
 	}
 	if apimeta.SetStatusCondition(&desiredConditions, lakeFeaturesCondition(&lake)) {
+		conditionsChanged = true
+	}
+	if apimeta.SetStatusCondition(&desiredConditions, tenantIsolationCondition) {
 		conditionsChanged = true
 	}
 	// ClerkReady exists only on a Lake with spec.clerk.
@@ -1800,7 +1812,7 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	dnsRecord := func() *oramav1alpha1.CloudflareDNSRecord {
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: dnsName, Namespace: ns}}
 	}
-	// The apex host's record (decision 64): the region picker's host, beside the Lake's own.
+	// The apex host's record: the region picker's host, beside the Lake's own.
 	apexRecord := func() *oramav1alpha1.CloudflareDNSRecord {
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: svcName + "-apex-dns", Namespace: ns}}
 	}
@@ -2076,6 +2088,9 @@ func (r *LakeReconciler) lakeRequestsForStoreClaim(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("lake")
+	}
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.Lake{}).
 		Owns(&appsv1.Deployment{}).

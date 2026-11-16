@@ -33,7 +33,7 @@ The manager's cache, also used for `WATCH_NAMESPACE` runs:
 ## What caused the OOM, measured on the managing cluster
 
 On 2026-10-20 the v0.7.1 operator was OOMKilled 20 seconds after it started on
-`orama-production-cluster-01`. It restarted once and then ran at 95–140Mi. The pieces were measured
+`example-management`. It restarted once and then ran at 95–140Mi. The pieces were measured
 on 2026-10-21 with read-only list, watch and Helm `Get` calls from a probe that used the operator's
 own libraries:
 

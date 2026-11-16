@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # Orama Cloud v1 e2e — the control plane around the engine.
 #
 # Sourced by e2e-functional.sh after lib.sh; shipped beside it in the OramaCloudV1E2ETest ConfigMap

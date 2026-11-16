@@ -1,10 +1,12 @@
+# An example, in the shape of a real deployment. The values are not Orama's: every name,
+# host and id is a placeholder. See README.md in this folder.
 apiVersion: orama.cloud/v1alpha1
 kind: LakeSet
 metadata:
   name: lake-prod
 spec:
   clusters:
-  - clusterRef: orama-production-cluster-02
+  - clusterRef: example-production-eu
     name: shared
     spec:
       billing: {enabled: true}
@@ -20,16 +22,13 @@ spec:
       - name: LAKE_LOG_MODE
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
-        value: eu.lake.live
+        value: eu.lake.example.com
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      # Order email (lake docs/api/orders.md#email): Orama's Resend key, sending-only for lake.live;
-      # the sender defaults to "Lake <orders@lake.live>" (lake.live verified in Resend).
       - name: LAKE_RESEND_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-resend, key: api_key}}
-      # Production on lake.live (decision 64, #513): the EU region, and the region picker at the apex.
-      host: eu.lake.live
-      apexHost: lake.live
+      host: eu.lake.example.com
+      apexHost: lake.example.com
       region:
         label: Europe
       clerk:
@@ -37,7 +36,7 @@ spec:
     secrets:
     - {name: clerk-lake-prod, namespace: lake, as: clerk-secret-key}
     - {name: stripe-live, namespace: lake, as: stripe}
-  - clusterRef: orama-production-cluster-03
+  - clusterRef: example-production-us
     name: shared-us
     spec:
       billing: {enabled: true}
@@ -53,14 +52,12 @@ spec:
       - name: LAKE_LOG_MODE
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
-        value: us.lake.live
+        value: us.lake.example.com
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      # Order email (lake docs/api/orders.md#email): Orama's Resend key, sending-only for lake.live;
-      # the sender defaults to "Lake <orders@lake.live>" (lake.live verified in Resend).
       - name: LAKE_RESEND_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-resend, key: api_key}}
-      host: us.lake.live
+      host: us.lake.example.com
       region:
         label: United States
       clerk:
@@ -69,52 +66,34 @@ spec:
     - {name: clerk-lake-prod, namespace: lake, as: clerk-secret-key}
     - {name: stripe-live, namespace: lake, as: stripe}
   deletionPolicy: Retain
-  # Restore rehearsals (orama-operator#127, docs/lake/restore-rehearsals.md). Each entry becomes a
-  # LakeRestoreRehearsal on its member's cluster that restores into a throwaway scratch namespace
-  # and never touches the live claim, database, snapshots or backups. Commented out until the
-  # managing cluster runs an operator that knows spec.restoreRehearsals and the leaves run one with
-  # the store rehearsal and the rehearsal network allowance (the release after v0.9.5): applied
-  # earlier, the API server refuses the unknown field. Uncommenting and applying this file is
-  # Steve's consent. A rehearsal's spec cannot change: to run one again, add a new name.
-  #
-  # The store: restores the newest ready CSI snapshot of lake-<member>-store and reads every file.
-  # restoreRehearsals:
-  # - name: shared-store-restore-20261024
-  #   member: shared
-  #   spec: {service: store, operation: restore, from: latest}
-  # - name: shared-us-store-restore-20261024
-  #   member: shared-us
-  #   spec: {service: store, operation: restore, from: latest}
-  #
-  # The control database: needs spec.postgres.backup enabled (no CNPG Backup exists for either
-  # member on 2026-10-24, orama-operator#957) and spec.postgres.image pinned by digest
-  # (orama-operator#958). Until both, it fails at once with the reason and makes nothing.
-  # - name: shared-postgres-restore-20261024
-  #   member: shared
-  #   spec: {service: postgres, operation: restore, from: latest}
-  # - name: shared-us-postgres-restore-20261024
-  #   member: shared-us
-  #   spec: {service: postgres, operation: restore, from: latest}
+  restoreRehearsals:
+  - name: shared-store-restore-20261024
+    member: shared
+    spec: {service: store, operation: restore, from: latest}
+  - name: shared-us-store-restore-20261024
+    member: shared-us
+    spec: {service: store, operation: restore, from: latest}
+  - name: shared-postgres-restore-20261024
+    member: shared
+    spec: {service: postgres, operation: restore, from: latest}
+  - name: shared-us-postgres-restore-20261024
+    member: shared-us
+    spec: {service: postgres, operation: restore, from: latest}
   secrets:
   - name: oramasearch-dockerhub
     namespace: lake
-  - name: cloudflare-api-token-lake-live
+  - name: cloudflare-api-token-production
     namespace: lake
   - name: lake-prod-openai
     namespace: lake
   - name: lake-prod-resend
     namespace: lake
   template:
-    # lake.live hosts: the token scoped to the lake.live zone only (decision 64).
     dnsSecretRef:
-      name: cloudflare-api-token-lake-live
+      name: cloudflare-api-token-production
     image: oramasearch/lake:v0.8.1
-    # app-runtime v0.1.2 (2026-10-26): Streamlit behind the public host (#17), identity only behind Lake auth (#14), exact file bytes (#22).
     apps:
       runtimeImage: oramasearch/app-runtime:v0.1.3
-    # The agents' releases (2026-10-25), after nonprod and eu.lake.live ran them.
-    # lake v0.7.3 (hotfix, lake#1245): agents on gpt-5.5, because gpt-6.x refuses tools with reasoning_effort on Chat
-    # Completions; gpt-6.1-sol is the default again once the gateway uses the Responses API (v0.8.0). People choose per workspace.
     agents:
       model: gpt-6.1-sol
       runtimeImage: oramasearch/agent-runtime:v0.2.0
@@ -134,9 +113,6 @@ spec:
       instances: 1
       storageSize: 10Gi
     pullSecretName: oramasearch-dockerhub
-    # Workspace and managed-service Zettas stay on the image the data-plane Zetta runs until a
-    # Zetta release is rolled on purpose: without this they would follow the operator's default
-    # (orama-operator#588) the moment a new operator rolls.
     services:
       zettaImage: oramasearch/zetta:v0.5.0
     store:

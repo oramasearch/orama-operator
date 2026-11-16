@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -117,7 +114,7 @@ func (r *LakeReconciler) reconcileAgentSchedule(ctx context.Context, lake *orama
 		status.Phase, status.Message = AgentPhaseFailed, "workspace_id and its reconciled namespace are required"
 		return status, false, nil
 	}
-	if err := r.reconcileAgentWorkspaceSecrets(ctx, lake, namespace, labels, schedule.WorkspaceID, false); err != nil {
+	if err := r.reconcileAgentWorkspaceSecrets(ctx, lake, namespace, labels, schedule.WorkspaceID); err != nil {
 		return status, true, err
 	}
 	credential, err := r.reconcileAgentCredential(ctx, lake, namespace, labels,
@@ -140,7 +137,7 @@ func (r *LakeReconciler) reconcileAgentSchedule(ctx context.Context, lake *orama
 		}
 		deadline, starting := agentJobDeadline(lake), agentScheduleStartingDeadline
 		backoff, history := int32(0), agentScheduleHistory
-		env := agentRunEnv(lake, agentScheduleCredentialSecret(lake.Name, schedule.Slug),
+		env := agentRunEnv(lake, agentScheduleCredentialSecret(lake.Name, schedule.Slug), "",
 			schedule.CustomerID, schedule.WorkspaceID, schedule.AgentID, agentLaunchModeJob, schedule.Input)
 		cron.Labels = scheduleLabels
 		cron.Spec.Schedule = schedule.Cron
@@ -305,6 +302,12 @@ func (r *LakeReconciler) reconcileLakeAgentSchedules(ctx context.Context, lake *
 			}
 			status, err = r.stopAgentSchedule(ctx, lake, schedule.WorkspaceNamespace, schedule)
 		case serviceDesiredPresent:
+			var refusal string
+			if refusal, err = workspaceNamespaceRefusal(ctx, r.Client, lake, schedule.WorkspaceNamespace, schedule.WorkspaceID, schedule.CustomerID); err != nil || refusal != "" {
+				status = LakeAgentScheduleStatus{ScheduleID: schedule.ID, Phase: AgentPhaseFailed,
+					Message: refusal, ObservedGeneration: schedule.Generation}
+				break
+			}
 			var still bool
 			status, still, err = r.reconcileAgentSchedule(ctx, lake, schedule.WorkspaceNamespace, workspaceLabels, store, schedule)
 			changing = changing || still

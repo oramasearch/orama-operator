@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -30,7 +27,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Scheduled CSI snapshots of lake's volumes (operator#260, decision 54 S13, lake migration 0069).
+// Scheduled CSI snapshots of lake's volumes (operator#260, lake migration 0069).
 // Lake's volume_snapshot_policies names each target (`store`, lake's own store volume, or a
 // workspace id), a cron schedule in UTC, how many snapshots to keep, and a one-off requested_at.
 // The operator takes a VolumeSnapshot of each of the target's claims, names it
@@ -39,7 +36,7 @@ import (
 // deletionPolicy Retain, so deleting a snapshot, a workspace or its namespace never deletes the
 // snapshot's contents; the operator labels each bound VolumeSnapshotContent with its target so a
 // deleted workspace's retained contents can be found for a restore (docs/lake/volume-snapshots.md).
-// The operator never talks to a workspace Zetta (decision 51).
+// The operator never talks to a workspace Zetta.
 
 const (
 	lakeVolumeSnapshotsPoll         = 60 * time.Second

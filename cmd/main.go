@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package main
 
@@ -170,46 +167,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "PeerLink")
 		os.Exit(1)
 	}
-	// Observability (operator#15, #456): the managing cluster's abstract kinds and the pixie
-	// provider's concrete kinds run on every cluster; which do anything depends on the resources.
-	if err = (&controller.ObservabilityProviderReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityProvider")
-		os.Exit(1)
-	}
-	if err = (&controller.ObservabilityHubReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityHub")
-		os.Exit(1)
-	}
-	if err = (&controller.ObservabilityAgentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityAgent")
-		os.Exit(1)
-	}
-	if err = (&controller.PixieCloudReconciler{
-		Client:            mgr.GetClient(),
-		APIReader:         mgr.GetAPIReader(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PixieCloud")
-		os.Exit(1)
-	}
-	if err = (&controller.PixieVizierReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PixieVizier")
-		os.Exit(1)
-	}
 	if err = (&controller.CloudflareTunnelReconciler{
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
@@ -225,6 +182,8 @@ func main() {
 		APIReader: mgr.GetAPIReader(), // uncached reader for the elastic-capacity node count (operator#69)
 		// Only a CR in the operator's namespace may own the Karpenter install (operator#280).
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		// Reads the features Job's `zetta --help` (the egress allowlist file, operator#724).
+		Clientset: clientset,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaZettaCluster")
 		os.Exit(1)
@@ -391,6 +350,7 @@ func main() {
 		APIReader:         mgr.GetAPIReader(),
 		Clientset:         clientset,
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		Recorder:          mgr.GetEventRecorderFor("lake-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)
@@ -470,7 +430,7 @@ func main() {
 	// Infrastructure (operator#351, #354, #363): the abstract KubernetesCluster, the provider it
 	// points at, the concrete AksCluster, and what is installed on a managed cluster. Every
 	// cluster's operator runs these: there is no difference between a management cluster's
-	// operator and a leaf's, and any cluster can manage others (Steve, 2026-10-12). A cluster
+	// operator and a leaf's, and any cluster can manage others. A cluster
 	// with none of these resources reconciles nothing.
 	if err = (&controller.KubernetesClusterProviderReconciler{
 		Client: mgr.GetClient(),
@@ -519,7 +479,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSet")
 		os.Exit(1)
 	}
-	// Paid lake.live orders (operator#634): registered on every cluster like every other kind. It
+	// Paid Lake orders (operator#634): registered on every cluster like every other kind. It
 	// acts only where a LakeOrderSource exists, which is the management cluster.
 	if err = (&controller.LakeOrderSourceReconciler{
 		Client: mgr.GetClient(),

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -34,8 +31,8 @@ import (
 func clusterRowStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCloudV1 {
 	return engineOC(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}}
-		o.Spec.Components.Engine.Writer.Host = "writer.orama.ing"
-		o.Spec.Components.Engine.Reader.Host = "reader.orama.ing"
+		o.Spec.Components.Engine.Writer.Host = "writer.cloudv1.example"
+		o.Spec.Components.Engine.Reader.Host = "reader.cloudv1.example"
 		if mut != nil {
 			mut(o)
 		}
@@ -138,8 +135,8 @@ func TestControlDBClusterRowJobWaitsForSchemaAndKey(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"CLUSTER_PREFIX":     "c1",
-		"CLUSTER_WRITER_URL": "https://writer.orama.ing",
-		"CLUSTER_READER_URL": "https://reader.orama.ing",
+		"CLUSTER_WRITER_URL": "https://writer.cloudv1.example",
+		"CLUSTER_READER_URL": "https://reader.cloudv1.example",
 		"MASTER_API_KEY":     "secret:" + testMasterSecret + "/MASTER_API_KEY",
 		"DATABASE_URL":       "secret:v1-controldb-app/uri",
 	} {
@@ -416,14 +413,14 @@ func TestControlDBClusterRowAgainstPostgres(t *testing.T) {
 		t.Fatalf("apply dashboard schema: %v\n%s", err, out)
 	}
 	out, rowID, err := runClusterRowScript(t, job, uri, key)
-	if err != nil || !strings.Contains(out, "inserted the c1 oramacore_clusters row (writer https://writer.orama.ing)") {
+	if err != nil || !strings.Contains(out, "inserted the c1 oramacore_clusters row (writer https://writer.cloudv1.example)") {
 		t.Fatalf("retry on an empty table: %v\n%s", err, out)
 	}
 	// The termination message is the inserted row's id, which the dashboard is given (#572).
 	if want := psqlQuery(t, uri, "select id from oramacore_clusters"); rowID != want || !clusterRowIDPattern.MatchString(rowID) {
 		t.Fatalf("termination message %q, want the row id %s", rowID, want)
 	}
-	want := `v1|c1|https://writer.orama.ing|https://reader.orama.ing|` + key + `|3|1|["us-east"]|["us-east"]`
+	want := `v1|c1|https://writer.cloudv1.example|https://reader.cloudv1.example|` + key + `|3|1|["us-east"]|["us-east"]`
 	if got := psqlQuery(t, uri, row); got != want {
 		t.Fatalf("row:\n got %s\nwant %s", got, want)
 	}
@@ -474,8 +471,8 @@ func TestClusterRowIDReachesTheDashboard(t *testing.T) {
 	ctx := context.Background()
 	oc := clusterRowStack(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Cache = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
-		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.oramadev.net",
-			ExtraHosts: []string{"app.orama.com"}}}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.nonprod.example",
+			ExtraHosts: []string{"app.company.example"}}}
 		// A value left in a copied env Secret is ignored: the operator's explicit entries win.
 		o.Spec.Components.Dashboard.EnvFrom = []corev1.EnvFromSource{secretEnvFrom("v1-dashboard-env")}
 		o.Spec.Cloudflare.APITokenSecretRef = &corev1.LocalObjectReference{Name: "cloudflare-api-token"} // origin TLS for the host
@@ -522,7 +519,7 @@ func TestClusterRowIDReachesTheDashboard(t *testing.T) {
 	}
 	env := dashEnv(t, cl)
 	for name, want := range map[string]string{
-		dashboardAppURLEnv:           "https://app-dev.oramadev.net",
+		dashboardAppURLEnv:           "https://app-dev.nonprod.example",
 		dashboardPlacementClusterEnv: testClusterRowID,
 		"REDIS_CACHE_URL":            "http://v1-redis-http",
 	} {
@@ -532,14 +529,14 @@ func TestClusterRowIDReachesTheDashboard(t *testing.T) {
 	}
 
 	// A new dashboard host is a new origin.
-	oc.Spec.Components.Dashboard.Host = "app.orama.ing"
+	oc.Spec.Components.Dashboard.Host = "app.cloudv1.example"
 	if err := r.reconcileDashboard(ctx, oc); err != nil {
 		t.Fatal(err)
 	}
-	if got := dashEnv(t, cl)[dashboardAppURLEnv]; got != "https://app.orama.ing" {
-		t.Errorf("after a host change NEXT_PUBLIC_APP_URL = %q, want https://app.orama.ing", got)
+	if got := dashEnv(t, cl)[dashboardAppURLEnv]; got != "https://app.cloudv1.example" {
+		t.Errorf("after a host change NEXT_PUBLIC_APP_URL = %q, want https://app.cloudv1.example", got)
 	}
-	oc.Spec.Components.Dashboard.Host = "app-dev.oramadev.net"
+	oc.Spec.Components.Dashboard.Host = "app-dev.nonprod.example"
 
 	// A recorded Job is never run again.
 	if err := r.reconcileControlDBClusterRow(ctx, oc); err != nil {

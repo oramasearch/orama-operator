@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -197,8 +194,8 @@ func (r *OramaCloudV1Reconciler) ensureJWTPublicSecret(ctx context.Context, oc *
 }
 
 // componentSecretData returns the DUMMY dev credentials a component needs — scoped so
-// each component's secret holds only its own keys (derived from the prod connection
-// maps in techops-docs). Returns nil for components that need no secret. Real
+// each component's secret holds only its own keys (derived from the production connection
+// maps). Returns nil for components that need no secret. Real
 // deployments override these (edit in place, or source from ExternalSecrets).
 //
 // MASTER_API_KEY is not seeded here: every consumer takes it from spec.masterAPIKeySecretRef through
@@ -265,7 +262,7 @@ func componentSecretData(component string) map[string]string {
 			"GITHUB_PAT": "dev-github-pat",
 			"GHCR_TOKEN": "dev-ghcr-token",
 		}
-	case "dashboard": // app.orama.com control plane — the widest secret surface
+	case "dashboard": // app.example.com control plane — the widest secret surface
 		return map[string]string{
 			// JWT_PRIVATE_KEY + JWT_PUBLIC_KEY come from the generated <cr>-jwt secret
 			// (the dashboard signs the OramaCore writer JWT); JWT_ISSUER is in the config.

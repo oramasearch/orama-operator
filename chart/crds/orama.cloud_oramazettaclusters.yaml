@@ -47,8 +47,7 @@ spec:
           OramaZettaCluster deploys a headless Orama Zetta cluster (a StatefulSet of equal-peer CRDT nodes)
           from one CR. Peer replication is TCP 7777 (always mTLS — every node shares one operator-minted
           cluster join token that derives the cluster CA, operator#92); the HTTP API (MCP + REST + serving)
-          is 4800; each node persists to a per-node PVC at /data. See the plan of record in
-          oramasearch/orama-bridge docs/projects/one-orama.
+          is 4800; each node persists to a per-node PVC at /data.
         properties:
           apiVersion:
             description: |-
@@ -70,7 +69,7 @@ spec:
           spec:
             description: |-
               OramaZettaClusterSpec describes a headless Orama Zetta cluster — N equal-peer CRDT nodes.
-              Step 1 of the One Orama plan (orama-bridge#130): the operator only *runs* Zetta headless; the
+              Step 1 of the One Orama plan: the operator only *runs* Zetta headless; the
               bi-directional operator↔Zetta symbiosis (Zetta as the operator's datastore) is a later stage.
             properties:
               capacity:
@@ -246,6 +245,18 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              egressAllowConfigMap:
+                description: |-
+                  EgressAllowConfigMap names a ConfigMap in this namespace whose key `allow` is the node's egress
+                  allowlist, in the engine's ZETTA_EGRESS_ALLOW syntax (operator#724, zetta#1332). The Lake
+                  reconcilers set it on every workspace Zetta and managed Zetta service and write the ConfigMap
+                  from the namespace's NetworkSandbox. It is mounted on every node at /etc/zetta/egress/allow,
+                  named by ZETTA_EGRESS_ALLOW_FILE. A Zetta image that re-reads that file (status.imageFeatures
+                  .egressAllowFile) gets ZETTA_EGRESS_ALLOW empty, so a rule change reaches the node without a
+                  restart; any other image gets the ConfigMap's value as ZETTA_EGRESS_ALLOW, which rolls the
+                  nodes as before. A ZETTA_EGRESS_ALLOW in spec.env is kept and wins. Until the ConfigMap exists
+                  the StatefulSet is not created or changed. Empty: no file, and the allowlist is spec.env's.
+                type: string
               env:
                 description: |-
                   Env appends Zetta-specific environment variables after the operator-managed variables.
@@ -418,7 +429,7 @@ spec:
               host:
                 description: |-
                   Host is the domain name the cluster's HTTP API/UI (:4800 — MCP + REST + serving) is exposed at
-                  (e.g. zetta.oramadev.net) when IngressEnabled is true. Requires an ingress controller.
+                  (e.g. zetta.example.net) when IngressEnabled is true. Requires an ingress controller.
                 type: string
               hostNetwork:
                 default: false
@@ -429,6 +440,27 @@ spec:
                   host(s) with per-ordinal ports (node-n listens on 7777+n / 4800+n) and seed off node-0 on the host
                   loopback — correct for a single big host / single-node k8s cluster. Default false.
                 type: boolean
+              identity:
+                description: |-
+                  Identity rotates the cluster's identity root (operator#1174, zetta#1342). Raising
+                  adminTokenGeneration makes the operator mint a new admin token, call rotate_identity_root with it
+                  on node 0 while every node still runs the current token, and only then roll the new token to
+                  the pods. See docs/zetta-cluster-mtls.md#rotating-the-admin-token.
+                properties:
+                  adminTokenGeneration:
+                    description: |-
+                      AdminTokenGeneration is the admin token's generation. 1 is the token the operator minted with
+                      the cluster. Raising it rotates the identity root to a new admin token (operator#1174); it cannot
+                      be lowered. The rotation waits for an image whose usage lists ZETTA_IDENTITY_MIN_EPOCH and for
+                      every node to be ready on the current token; condition IdentityRootRotated reports it.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: spec.identity.adminTokenGeneration cannot be lowered
+                  rule: '!has(oldSelf.adminTokenGeneration) || (has(self.adminTokenGeneration)
+                    && self.adminTokenGeneration >= oldSelf.adminTokenGeneration)'
               image:
                 default: oramasearch/zetta:headless-v1-sandbox
                 description: Image is the Zetta-headless container image (built like
@@ -658,6 +690,29 @@ spec:
                 description: Ephemeral echoes spec.ephemeral — this slice is burst/autoscaled
                   capacity expected to churn.
                 type: boolean
+              identity:
+                description: |-
+                  Identity is the cluster's identity root generation and enrollment CA as the operator has put
+                  them in place (operator#1174).
+                properties:
+                  adminTokenGeneration:
+                    description: |-
+                      AdminTokenGeneration is the generation of the admin token in Secret <name>-zetta-admin: the
+                      identity root the nodes run on once they have rolled.
+                    format: int64
+                    type: integer
+                  clusterCA:
+                    description: |-
+                      ClusterCA is the enrollment CA's public key (64 hex) the nodes are given as ZETTA_CLUSTER_CA.
+                      Public, like the identity root.
+                    type: string
+                  clusterCASource:
+                    description: |-
+                      ClusterCASource says where it came from: Operator (a seed the operator minted, held by this
+                      slice's nodes), Members (the CA the nodes generated under zetta#1512, read from a node's join
+                      command) or Sibling (another slice of the same cluster in this namespace).
+                    type: string
+                type: object
               ignoredEnvVars:
                 description: |-
                   IgnoredEnvVars lists spec.env names that conflict with operator-managed variables. The list is
@@ -665,6 +720,45 @@ spec:
                 items:
                   type: string
                 type: array
+              imageFeatures:
+                description: |-
+                  ImageFeatures is what an image said about itself in `zetta --help`, read once per spec.image
+                  by Job <name>-zetta-features (operator#724, operator#1174). The operator acts on it only while
+                  its image is spec.image.
+                properties:
+                  clusterCA:
+                    description: |-
+                      ClusterCA is true when the image's usage lists ZETTA_CLUSTER_CA: a node that is not enrolled
+                      enrolls only through a member the enrollment CA signed (zetta#1513).
+                    type: boolean
+                  clusterCASeedFile:
+                    description: |-
+                      ClusterCASeedFile is true when the image's usage lists ZETTA_CLUSTER_CA_SEED_FILE: a node
+                      given the enrollment CA's seed holds the CA and signs enrollments (zetta#1513).
+                    type: boolean
+                  egressAllowFile:
+                    description: |-
+                      EgressAllowFile is true when the image's usage lists ZETTA_EGRESS_ALLOW_FILE: it re-reads its
+                      egress allowlist from that file while it runs (zetta#1332).
+                    type: boolean
+                  egressGateway:
+                    description: |-
+                      EgressGateway is true when the image's usage lists ZETTA_EGRESS_GATEWAY and
+                      ZETTA_EGRESS_GATEWAY_ROUTES: it sends the routed names through the workspace egress gateway
+                      (zetta#1331, operator#1179).
+                    type: boolean
+                  identityRootRotation:
+                    description: |-
+                      IdentityRootRotation is true when the image's usage lists ZETTA_IDENTITY_MIN_EPOCH, which
+                      came in the same zetta release as rotate_identity_root (zetta#1342, zetta#1360).
+                    type: boolean
+                  image:
+                    description: Image is the spec.image the features were read from.
+                    type: string
+                required:
+                - egressAllowFile
+                - image
+                type: object
               message:
                 type: string
               phase:

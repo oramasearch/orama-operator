@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -117,6 +114,16 @@ func (r *LakeReconciler) syncLakeConnections(
 		if !found || workspace.Namespace == "" || workspace.Namespace != row.WorkspaceNamespace {
 			status := failedNetworkConnectionStatus(row, "workspace and its reconciled namespace are required")
 			if writeNetworkConnectionStatus(ctx, store, row, status) != nil {
+				changing = true
+			}
+			ready[row.WorkspaceID] = false
+			continue
+		}
+		if refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, row.WorkspaceNamespace, row.WorkspaceID, row.CustomerID); err != nil || refusal != "" {
+			if err != nil {
+				log.Error(err, "connection reconciliation deferred", "connection", row.ID)
+				changing = true
+			} else if writeNetworkConnectionStatus(ctx, store, row, failedNetworkConnectionStatus(row, refusal)) != nil {
 				changing = true
 			}
 			ready[row.WorkspaceID] = false

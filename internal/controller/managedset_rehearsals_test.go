@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -63,7 +60,7 @@ func TestALakeSetRunsItsRestoreRehearsalOnItsMembersCluster(t *testing.T) {
 	if set.Status.Phase != clusterPhaseReady {
 		t.Fatalf("a rehearsal does not change the set's phase: %+v", set.Status.ManagedSetStatus)
 	}
-	if got := set.Status.RestoreRehearsals[0]; got.Phase != "Running" || got.Cluster != "orama-nonprod-cluster-01" ||
+	if got := set.Status.RestoreRehearsals[0]; got.Phase != "Running" || got.Cluster != "example-nonprod" ||
 		got.Selected != "lake-staging-store-20261024t030000z" {
 		t.Fatalf("running: %+v", got)
 	}

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -77,7 +74,7 @@ func TestStatusIsPatchedSoAStaleReadCannotConflict(t *testing.T) {
 		c := clusterTestClient(t, testKubernetesCluster())
 		r := &KubernetesClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
 		var stale oramav1alpha1.KubernetesCluster
-		if err := c.Get(ctx, types.NamespacedName{Name: "orama-nonprod-cluster-01"}, &stale); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: "example-nonprod"}, &stale); err != nil {
 			t.Fatal(err)
 		}
 		fresh := stale.DeepCopy()
@@ -96,7 +93,7 @@ func TestStatusIsPatchedSoAStaleReadCannotConflict(t *testing.T) {
 		c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionRetain))
 		r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
 		var stale oramav1alpha1.AksCluster
-		if err := c.Get(ctx, types.NamespacedName{Name: "orama-nonprod-cluster-01"}, &stale); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: "example-nonprod"}, &stale); err != nil {
 			t.Fatal(err)
 		}
 		fresh := stale.DeepCopy()

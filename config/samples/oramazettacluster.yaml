@@ -1,5 +1,5 @@
 # Deploy a headless Orama Zetta cluster (equal-peer CRDT nodes) from one CR — step 1 of the One Orama
-# plan (oramasearch/orama-bridge#130). The operator creates a StatefulSet of `replicas` headless zetta
+# plan. The operator creates a StatefulSet of `replicas` headless zetta
 # nodes (each with a per-node PVC at /data), a headless Service for peer DNS (:7777), and a client
 # Service for the HTTP API (:4800 — MCP + REST + serving). node-0 bootstraps; peers join it.
 # With `host` set it also fronts the API/UI with an nginx Ingress + a proxied Cloudflare DNS record.
@@ -8,7 +8,7 @@
 #   kubectl get ozc -n orama-system            # Nodes / Desired / Phase / Reachability / Image
 #   kubectl get ozc -n orama-system -o wide     # + WAN (the wan-accessible rendezvous address)
 #   kubectl logs -n orama-system zetta-0-zetta-0
-#   curl https://zetta.oramadev.net/v1/server_info   # once host + DNS are set (below)
+#   curl https://zetta.example.net/v1/server_info   # once host + DNS are set (below)
 apiVersion: orama.cloud/v1alpha1
 kind: OramaZettaCluster
 metadata:
@@ -50,7 +50,7 @@ spec:
   #   exposePeerLoadBalancer: true                 #   a cloud LB public IP (wan-accessible ONLY)
 
   ingressEnabled: true                            # gate: create the nginx Ingress + landing + DNS below
-  host: zetta.oramadev.net                        # the domain the API/UI (:4800) is exposed at
+  host: zetta.example.net                        # the domain the API/UI (:4800) is exposed at
   dnsSecretRef:                                   # + a proxied Cloudflare DNS record (host → ingress LB)
     name: cloudflare-api-token                    # Secret with keys: token / zoneID / accountID
   # capacity:                                      # opt-in elastic node capacity (operator#69/#72/#75)

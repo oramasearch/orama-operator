@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -176,7 +173,7 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	for _, name := range []string{
 		"LAKE_URL", "BUILD_ID", "REPOSITORY", "REVISION", "CONTEXT", "DOCKERFILE", "TARGET",
 		"BUILD_ARGS", "BUILD_ARG_ALLOW", "SOURCE_TOKEN", "PUSH_TOKEN", "EVENTS_TOKEN", "CACHE_REF", "DOCKER_CONFIG",
-		"BUILDKITD_FLAGS", "BASE_REGISTRY_AUTH",
+		"BUILDKITD_FLAGS",
 	} {
 		if _, ok := env[name]; !ok {
 			t.Errorf("builder env is missing %s", name)
@@ -185,29 +182,15 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	if env["CACHE_REF"].Value != "lake-registry.lake.svc:80/space-one/cache/app" {
 		t.Fatalf("CACHE_REF = %q", env["CACHE_REF"].Value)
 	}
-	if env["BASE_REGISTRY_AUTH"].Value != buildBaseAuthPath {
-		t.Fatalf("BASE_REGISTRY_AUTH = %q", env["BASE_REGISTRY_AUTH"].Value)
+	// The Lake's pullSecretName pulls the builder image through the kubelet only: tenant code runs
+	// in the container, so the platform credential is never mounted or named there (#758).
+	if _, ok := env["BASE_REGISTRY_AUTH"]; ok {
+		t.Fatalf("the platform pull credential reaches the builder: BASE_REGISTRY_AUTH = %q", env["BASE_REGISTRY_AUTH"].Value)
 	}
-	authMountFound := false
-	for _, mount := range container.VolumeMounts {
-		if mount.Name == buildBaseAuthVolume {
-			authMountFound = mount.MountPath == buildBaseAuthDir && mount.ReadOnly
-		}
-	}
-	if !authMountFound {
-		t.Fatalf("base registry auth mount = %+v", container.VolumeMounts)
-	}
-	authVolumeFound := false
 	for _, volume := range pod.Volumes {
-		if volume.Name == buildBaseAuthVolume && volume.Secret != nil {
-			authVolumeFound = volume.Secret.SecretName == buildPullSecretName &&
-				len(volume.Secret.Items) == 1 &&
-				volume.Secret.Items[0].Key == corev1.DockerConfigJsonKey &&
-				volume.Secret.Items[0].Path == ".dockerconfigjson"
+		if volume.Secret != nil && volume.Secret.SecretName == buildPullSecretName {
+			t.Fatalf("the platform pull Secret is mounted into the builder: %+v", volume)
 		}
-	}
-	if !authVolumeFound {
-		t.Fatalf("base registry auth volume = %+v", pod.Volumes)
 	}
 	h.poll()
 	if err := h.client.Get(context.Background(), jobKey, &job); err != nil {
@@ -490,5 +473,47 @@ func TestBuildEgressReachesLakeOnItsContainerPort(t *testing.T) {
 	lake.Spec.Port = &custom
 	if got := lakePort(buildEgressRules(lake)); got != 8443 {
 		t.Fatalf("lake egress port = %d, want 8443", got)
+	}
+}
+
+// A scoped base-image credential is the only one the builder sees, and it may never be the Lake's
+// platform pull secret (orama-operator#758).
+func TestLakeBuildMountsOnlyTheScopedBaseImageCredential(t *testing.T) {
+	lake := buildTestLake()
+	lake.Spec.Builds.BaseImagePullSecretName = "runtime-images-readonly"
+	build := testBuild(testBuildID, testBuildTarget)
+	target, err := parseBuildTarget(build.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := buildPod(lake, &build, target, buildLabels(lake, &build, target))
+	if len(pod.ImagePullSecrets) != 1 || pod.ImagePullSecrets[0].Name != buildPullSecretName {
+		t.Fatalf("imagePullSecrets = %+v", pod.ImagePullSecrets)
+	}
+	mounted := ""
+	for _, volume := range pod.Volumes {
+		if volume.Name == buildBaseAuthVolume && volume.Secret != nil {
+			mounted = volume.Secret.SecretName
+		}
+		if volume.Secret != nil && volume.Secret.SecretName == buildPullSecretName {
+			t.Fatalf("the platform pull Secret is mounted: %+v", volume)
+		}
+	}
+	if mounted != buildBasePullSecretName {
+		t.Fatalf("base registry auth volume names %q", mounted)
+	}
+	found := false
+	for _, variable := range pod.Containers[0].Env {
+		found = found || (variable.Name == "BASE_REGISTRY_AUTH" && variable.Value == buildBaseAuthPath)
+	}
+	if !found {
+		t.Fatal("BASE_REGISTRY_AUTH does not name the scoped credential")
+	}
+
+	same := buildTestLake()
+	same.Spec.Builds.BaseImagePullSecretName = same.Spec.PullSecretName
+	r := &LakeReconciler{}
+	if err := r.reconcileBuildPullSecret(context.Background(), same, "ns", "space"); err == nil {
+		t.Fatal("the platform pull secret was accepted as the base-image credential")
 	}
 }

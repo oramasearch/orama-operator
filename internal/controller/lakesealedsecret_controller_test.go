@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -24,6 +21,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"golang.org/x/crypto/chacha20poly1305"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -733,7 +731,7 @@ func TestLakeSourceNeedsTheLakesAdminSecret(t *testing.T) {
 	}
 }
 
-// TestMintRequestNeverCarriesTheOperatorsKubernetesBearer is LSR-042 (orama-operator#791): the
+// TestMintRequestNeverCarriesTheOperatorsKubernetesBearer is orama-operator#791: the
 // operator's own service-account token authorizes cluster-wide Secret and workload access, so it
 // must never reach Lake, in the body or a header. Lake authenticates the mint with its own admin
 // bearer, which the operator minted for it, and nothing else.
@@ -794,7 +792,7 @@ func TestMintRequestNeverCarriesTheOperatorsKubernetesBearer(t *testing.T) {
 	}
 }
 
-// TestSealedSecretReconcilerReadsNoServiceAccountToken keeps LSR-042 fixed at the source: the
+// TestSealedSecretReconcilerReadsNoServiceAccountToken keeps it fixed at the source: the
 // sealed-secret reconciler has no reason to read the pod's Kubernetes token, so it must not name it.
 func TestSealedSecretReconcilerReadsNoServiceAccountToken(t *testing.T) {
 	source, err := os.ReadFile("lakesealedsecret_controller.go")
@@ -805,5 +803,83 @@ func TestSealedSecretReconcilerReadsNoServiceAccountToken(t *testing.T) {
 		if strings.Contains(string(source), forbidden) {
 			t.Errorf("lakesealedsecret_controller.go names %q; the mint must not carry the operator's Kubernetes credential", forbidden)
 		}
+	}
+}
+
+// operator#777: a definite not_found from lake deletes the projection and reports Revoked; any other
+// failure (lake down, store_unavailable, the operator's own credential refused) keeps the last value.
+func TestLakeSourceRevokedByLakeDeletesTheSecret(t *testing.T) {
+	scheme := newSealedSecretScheme(t)
+	lake, resource, keySecret := remoteSealedSecretObjects(t, "lake")
+	current := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	answer := "deliver"
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		mint := decodeMintRequest(t, request)
+		switch answer {
+		case "deliver":
+			record := referenceSealForMintRequest(t, mint, []byte("value"), byte(calls))
+			_ = json.NewEncoder(writer).Encode(lakeMintResponse{OK: true, Value: lakeMintValue{
+				Data: map[string]string{"token": record}, Version: 1,
+			}})
+		case "down":
+			writer.WriteHeader(http.StatusBadGateway)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(writer).Encode(lakeMintResponse{Error: &lakeAPIError{Code: answer, Message: "version 1 of secret db was destroyed"}})
+		}
+	}))
+	defer server.Close()
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(lake, resource, keySecret, lakeAdminTokenSecret()).
+		WithStatusSubresource(lake, resource).
+		Build()
+	reconciler := &LakeSealedSecretReconciler{
+		Client: kube, Scheme: scheme, LakeURL: server.URL,
+		LakeSourceRefresh: 5 * time.Minute,
+		Now:               func() time.Time { return current },
+	}
+	request := ctrl.Request{NamespacedName: clientKey(resource.Name, resource.Namespace)}
+	reconcileSealedSecret(t, kube, scheme, resource.Name, reconciler)
+	produced := &corev1.Secret{}
+	if err := kube.Get(context.Background(), clientKey("database", "app"), produced); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, transient := range []string{"down", "store_unavailable", "unauthorized"} {
+		answer = transient
+		current = current.Add(5 * time.Minute)
+		if _, err := reconciler.Reconcile(context.Background(), request); err == nil {
+			t.Fatalf("%s: no error", transient)
+		}
+		if err := kube.Get(context.Background(), clientKey("database", "app"), produced); err != nil {
+			t.Fatalf("%s removed the last delivered value: %v", transient, err)
+		}
+	}
+
+	answer = "not_found"
+	current = current.Add(5 * time.Minute)
+	result, err := reconciler.Reconcile(context.Background(), request)
+	if err != nil || result.RequeueAfter != 5*time.Minute {
+		t.Fatalf("revoked: result=%+v err=%v", result, err)
+	}
+	if err := kube.Get(context.Background(), clientKey("database", "app"), produced); !apierrors.IsNotFound(err) {
+		t.Fatalf("the revoked secret's projection remains: %v", err)
+	}
+	stored := &oramav1alpha1.LakeSealedSecret{}
+	if err := kube.Get(context.Background(), clientKey(resource.Name, resource.Namespace), stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Phase != "Error" || conditionReason(stored.Status.Conditions, "Ready") != lakeSealedSecretRevoked || stored.Status.Version != 0 {
+		t.Fatalf("status = %+v", stored.Status)
+	}
+
+	// A secret put again under the name is delivered again.
+	answer = "deliver"
+	current = current.Add(5 * time.Minute)
+	reconcileSealedSecret(t, kube, scheme, resource.Name, reconciler)
+	if err := kube.Get(context.Background(), clientKey("database", "app"), produced); err != nil {
+		t.Fatalf("not delivered again: %v", err)
 	}
 }

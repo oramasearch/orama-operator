@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -37,8 +34,8 @@ type lakeDomainTaken struct {
 // lakePlatformNames are the names a Lake owns, every name beneath each included: its host, public
 // host and apex host, its apps and preview wildcards, and, when it has a DNS token, the zone of
 // each of its hosts. The token writes in that zone, and Cloudflare zones are registrable domains, so
-// the zone is the host's registrable domain (lake.live for eu.lake.live, oramadev.net for
-// lake-dev.oramadev.net).
+// the zone is the host's registrable domain (example.com for eu.example.com, example.net for
+// lake-dev.example.net).
 func lakePlatformNames(lake *oramav1alpha1.Lake) []string {
 	hosts := []string{lake.Spec.Host, lakePublicHost(lake), lake.Spec.ApexHost}
 	names := append([]string(nil), hosts...)

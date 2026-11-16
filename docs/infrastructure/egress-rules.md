@@ -37,10 +37,16 @@ Every allowance below is added to the workspace `NetworkSandbox`, which renders 
 ## By address
 
 A CIDR rule is one allowance, `egress-<id>`: egress from the source pods to the range on the
-rule's TCP ports. The range never includes what no rule may reach: loopback and link-local (the
-cloud metadata address included) are excepted always, and so is every cluster address inside the
-range (the Kubernetes API Service and its endpoints, every node address, every node's pod range).
-A range that lies wholly inside one of those is `Failed`. A CIDR rule is also how an IP literal is
+rule's TCP ports. **A CIDR rule reaches public addresses only** (LSR-217; orama-operator#812, #780,
+#764): the range never includes what public-internet egress never reaches, the same list
+(`workspacePublicIPExceptions`): private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16),
+CGNAT (100.64.0.0/10), ULA (fc00::/7), loopback, link-local (the cloud metadata address included),
+documentation, multicast and reserved ranges. Every cluster address inside the range is excepted too
+(the Kubernetes API Service and its endpoints, every node address, every node's pod range); on an
+overlay network the pod and Service ranges are private addresses, so they are covered even when no
+node reports them. A range that lies wholly inside one of those is `Failed` (for example
+`10.224.0.0/16`); a wider range (`0.0.0.0/0`) is opened minus all of them. Reaching a private
+network is a peer or tunnel path, never an egress rule. A CIDR rule is also how an IP literal is
 allowed: nothing else opens a direct path to an address.
 
 ## By DNS name
@@ -54,7 +60,7 @@ A name rule never opens a path to its destination. Its three allowances are:
 | `egress-<id>-gateway-egress` | the gateway pods | egress to public addresses on the rule's ports (private, shared, link-local, multicast, reserved and cluster ranges excepted) |
 
 **The gateway** is zetta-tunnel's `egress` role ([its contract](https://github.com/oramasearch/zetta-tunnel/blob/issue-8-image/docs/egress.md)),
-image `oramasearch/zetta-tunnel:main-9cd11b4` pulled with the Lake's `pullSecretName`. The operator
+image `oramasearch/zetta-tunnel:main-10acaa2` pulled with the Lake's `pullSecretName`. The operator
 runs one Deployment `zetta-tunnel-egress` per workspace that has at least one name rule, and removes
 it with the last one:
 
@@ -142,8 +148,8 @@ the Lake namespace allows its pods nothing outside but DNS and their own cluster
 
 **Where the engine is wider than the policy.** Its syntax has no exceptions. `*:443` also admits
 in-cluster names on 443, and a CIDR entry keeps the pod, node and API server addresses the policy
-cuts out. Those addresses change as nodes come and go, and every change to the variable rolls the
-StatefulSet, so the policy alone keeps excluding them.
+cuts out. Those addresses change as nodes come and go, and on an image that keeps the list in its
+environment every change rolls the StatefulSet, so the policy alone keeps excluding them.
 
 **Name rules go through the gateway, the engine does not know it.** The policy lets a name rule's
 source reach only the egress gateway. The engine dials the destination name directly and has no
@@ -151,14 +157,56 @@ gateway client, so the entry states the destination the rule allows. It takes ef
 routes named destinations through the gateway
 ([zetta#1331](https://github.com/oramasearch/zetta/issues/1331)).
 
-**Changes roll the Zetta.** The variable is in the pod template, so adding or removing a rule or
-Connection for a Zetta restarts its pods on the next workspace or services poll (up to 60 seconds
-after the sandbox changes). A file the engine re-reads would avoid that and needs an engine change
-([zetta#1332](https://github.com/oramasearch/zetta/issues/1332)). The list is sorted and
-de-duplicated, so an unchanged sandbox never rolls anything. When the namespace cannot be read, the
-running value is kept; a list longer than 64 KiB (beyond what one environment string can safely hold)
-becomes deny and is logged. A spec that names `ZETTA_EGRESS_ALLOW` (`spec.zetta.env`,
-`spec.services.zettaEnv`) keeps its own value.
+**The list is a file the Zetta re-reads, where its image can**
+([#724](https://github.com/oramasearch/orama-operator/issues/724),
+[zetta#1332](https://github.com/oramasearch/zetta/issues/1332), zetta
+[PR #1510](https://github.com/oramasearch/zetta/pull/1510),
+`internal/controller/zetta_egress_file.go`). A workspace Zetta's or managed Zetta service's list is
+written to ConfigMap **`<cluster>-zetta-egress`** (key `allow`), controlled by its
+`OramaZettaCluster`, which names it in `spec.egressAllowConfigMap`. Every node mounts it read-only at
+`/etc/zetta/egress/allow`, and `ZETTA_EGRESS_ALLOW_FILE` points there. What the node does with it is
+what its image says, never a flag: Job **`<cluster>-zetta-features`** runs `zetta --help` from
+`spec.image` once per image (no environment, no volume, no token), and the answer is kept in
+`status.imageFeatures`. The same Job runs for every cluster, because the identity settings follow it
+too ([zetta-cluster-mtls.md](../zetta-cluster-mtls.md#identity-root-and-enrollment-ca-operator1174)).
+
+**Named egress through the workspace gateway**
+([operator#1179](https://github.com/oramasearch/orama-operator/issues/1179),
+[zetta#1331](https://github.com/oramasearch/zetta/issues/1331), zetta PR #1516,
+`internal/controller/lake_zetta_egress_gateway.go`). A DNS-name rule is served by the namespace's
+egress gateway, `zetta-tunnel-egress` on 7445: the network policy opens the gateway, never the
+destination. The Lake reconcilers write the gateway and its routes into the same ConfigMap:
+
+- key `gateway`: `zetta-tunnel-egress.<namespace>.svc.cluster.local:7445`;
+- key `gatewayRoutes`: `<dnsName>:<port>` for every name rule that applies to the Zetta (no source,
+  or source the Zetta's service), is present, and has its allowance in the sandbox, sorted.
+
+A namespace with no such rule gets neither key. The routes are a separate list from the allowlist:
+the allowlist also lists in-cluster Connection names, which must stay direct, and the names stay in
+the allowlist as well, because the engine checks it first. The node gets `ZETTA_EGRESS_GATEWAY` and
+`ZETTA_EGRESS_GATEWAY_ROUTES` only when its image's usage lists both
+(`status.imageFeatures.egressGateway`). zetta reads the routes from its environment only, so adding or
+removing a name rule rolls the Zetta's nodes. Both variables are operator-owned: `spec.env` cannot set
+them. A failed read of the namespace keeps the routes the ConfigMap already has.
+
+| The image | `ZETTA_EGRESS_ALLOW` | A rule or Connection change |
+|---|---|---|
+| Its usage lists `ZETTA_EGRESS_ALLOW_FILE` (`status.imageFeatures.egressAllowFile`) | empty: the file is the whole list | reaches the running node within seconds (it re-reads the file every 2 s, and kubelet updates a mounted ConfigMap within about a minute); **no restart** |
+| Any other image, or one whose answer is not in yet | the ConfigMap's value, as before | rolls its pods on the next workspace or services poll (up to 60 seconds), as before |
+
+- **The operator rolls first.** An image without zetta#1332 ignores the file and keeps the variable,
+  so nothing changes for it. When the answer for a new image arrives, its StatefulSet rolls once to
+  drop the value from its environment.
+- **Until the ConfigMap exists, the StatefulSet waits**, so no node starts with a list it was not
+  given. The Lake reconcilers write it right after the cluster.
+- **A bad or missing file never widens anything.** The engine keeps its last good list when a
+  replacement is malformed or removed, and denies when the file is missing at startup.
+- The list is sorted and de-duplicated, so an unchanged sandbox writes nothing. When the namespace
+  cannot be read, the running value (the ConfigMap's, or the variable of a cluster not moved yet) is
+  kept; a list longer than 64 KiB becomes deny and is logged.
+- A spec that names `ZETTA_EGRESS_ALLOW` (`spec.zetta.env`, `spec.services.zettaEnv`) keeps its own
+  value, and then no ConfigMap is named. The data-plane Zetta's list is the constant deny, so it stays
+  in its environment.
 
 ## A workspace Zetta's approved connector destinations
 
@@ -166,7 +214,7 @@ Separately from egress, a Zetta dials a **private or loopback connector source**
 MySQL-protocol TiDB, or one of lake's SQLite, DuckDB and Polars services) only when
 `ZETTA_CONNECTOR_ALLOW_DESTINATIONS` names it as an exact `host:port`, comma-separated. Metadata and
 link-local addresses are refused whatever it says (zetta
-[#1469](https://github.com/oramasearch/zetta/pull/1469), LSR-241,
+[#1469](https://github.com/oramasearch/zetta/pull/1469),
 [zetta#1414](https://github.com/oramasearch/zetta/issues/1414)). Without the variable, a workspace's
 in-cluster sources stop working once a Zetta image with that change rolls.
 
@@ -225,6 +273,6 @@ nothing read before `network_guard`. The opt-in `TestEgressRulesPgxStoreAgainstP
 0084 egress tables itself. The opt-in `TestEgressGatewayAgainstZettaTunnel` runs the real
 zetta-tunnel binary (commit 933d6fc, the image's) with the operator's arguments and snapshot.
 
-The named acceptance probe on `orama-nonprod-cluster-01` is deferred to rollout: a workload with a
+The named acceptance probe on `example-nonprod` is deferred to rollout: a workload with a
 name rule reaches the name through the gateway, is refused another name (including one resolving to
 the same address) and an IP literal, and reaches an address directly only with a CIDR rule.

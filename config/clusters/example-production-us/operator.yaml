@@ -1,0 +1,15 @@
+# An example, in the shape of a real deployment. The values are not Orama's: every name,
+# host and id is a placeholder. See README.md in this folder.
+apiVersion: orama.cloud/v1alpha1
+kind: OramaOperator
+metadata:
+  name: example-production-us
+spec:
+  chartRepository: registry-1.docker.io/oramasearch/orama-operator-chart
+  clusterRef: example-production-us
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system
+  imageRepository: oramasearch/orama-operator
+  namespace: orama-system
+  version: v0.11.12

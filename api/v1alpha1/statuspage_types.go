@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package v1alpha1
 
@@ -10,7 +7,7 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // StatusPageSpec is a set of external HTTP checks, grouped into the components a customer sees,
 // the alerts sent when a component changes state, and the public page they feed.
 type StatusPageSpec struct {
-	// Title is the page's heading, for example "lake.live status".
+	// Title is the page's heading, for example "example.com status".
 	// +kubebuilder:validation:MinLength=1
 	Title string `json:"title"`
 
@@ -145,7 +142,7 @@ type StatusPagePublish struct {
 	// CloudflareR2Bucket's spec.credentials writes.
 	// +kubebuilder:validation:MinLength=1
 	BucketSecretRef string `json:"bucketSecretRef"`
-	// PublicURL is where the page is read, for example https://status.lake.live. Shown in alerts.
+	// PublicURL is where the page is read, for example https://status.example.com. Shown in alerts.
 	// +optional
 	PublicURL string `json:"publicURL,omitempty"`
 }

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -37,14 +34,14 @@ import (
 // If lake changes a column, these strings change with it, and this test says what the operator
 // must write.
 const (
-	lakeSelectDeployments    = "SELECT operator, lake, repository, environment, kind, change, image, deployment_id, requested_by, requested_at, phase, namespace, url, message, updated_at, ordering_token FROM deployments WHERE lake = 'lake-dev.oramadev.net'"
-	lakeSelectEnvironmentEnv = "SELECT lake, repository, environment, key, value, deleted, set_by, updated_at, ordering_token FROM environment_env WHERE lake = 'lake-dev.oramadev.net'"
-	lakeSelectDomains        = "SELECT lake, repository, environment, host, tls, status, message, deleted, requested_by, updated_at, ordering_token FROM domains WHERE lake = 'lake-dev.oramadev.net'"
+	lakeSelectDeployments    = "SELECT operator, lake, repository, environment, kind, change, image, deployment_id, requested_by, requested_at, phase, namespace, url, message, updated_at, ordering_token FROM deployments WHERE lake = 'lake-dev.nonprod.example'"
+	lakeSelectEnvironmentEnv = "SELECT lake, repository, environment, key, value, deleted, set_by, updated_at, ordering_token FROM environment_env WHERE lake = 'lake-dev.nonprod.example'"
+	lakeSelectDomains        = "SELECT lake, repository, environment, host, tls, status, message, deleted, requested_by, updated_at, ordering_token FROM domains WHERE lake = 'lake-dev.nonprod.example'"
 
-	lakeSetGreeting   = "INSERT INTO environment_env (lake, repository, environment, key, value, deleted, set_by, updated_at, ordering_token) VALUES ('lake-dev.oramadev.net', '0f8fad5b-d9cb-469f-a165-70867728950e', 'production', 'GREETING', 'hello', FALSE, 'user/u-1', '2026-10-17T10:00:01.000000Z', '7c9e6679-7425-40de-944b-e07fc1f90ae7')"
-	lakeUnsetGreeting = "INSERT INTO environment_env (lake, repository, environment, key, value, deleted, set_by, updated_at, ordering_token) VALUES ('lake-dev.oramadev.net', '0f8fad5b-d9cb-469f-a165-70867728950e', 'production', 'GREETING', '', TRUE, 'user/u-1', '2026-10-17T10:05:00.000000Z', '9a7b330a-a736-41e5-8b0c-1c6c2d6a2f10')"
-	lakeCreateDomain  = "INSERT INTO domains (lake, repository, environment, host, tls, status, message, deleted, requested_by, updated_at, ordering_token) VALUES ('lake-dev.oramadev.net', '0f8fad5b-d9cb-469f-a165-70867728950e', 'production', 'shop.example.com', 'acme', 'pending', '', FALSE, 'user/u-1', '2026-10-17T10:00:02.000000Z', 'e4eaaaf2-d142-11e1-b3e4-080027620cdd')"
-	lakeDeleteDomain  = "INSERT INTO domains (lake, repository, environment, host, tls, status, message, deleted, requested_by, updated_at, ordering_token) VALUES ('lake-dev.oramadev.net', '0f8fad5b-d9cb-469f-a165-70867728950e', 'production', 'shop.example.com', 'acme', 'pending', '', TRUE, 'user/u-1', '2026-10-17T10:05:01.000000Z', '16fd2706-8baf-433b-82eb-8c7fada847da')"
+	lakeSetGreeting   = "INSERT INTO environment_env (lake, repository, environment, key, value, deleted, set_by, updated_at, ordering_token) VALUES ('lake-dev.nonprod.example', '0f8fad5b-d9cb-469f-a165-70867728950e', 'production', 'GREETING', 'hello', FALSE, 'user/u-1', '2026-10-17T10:00:01.000000Z', '7c9e6679-7425-40de-944b-e07fc1f90ae7')"
+	lakeUnsetGreeting = "INSERT INTO environment_env (lake, repository, environment, key, value, deleted, set_by, updated_at, ordering_token) VALUES ('lake-dev.nonprod.example', '0f8fad5b-d9cb-469f-a165-70867728950e', 'production', 'GREETING', '', TRUE, 'user/u-1', '2026-10-17T10:05:00.000000Z', '9a7b330a-a736-41e5-8b0c-1c6c2d6a2f10')"
+	lakeCreateDomain  = "INSERT INTO domains (lake, repository, environment, host, tls, status, message, deleted, requested_by, updated_at, ordering_token) VALUES ('lake-dev.nonprod.example', '0f8fad5b-d9cb-469f-a165-70867728950e', 'production', 'shop.example.com', 'acme', 'pending', '', FALSE, 'user/u-1', '2026-10-17T10:00:02.000000Z', 'e4eaaaf2-d142-11e1-b3e4-080027620cdd')"
+	lakeDeleteDomain  = "INSERT INTO domains (lake, repository, environment, host, tls, status, message, deleted, requested_by, updated_at, ordering_token) VALUES ('lake-dev.nonprod.example', '0f8fad5b-d9cb-469f-a165-70867728950e', 'production', 'shop.example.com', 'acme', 'pending', '', TRUE, 'user/u-1', '2026-10-17T10:05:01.000000Z', '16fd2706-8baf-433b-82eb-8c7fada847da')"
 
 	lakeContractRepository = "0f8fad5b-d9cb-469f-a165-70867728950e"
 )
@@ -111,7 +108,7 @@ func lakeReadsAll(t *testing.T, zetta *fakeZetta) (deployments, env, domains []m
 // enforces what Zetta enforces.
 func TestLakeRefusesTheOperatorsOldRows(t *testing.T) {
 	zetta := newFakeZetta(t, "test-token")
-	zetta.mustExec(t, "INSERT INTO deployments (deployment_id, record_type, lake, repository, environment, kind, change_id, image, updated_at) VALUES ('d', 'desired', 'lake-dev.oramadev.net', 'r', 'production', 'named', 'c', 'i', '2026-10-17T10:00:00Z')")
+	zetta.mustExec(t, "INSERT INTO deployments (deployment_id, record_type, lake, repository, environment, kind, change_id, image, updated_at) VALUES ('d', 'desired', 'lake-dev.nonprod.example', 'r', 'production', 'named', 'c', 'i', '2026-10-17T10:00:00Z')")
 	if _, err := zetta.exec("orama_control", lakeSelectDeployments); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("lake's SELECT over the old rows = %v, want an unknown-column error", err)
 	}

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -119,11 +116,92 @@ func TestTenantAgentPodsNeverReceiveOramasProviderKey(t *testing.T) {
 	}
 }
 
+// agent-runtime#14: a service launch runs the person's own code, so it never gets the Lake's agent
+// service token (which every library agent accepts). It gets its own token, derived from the
+// Lake's and the launch id, which lake computes the same way; a job gets no service token at all,
+// and a copy an earlier operator left in the workspace namespace is removed.
+func TestAServiceLaunchHoldsItsOwnServiceTokenNeverTheLakes(t *testing.T) {
+	lake := agentsTestLake()
+	service := testLaunch(agentLaunchModeService)
+	service.ID, service.Slug, service.WorkspaceNamespace = testServiceLaunchID, testServiceLaunchSlug, testWorkspaceName
+	job := testLaunch(agentLaunchModeJob)
+	job.WorkspaceNamespace = testWorkspaceName
+	shared := lakeAgentServiceTokenSecret(lake.Name)
+	stale := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: shared, Namespace: testWorkspaceName,
+			Labels: map[string]string{workspaceLabel: testWorkspaceID}},
+		Data: map[string][]byte{agentServiceTokenKey: []byte("the-shared-agent-service-token")},
+	}
+	sources := []client.Object{
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: lake.Spec.PullSecretName, Namespace: testServiceNamespace},
+			Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)},
+		},
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: shared, Namespace: testServiceNamespace},
+			Data:       map[string][]byte{agentServiceTokenKey: []byte("the-shared-agent-service-token")},
+		},
+	}
+	h := newServiceHarness(t, lake, &fakeServiceStore{launches: []LakeAgentLaunch{service, job}}, sources...)
+	ctx := context.Background()
+	if err := controllerutil.SetControllerReference(h.lake, stale, h.client.Scheme()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.client.Create(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	h.poll()
+	if err := h.reconciler.removeWorkspaceServiceTokenCopies(ctx, h.lake); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: shared}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the Lake's agent service token is in the workspace namespace: %v", err)
+	}
+	var own corev1.Secret
+	ownName := agentLaunchServiceTokenSecret(lake.Name, testServiceLaunchSlug)
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: ownName}, &own); err != nil {
+		t.Fatalf("the launch's own service token: %v", err)
+	}
+	want := launchServiceToken("the-shared-agent-service-token", testServiceLaunchID)
+	if got := string(own.Data[agentServiceTokenKey]); got != want || got == "the-shared-agent-service-token" {
+		t.Fatalf("launch service token %q, want %q", got, want)
+	}
+	if own.Labels[agentLaunchIDLabel] != testServiceLaunchID || !metav1.IsControlledBy(&own, h.lake) {
+		t.Fatalf("labels %v, owners %v", own.Labels, own.OwnerReferences)
+	}
+	var deployment appsv1.Deployment
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: testServiceLaunchName}, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	ref := envValue(t, deployment.Spec.Template.Spec.Containers[0].Env, "AGENT_SERVICE_TOKEN").ValueFrom.SecretKeyRef
+	if ref.Name != ownName || ref.Key != agentServiceTokenKey {
+		t.Fatalf("the service launch reads AGENT_SERVICE_TOKEN from %s/%s", ref.Name, ref.Key)
+	}
+	var jobObject batchv1.Job
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: testLaunchName}, &jobObject); err != nil {
+		t.Fatal(err)
+	}
+	for _, env := range jobObject.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == "AGENT_SERVICE_TOKEN" {
+			t.Fatal("a job launch has a service token")
+		}
+	}
+	// Distinct per launch.
+	if launchServiceToken("k", "a") == launchServiceToken("k", "b") {
+		t.Fatal("two launches share a service token")
+	}
+	// Lake derives the same value (lake agent_launch_service_token); the same vector is in lake's test.
+	if got := launchServiceToken("k", "al-1"); got != "c5447490ca4b85399ec15e9025cdf93a5390197f3e3aea8bf66120e91411da6c" {
+		t.Fatalf("launchServiceToken(k, al-1) = %s", got)
+	}
+}
+
 // The library agents are Orama's own code in the Lake's namespace; they keep the key, and the run
 // env of a tenant's agent is built without it.
 func TestOnlyLibraryAgentsInTheLakeNamespaceHoldTheProviderKey(t *testing.T) {
 	lake := agentsTestLake()
-	for _, env := range agentRunEnv(lake, "credential", testServiceCustomer, testWorkspaceID, "a-1", agentLaunchModeJob, "null") {
+	for _, env := range agentRunEnv(lake, "credential", "", testServiceCustomer, testWorkspaceID, "a-1", agentLaunchModeJob, "null") {
 		if env.Name == openAIKeyName {
 			t.Fatalf("a tenant agent's run env has %s", openAIKeyName)
 		}

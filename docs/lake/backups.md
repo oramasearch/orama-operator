@@ -8,7 +8,7 @@ other datastore.
 
 ## Configure Cloudflare R2
 
-For `Lake/prod`, create a dedicated Cloudflare R2 bucket, such as `lake-prod-backups`. Create an
+For each Lake, create a dedicated Cloudflare R2 bucket, such as `lake-prod-backups`. Create an
 R2 API token scoped to that bucket with **Object Read & Write** permission, then create the
 credentials Secret in the Lake namespace. The endpoint is the account's S3 API endpoint.
 
@@ -37,7 +37,7 @@ spec:
 
 The default six-field CNPG schedule is `0 0 3 * * *` (03:00:00 daily), the retention policy is
 `30d`, and the default prefix is `lake-<name>/controldb`. The resulting object-store path for
-`Lake/prod` is `s3://lake-prod-backups/lake-prod/controldb`; WAL files are gzip-compressed.
+a development Lake is `s3://lake-prod-backups/lake-prod/controldb`; WAL files are gzip-compressed.
 
 ## Verify and change a backup
 
@@ -100,7 +100,7 @@ either side lacks a migration the vendored lake schema records, records success 
 resources. See [Postgres data-service rehearsals](data-services/postgres.md) for restore, upgrade,
 and failover details.
 
-The live recovery rehearsal remains deferred until backups are enabled. On lake.live the Lakes are
+The live recovery rehearsal remains deferred until backups are enabled. On lake.example.com the Lakes are
 `shared` (EU) and `shared-us` (US) on the production leaf clusters, and on 2026-10-24 neither had
 `spec.postgres.backup` enabled: no Barman object store, no `ScheduledBackup`, no CNPG `Backup`.
 What exists, what is missing and how the rehearsal is declared from the `lake-prod` set file are in

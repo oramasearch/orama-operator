@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -41,23 +38,23 @@ func selects(t *testing.T, selector metav1.LabelSelector, podLabels map[string]s
 }
 
 func TestWorkspaceAPIServerTarget(t *testing.T) {
-	target, err := workspaceAPIServerTargetFrom(testKubernetesService(), testKubernetesEndpoints("20.237.72.161", 443))
+	target, err := workspaceAPIServerTargetFrom(testKubernetesService(), testKubernetesEndpoints("11.2.3.4", 443))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(target.cidrs, []string{"10.0.0.1/32", "20.237.72.161/32"}) ||
+	if !reflect.DeepEqual(target.cidrs, []string{"10.0.0.1/32", "11.2.3.4/32"}) ||
 		!reflect.DeepEqual(target.ports, []int32{443}) {
 		t.Fatalf("AKS target = %+v", target)
 	}
 
 	// A self-hosted API server serves on 6443 behind the Service's 443.
-	endpoints := testKubernetesEndpoints("192.168.123.175", 6443)
+	endpoints := testKubernetesEndpoints("192.168.0.175", 6443)
 	endpoints.Subsets[0].NotReadyAddresses = []corev1.EndpointAddress{{IP: "fd00::5"}}
 	target, err = workspaceAPIServerTargetFrom(testKubernetesService(), endpoints)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(target.cidrs, []string{"10.0.0.1/32", "192.168.123.175/32", "fd00::5/128"}) ||
+	if !reflect.DeepEqual(target.cidrs, []string{"10.0.0.1/32", "192.168.0.175/32", "fd00::5/128"}) ||
 		!reflect.DeepEqual(target.ports, []int32{443, 6443}) {
 		t.Fatalf("self-hosted target = %+v", target)
 	}
@@ -89,7 +86,7 @@ func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T)
 	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
 
 	labels := workspaceLabels(lake, &store.rows[0])
-	target, err := workspaceAPIServerTargetFrom(testKubernetesService(), testKubernetesEndpoints("20.237.72.161", 443))
+	target, err := workspaceAPIServerTargetFrom(testKubernetesService(), testKubernetesEndpoints("11.2.3.4", 443))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +102,10 @@ func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T)
 	}
 	// operator#469: the operator signs in to workspace Postgres to keep credential roles.
 	expected = append(expected, workspaceOperatorPostgresPolicy("orama-system", testWorkspaceName, labels))
+	// operator#771: the operator signs in to TiDB and Cassandra to keep the tenant user.
+	for _, allowance := range workspaceOramaOperatorIngresses {
+		expected = append(expected, workspaceOramaOperatorIngressPolicy(allowance, "orama-system", testWorkspaceName, labels))
+	}
 	for _, apiClient := range workspaceAPIServerClients {
 		expected = append(expected, workspaceAPIServerEgressPolicy(apiClient, target, testWorkspaceName, labels))
 	}
@@ -184,7 +185,7 @@ func TestLakeWorkspaceDatastorePolicies(t *testing.T) {
 		}
 		cidrs = append(cidrs, peer.IPBlock.CIDR)
 	}
-	if !reflect.DeepEqual(cidrs, []string{"10.0.0.1/32", "20.237.72.161/32"}) ||
+	if !reflect.DeepEqual(cidrs, []string{"10.0.0.1/32", "11.2.3.4/32"}) ||
 		!reflect.DeepEqual(policyPorts(t, apiEgress.Spec.Egress[0].Ports), []int32{443}) {
 		t.Fatalf("CNPG API egress = %v on %v", cidrs, apiEgress.Spec.Egress[0].Ports)
 	}

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -166,8 +163,8 @@ func TestPeerConnectionRehearsalBetweenTwoClusters(t *testing.T) {
 	link := &oramav1alpha1.PeerLink{
 		ObjectMeta: metav1.ObjectMeta{Name: "v1-eu-us"},
 		Spec: oramav1alpha1.PeerLinkSpec{PeerID: testPeerID, Ends: []oramav1alpha1.PeerLinkEnd{
-			{Name: "eu", ClusterRef: "orama-production-cluster-02", Namespace: "v1-eu", PeerConnection: "eu-us"},
-			{Name: "us", ClusterRef: "orama-production-cluster-03", Namespace: "v1-us", PeerConnection: "eu-us"},
+			{Name: "eu", ClusterRef: "example-production-eu", Namespace: "v1-eu", PeerConnection: "eu-us"},
+			{Name: "us", ClusterRef: "example-production-us", Namespace: "v1-us", PeerConnection: "eu-us"},
 		}},
 	}
 	management := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&oramav1alpha1.PeerLink{}).
@@ -200,8 +197,8 @@ func TestPeerConnectionRehearsalBetweenTwoClusters(t *testing.T) {
 	if current := reconcileLink(); current.Status.Phase != oramav1alpha1.PeerPhasePending {
 		t.Fatalf("PeerLink with unreachable clusters = %+v", current.Status)
 	}
-	clusters.clusters["orama-production-cluster-02"] = eu.kube
-	clusters.clusters["orama-production-cluster-03"] = us.kube
+	clusters.clusters["example-production-eu"] = eu.kube
+	clusters.clusters["example-production-us"] = us.kube
 	reconcileLink()
 	eu.reconcile(t)
 	us.reconcile(t)
@@ -489,6 +486,20 @@ func TestLakePeerRowsAreValidatedAndReadOnlyAfterTheGuard(t *testing.T) {
 		f.lakeR.reconcileLakePeers(f.ctx, f.lake, store)
 		if len(store.upserts) != 1 || store.upserts[0].Phase != oramav1alpha1.PeerPhaseFailed || !strings.Contains(store.upserts[0].Message, c.want) {
 			t.Fatalf("%s %s: %+v", c.exports, c.imports, store.upserts)
+		}
+	}
+}
+
+// orama-operator#783: a tenant-named peer remote that is an address must be a public one.
+func TestAPeerRemoteAddressMustBePublic(t *testing.T) {
+	for _, refused := range []string{"10.224.0.5:10250", "169.254.169.254:80", "127.0.0.1:443", "192.168.1.10:443", "100.64.0.1:443", "[fd00::1]:443"} {
+		if message := validatePeerRemote(refused); message == "" {
+			t.Errorf("remote %s was accepted", refused)
+		}
+	}
+	for _, accepted := range []string{"93.184.216.34:443", "peer.example.com:443", "[2606:4700::1]:443"} {
+		if message := validatePeerRemote(accepted); message != "" {
+			t.Errorf("remote %s was refused: %s", accepted, message)
 		}
 	}
 }

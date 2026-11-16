@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -65,7 +62,7 @@ func newDNSFixture(t *testing.T) *dnsFixture {
 	}
 	rec := &oramav1alpha1.CloudflareDNSRecord{
 		ObjectMeta: metav1.ObjectMeta{Name: "web-dns", Namespace: "apps"},
-		Spec:       oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "app.oramadev.net", Content: "lb.example.net", Proxied: true},
+		Spec:       oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "app.nonprod.example", Content: "lb.example.net", Proxied: true},
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cf", Namespace: "apps"}, Data: map[string][]byte{"token": []byte("test-token"), "zoneID": []byte("test-zone")}}
 	f := &dnsFixture{t: t, rec: rec, recorder: record.NewFakeRecorder(10)}
@@ -436,7 +433,7 @@ func TestCloudflareDNSMarkerLengthAndType(t *testing.T) {
 			f.rec.Spec.Content = tc.content
 			f.rec.Spec.Type = tc.explicit
 			// A query metacharacter must survive encoding, rather than becoming another filter.
-			f.rec.Spec.Name = "test+name&tag.oramadev.net"
+			f.rec.Spec.Name = "test+name&tag.nonprod.example"
 			f.create()
 			f.wantReconcile(false)
 			f.methods("GET", "POST")
@@ -738,7 +735,7 @@ func TestCloudflareDNSAPIServerPreservesProxyAndOwnership(t *testing.T) {
 	// A shared record is never deleted by one of the resources sharing it: the API server refuses
 	// sharedOwner without deletionPolicy Retain.
 	shared := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: f.rec.Namespace},
-		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "clerk.oramadev.net", Content: "x.example.net", SharedOwner: "clerk/ins_1"}}
+		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "clerk.nonprod.example", Content: "x.example.net", SharedOwner: "clerk/ins_1"}}
 	if err := kube.Create(ctx, shared); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "sharedOwner requires deletionPolicy Retain") {
 		t.Fatalf("sharedOwner without Retain: %v", err)
 	}
@@ -850,8 +847,8 @@ func TestRenamingADNSRecordDeletesTheOldOne(t *testing.T) {
 	ctx := context.Background()
 	rec := &oramav1alpha1.CloudflareDNSRecord{
 		ObjectMeta: metav1.ObjectMeta{Name: "lake-testing-dns", Namespace: "lake-testing"},
-		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cloudflare-api-token", Name: "lake-testing.oramadev.net",
-			Content: "20.120.187.234", Proxied: true},
+		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cloudflare-api-token", Name: "lake-testing.nonprod.example",
+			Content: "11.2.3.8", Proxied: true},
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cloudflare-api-token", Namespace: "lake-testing"},
 		Data: map[string][]byte{"token": []byte("t"), "zoneID": []byte("zone-1")}}
@@ -878,15 +875,15 @@ func TestRenamingADNSRecordDeletesTheOldOne(t *testing.T) {
 	}
 
 	reconcile()
-	if got := cloudflare.names(); len(got) != 1 || got[0] != "lake-testing.oramadev.net" || rec.Status.RecordID != "record-1" {
+	if got := cloudflare.names(); len(got) != 1 || got[0] != "lake-testing.nonprod.example" || rec.Status.RecordID != "record-1" {
 		t.Fatalf("created: records %v, status %+v", got, rec.Status)
 	}
 	if rec.Status.OwnerComment != "orama-operator:lake-testing/lake-testing-dns" {
 		t.Fatalf("owner comment = %q", rec.Status.OwnerComment)
 	}
 
-	rename("lake-testing2.oramadev.net")
-	if got := cloudflare.names(); len(got) != 1 || got[0] != "lake-testing2.oramadev.net" {
+	rename("lake-testing2.nonprod.example")
+	if got := cloudflare.names(); len(got) != 1 || got[0] != "lake-testing2.nonprod.example" {
 		t.Fatalf("after the rename Cloudflare has %v, want only the new name", got)
 	}
 	if rec.Status.RecordID != "record-2" || !rec.Status.Ready {
@@ -900,7 +897,7 @@ func TestRenamingADNSRecordDeletesTheOldOne(t *testing.T) {
 	taken.Comment = "managed by hand"
 	cloudflare.records["record-2"] = taken
 	cloudflare.mu.Unlock()
-	rename("lake-testing3.oramadev.net")
+	rename("lake-testing3.nonprod.example")
 	if got := cloudflare.names(); len(got) != 2 {
 		t.Fatalf("a rename deleted a record this resource no longer owns: Cloudflare has %v", got)
 	}
@@ -932,15 +929,15 @@ func TestRenamingADNSRecordDeletesTheOldOne(t *testing.T) {
 func TestRenamingALegacyOrRetainedDNSRecord(t *testing.T) {
 	for _, scenario := range []string{"legacy", "retain"} {
 		t.Run(scenario, func(t *testing.T) {
-			old := cfDNSRecord{ID: "legacy-1", Type: "A", Name: "lake-old.oramadev.net", Content: "20.120.187.234", Proxied: true, TTL: 1}
+			old := cfDNSRecord{ID: "legacy-1", Type: "A", Name: "lake-old.nonprod.example", Content: "11.2.3.8", Proxied: true, TTL: 1}
 			cloudflare := &fakeCloudflareDNS{records: map[string]cfDNSRecord{old.ID: old}}
 			server := httptest.NewServer(cloudflare)
 			defer server.Close()
 			ctx := context.Background()
 			rec := &oramav1alpha1.CloudflareDNSRecord{
 				ObjectMeta: metav1.ObjectMeta{Name: "lake-dns", Namespace: "lake-dev", Finalizers: []string{cfDNSFinalizer}},
-				Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "lake-new.oramadev.net",
-					Content: "20.120.187.234", Proxied: true},
+				Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "lake-new.nonprod.example",
+					Content: "11.2.3.8", Proxied: true},
 				Status: oramav1alpha1.CloudflareDNSRecordStatus{RecordID: old.ID, Ready: true, Message: "reconciled"},
 			}
 			if scenario == "retain" {
@@ -967,7 +964,7 @@ func TestRenamingALegacyOrRetainedDNSRecord(t *testing.T) {
 			cloudflare.mu.Lock()
 			defer cloudflare.mu.Unlock()
 			created := cloudflare.records["record-1"]
-			if created.Name != "lake-new.oramadev.net" || created.Comment != want.OwnerComment {
+			if created.Name != "lake-new.nonprod.example" || created.Comment != want.OwnerComment {
 				t.Fatalf("new record = %+v", created)
 			}
 			_, kept := cloudflare.records[old.ID]
@@ -986,7 +983,7 @@ func TestSharedOwnerDNSRecord(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			cloudflare := &fakeCloudflareDNS{records: map[string]cfDNSRecord{}}
 			if scenario == "hand-made" {
-				cloudflare.records["hand-1"] = cfDNSRecord{ID: "hand-1", Type: "CNAME", Name: "clerk.lake.live", Content: "frontend-api.clerk.services", TTL: 1}
+				cloudflare.records["hand-1"] = cfDNSRecord{ID: "hand-1", Type: "CNAME", Name: "clerk.lakelive.example", Content: "frontend-api.clerk.services", TTL: 1}
 			}
 			server := httptest.NewServer(cloudflare)
 			defer server.Close()
@@ -994,7 +991,7 @@ func TestSharedOwnerDNSRecord(t *testing.T) {
 			resource := func(ns string) *oramav1alpha1.CloudflareDNSRecord {
 				return &oramav1alpha1.CloudflareDNSRecord{
 					ObjectMeta: metav1.ObjectMeta{Name: "lake-" + ns + "-clerk-1", Namespace: ns},
-					Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "clerk.lake.live", Type: "CNAME",
+					Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "clerk.lakelive.example", Type: "CNAME",
 						Content: "frontend-api.clerk.services", DeletionPolicy: "Retain", SharedOwner: "clerk/ins_1"},
 				}
 			}

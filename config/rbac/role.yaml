@@ -243,21 +243,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - monitoring.coreos.com
-  resources:
-  - alertmanagerconfigs
-  - podmonitors
-  - prometheuses
-  - prometheusrules
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - networking.k8s.io
   resources:
   - ingressclasses
@@ -319,9 +304,6 @@ rules:
   - lakesealedsecrets
   - lakesets
   - networksandboxes
-  - observabilityagents
-  - observabilityhubs
-  - observabilityproviders
   - oramacloudv1e2etests
   - oramacloudv1migrations
   - oramacloudv1s
@@ -333,8 +315,6 @@ rules:
   - paymentwebhookendpoints
   - peerconnections
   - peerlinks
-  - pixieclouds
-  - pixieviziers
   - postgresschemas
   - rabbitmqtopologies
   - stripecatalogs
@@ -372,16 +352,12 @@ rules:
   - lakes/finalizers
   - lakesealedsecrets/finalizers
   - lakesets/finalizers
-  - observabilityagents/finalizers
-  - observabilityhubs/finalizers
   - oramacloudv1migrations/finalizers
   - oramacloudv1sets/finalizers
   - oramaoperators/finalizers
   - oramazettaclusters/finalizers
   - peerconnections/finalizers
   - peerlinks/finalizers
-  - pixieclouds/finalizers
-  - pixieviziers/finalizers
   - rabbitmqtopologies/finalizers
   - stripewebhookendpoints/finalizers
   - tunnels/finalizers
@@ -419,9 +395,6 @@ rules:
   - lakesealedsecrets/status
   - lakesets/status
   - networksandboxes/status
-  - observabilityagents/status
-  - observabilityhubs/status
-  - observabilityproviders/status
   - oramacloudv1e2etests/status
   - oramacloudv1migrations/status
   - oramacloudv1s/status
@@ -433,8 +406,6 @@ rules:
   - paymentwebhookendpoints/status
   - peerconnections/status
   - peerlinks/status
-  - pixieclouds/status
-  - pixieviziers/status
   - postgresschemas/status
   - rabbitmqtopologies/status
   - statuspages/status
@@ -489,7 +460,6 @@ rules:
   resources:
   - backups
   - clusters
-  - databases
   - scheduledbackups
   verbs:
   - create
@@ -512,21 +482,6 @@ rules:
   resourceNames:
   - karpenter
   - karpenter-core
-  resources:
-  - clusterrolebindings
-  verbs:
-  - create
-  - delete
-  - patch
-  - update
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resourceNames:
-  - pl-cloud-connector-cluster-binding
-  - pl-node-view-cluster-binding
-  - pl-vizier-metadata-cluster-binding
-  - pl-vizier-metadata-node-view-cluster-binding
-  - plc:nats-server-binding
   resources:
   - clusterrolebindings
   verbs:
@@ -563,22 +518,6 @@ rules:
 - apiGroups:
   - rbac.authorization.k8s.io
   resourceNames:
-  - pl-cloud-connector-role
-  - pl-node-view
-  - pl-vizier-metadata
-  - plc:nats-server
-  resources:
-  - clusterroles
-  verbs:
-  - bind
-  - create
-  - delete
-  - escalate
-  - patch
-  - update
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resourceNames:
   - karpenter
   - karpenter-dns
   resources:
@@ -591,38 +530,8 @@ rules:
 - apiGroups:
   - rbac.authorization.k8s.io
   resourceNames:
-  - pl-cloud-connector-binding
-  - pl-kuberesolver-role-binding
-  - pl-vizier-metadata-binding
-  - pl-vizier-query-broker-binding
-  resources:
-  - rolebindings
-  verbs:
-  - create
-  - delete
-  - patch
-  - update
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resourceNames:
   - karpenter
   - karpenter-dns
-  resources:
-  - roles
-  verbs:
-  - bind
-  - create
-  - delete
-  - escalate
-  - patch
-  - update
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resourceNames:
-  - pl-cloud-connector-ns-role
-  - pl-kuberesolver-role
-  - pl-vizier-metadata-role
-  - pl-vizier-query-broker-role
   resources:
   - roles
   verbs:

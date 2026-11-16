@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -311,7 +308,7 @@ func TestStoresShareTheServicesSecret(t *testing.T) {
 	h := newServiceHarness(t, serviceTestLake(), store)
 	h.poll()
 	h.markZettaReady(testZettaSlug, 1)
-	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-111111111111-zetta-admin", Namespace: testServiceNamespace},
+	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-111111111111-zetta-admin", Namespace: testServiceWorkspaceNamespace},
 		Data: map[string][]byte{"token": []byte("zetta-admin-token")}})
 	h.poll()
 	credentials := h.credentials()
@@ -321,7 +318,7 @@ func TestStoresShareTheServicesSecret(t *testing.T) {
 	if string(credentials[testZettaServiceID]) != string(credentials[testZettaSlug+".json"]) {
 		t.Fatal("service ID alias differs from the existing slug credential")
 	}
-	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseReady, "service ready", serviceZettaEndpoint("prod", testZettaSlug, testServiceNamespace))
+	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseReady, "service ready", serviceZettaEndpoint("prod", testZettaSlug, testServiceWorkspaceNamespace))
 	expectStoreStatus(t, store.storeStatus(t, testVolumeStoreID), ServicePhaseReady, storeReadyUnboundMessage, "lake/"+testVolumeClaim)
 
 	// A failed stores read keeps the store's connection; a withdrawn service still loses its own.
@@ -345,13 +342,13 @@ func TestStoresMissingTableLeavesServicesWorking(t *testing.T) {
 	h.poll()
 	h.zettaCluster(testZettaSlug)
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseProvisioning, "waiting for the Zetta nodes",
-		serviceZettaEndpoint("prod", testZettaSlug, testServiceNamespace))
+		serviceZettaEndpoint("prod", testZettaSlug, testServiceWorkspaceNamespace))
 	h.markZettaReady(testZettaSlug, 1)
-	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-111111111111-zetta-admin", Namespace: testServiceNamespace},
+	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-111111111111-zetta-admin", Namespace: testServiceWorkspaceNamespace},
 		Data: map[string][]byte{"token": []byte("zetta-admin-token")}})
 	h.poll()
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseReady, "service ready",
-		serviceZettaEndpoint("prod", testZettaSlug, testServiceNamespace))
+		serviceZettaEndpoint("prod", testZettaSlug, testServiceWorkspaceNamespace))
 	if store.storeUpsertCount() != 0 {
 		t.Fatalf("store statuses written without a stores table: %d", store.storeUpsertCount())
 	}

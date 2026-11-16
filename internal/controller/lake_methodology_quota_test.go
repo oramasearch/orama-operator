@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -62,7 +59,7 @@ func (h *serviceHarness) reservation(slug string) (*corev1.Pod, error) {
 	return pod, err
 }
 
-// orama-operator#799 (LSR-137): a run counts against its workspace's quota. While the workspace's
+// orama-operator#799: a run counts against its workspace's quota. While the workspace's
 // quota has no room the run waits as Queued, with nothing started and no credential minted; once
 // there is room its reservation is admitted in the workspace's namespace and the run starts; the
 // reservation goes when the run ends.

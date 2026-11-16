@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -54,7 +51,7 @@ func TestTunnelGrantsPgxStoreAgainstPostgres(t *testing.T) {
 	exec(
 		"CREATE SCHEMA "+scratch,
 		"SET LOCAL search_path TO "+scratch+", pg_catalog",
-		`CREATE TABLE workspaces (id uuid PRIMARY KEY, namespace text NOT NULL DEFAULT '')`,
+		`CREATE TABLE workspaces (id uuid PRIMARY KEY, customer_id uuid NOT NULL, namespace text NOT NULL DEFAULT '')`,
 		`CREATE TABLE users (id uuid PRIMARY KEY, email text)`,
 		`CREATE TABLE network_tunnel_grants (
             id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -91,7 +88,7 @@ func TestTunnelGrantsPgxStoreAgainstPostgres(t *testing.T) {
 	exec(
 		`ALTER TABLE network_tunnel_grants ADD COLUMN IF NOT EXISTS client_ca_pem text NOT NULL DEFAULT ''`,
 		`ALTER TABLE network_tunnel_grant_status ADD COLUMN IF NOT EXISTS relay_ca_pem text NOT NULL DEFAULT ''`,
-		fmt.Sprintf(`INSERT INTO workspaces (id, namespace) VALUES ('%s', 'workspace')`, testWorkspaceID),
+		fmt.Sprintf(`INSERT INTO workspaces (id, customer_id, namespace) VALUES ('%s', '%s', 'workspace')`, testWorkspaceID, testServiceCustomer),
 		fmt.Sprintf(`INSERT INTO users (id, email) VALUES ('%s', 'dev@example.com')`, testTunnelUserID),
 		fmt.Sprintf(`INSERT INTO network_tunnel_grants
             (id, customer_id, workspace_id, user_id, target_kind, target_id, port, expires_at, client_ca_pem, created_at)

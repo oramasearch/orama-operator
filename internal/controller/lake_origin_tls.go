@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -216,7 +213,7 @@ type lakeEdge struct {
 	// noEdgeCertificate are the zone's proxied record names (a wildcard as "*.x") the edge has no
 	// valid certificate for. A host there is not redirected to HTTPS: the visitor could not follow.
 	noEdgeCertificate map[string]bool
-	// dnsZone is the zone's name (lake.live), once observed: the names the Lake's DNS-01 credential
+	// dnsZone is the zone's name (example.com), once observed: the names the Lake's DNS-01 credential
 	// can solve. Empty while unknown.
 	dnsZone string
 }

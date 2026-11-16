@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -591,9 +588,9 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
 		Spec: oramav1alpha1.LakeSpec{
-			Image: "hashicorp/http-echo:1.0", IngressEnabled: true, Host: "hello.lake.live",
+			Image: "hashicorp/http-echo:1.0", IngressEnabled: true, Host: "hello.lakelive.example",
 			DNSSecretRef:    &corev1.LocalObjectReference{Name: "cloudflare-api-token"},
-			PreviewWildcard: "preview.lake.live",
+			PreviewWildcard: "preview.lakelive.example",
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}, &networkingv1.Ingress{}).Build()
@@ -608,7 +605,7 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != "nginx" {
 		t.Errorf("ingress class = %v", ing.Spec.IngressClassName)
 	}
-	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "hello.lake.live" {
+	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "hello.lakelive.example" {
 		t.Errorf("ingress rules = %+v", ing.Spec.Rules)
 	}
 	if b := ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service; b == nil || b.Name != "lake-hello" || b.Port.Number != lakeServicePort {
@@ -619,7 +616,7 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	}
 	// Origin TLS by default (operator#578): the issued certificate, and no redirect until the
 	// zone policy reports that the edge reaches the origin over TLS.
-	if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != "hello.lake.live-tls" ||
+	if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != "hello.lakelive.example-tls" ||
 		ing.Annotations[annotationCertManagerIssuer] != "lake-hello-letsencrypt" {
 		t.Errorf("default ingress TLS = %+v annotations %+v", ing.Spec.TLS, ing.Annotations)
 	}
@@ -649,7 +646,7 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ing.Spec.TLS) != 1 || len(ing.Spec.TLS[0].Hosts) != 1 ||
-		ing.Spec.TLS[0].Hosts[0] != "hello.lake.live" ||
+		ing.Spec.TLS[0].Hosts[0] != "hello.lakelive.example" ||
 		ing.Spec.TLS[0].SecretName != "lake-origin-tls" {
 		t.Errorf("TLS ingress = spec %+v annotations %+v", ing.Spec.TLS, ing.Annotations)
 	}
@@ -666,18 +663,18 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-dns"}, &rec); err != nil {
 		t.Fatalf("DNS record not created: %v", err)
 	}
-	if rec.Spec.Name != "hello.lake.live" || rec.Spec.Content != "172.212.70.79" || !rec.Spec.Proxied || rec.Spec.SecretRef != "cloudflare-api-token" {
+	if rec.Spec.Name != "hello.lakelive.example" || rec.Spec.Content != "172.212.70.79" || !rec.Spec.Proxied || rec.Spec.SecretRef != "cloudflare-api-token" {
 		t.Errorf("DNS record spec = %+v", rec.Spec)
 	}
 	if len(rec.OwnerReferences) != 1 || rec.OwnerReferences[0].Name != "hello" {
 		t.Errorf("DNS record owner refs = %+v", rec.OwnerReferences)
 	}
 	var previewRec oramav1alpha1.CloudflareDNSRecord
-	previewName := lakePreviewDNSRecordName("lake-hello", "preview.lake.live")
+	previewName := lakePreviewDNSRecordName("lake-hello", "preview.lakelive.example")
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: previewName}, &previewRec); err != nil {
 		t.Fatalf("preview wildcard DNS record not created: %v", err)
 	}
-	if previewRec.Spec.Name != "*.preview.lake.live" || previewRec.Spec.Content != "172.212.70.79" {
+	if previewRec.Spec.Name != "*.preview.lakelive.example" || previewRec.Spec.Content != "172.212.70.79" {
 		t.Errorf("preview wildcard DNS spec = %+v", previewRec.Spec)
 	}
 
@@ -693,7 +690,7 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &ing); err != nil {
 		t.Fatal(err)
 	}
-	if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != "hello.lake.live-tls" {
+	if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != "hello.lakelive.example-tls" {
 		t.Errorf("issued certificate not restored: %+v", ing.Spec.TLS)
 	}
 

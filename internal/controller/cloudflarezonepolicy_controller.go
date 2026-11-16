@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -86,8 +83,8 @@ const (
 	edgeZoneRecheck = 10 * time.Minute
 	// edgeZoneHostLimit bounds status.hosts.
 	edgeZoneHostLimit = 50
-	// edgeProbeLabel is the name a wildcard record is probed with: *.eu.lake.live is checked as
-	// orama-edge-probe.eu.lake.live.
+	// edgeProbeLabel is the name a wildcard record is probed with: *.eu.example.com is checked as
+	// orama-edge-probe.eu.example.com.
 	edgeProbeLabel = "orama-edge-probe"
 )
 

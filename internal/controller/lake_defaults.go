@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -18,22 +15,26 @@ import (
 // table of the images a Lake runs when its spec leaves one empty, so a LakeSet member states only
 // what differs per environment (host, args, env, secrets). A spec image still overrides its default.
 //
-// The defaults are pinned to what the managing cluster's Lake/prod ran on 2026-10-17, apart from
-// Zetta, which is the v0.3.0 release pinned by digest (operator#588). Moving a version is a change
+// The defaults are the versions this operator release is tested with; Zetta is the v0.3.0 release
+// pinned by digest (operator#588). Moving a version is a change
 // to this table, rolled through the pipeline dev, testing, staging, prod.
 const (
 	// lakeDefaultZettaImage is the Zetta of the Lake's own data plane, of every workspace and of
 	// every managed Zetta service.
 	lakeDefaultZettaImage = "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"
+	// The images that run tenant code (apps, builds, methodologies, user-created agents) are pinned
+	// by digest, never a tag alone, so a re-pushed tag cannot change what every tenant runs
+	// (orama-operator#765). The tag is kept for readers; the digest is what is pulled.
+	//
 	// lakeDefaultAppsRuntimeImage runs runtime-mode apps (spec.apps.runtimeImage).
-	lakeDefaultAppsRuntimeImage = "oramasearch/app-runtime:976e6a8"
+	lakeDefaultAppsRuntimeImage = "oramasearch/app-runtime:976e6a8@sha256:ee7222fbbccdcd9dc4ec88c7ee6856b81aa876366a4abeae2bc6d13fda2146b3"
 	// lakeDefaultBuilderImage runs every image build (spec.builds.builderImage).
-	lakeDefaultBuilderImage = "oramasearch/lake-builder:31a48d9"
+	lakeDefaultBuilderImage = "oramasearch/lake-builder:31a48d9@sha256:35cc44ca93a191a2832d0e03e4c7c83946eb44ae917215cd7d52b8711f9d09c0"
 	// lakeDefaultMethodologyRuntimeImage is the base of every methodology image and runs its stage
 	// and collect pods (spec.methodologies.runtimeImage).
-	lakeDefaultMethodologyRuntimeImage = "oramasearch/methodology-runtime:ac58062"
+	lakeDefaultMethodologyRuntimeImage = "oramasearch/methodology-runtime:ac58062@sha256:ee64b81a97a46917cfb278e3db3bf4692794ff3dba47ff9e05c3e436af97d1ed"
 	// lakeDefaultAgentRuntimeImage runs every user-created agent (spec.agents.runtimeImage).
-	lakeDefaultAgentRuntimeImage = "oramasearch/agent-runtime:v0.1.0"
+	lakeDefaultAgentRuntimeImage = "oramasearch/agent-runtime:v0.1.0@sha256:f14cbc7b7f82d3a9bb54635011d9b5daf019cd89c41e38dce7b00185e297e73f"
 	// lakeDefaultMCPRunnerImage is LAKE_MCP_RUNNER_IMAGE, the image lake runs MCP servers on.
 	// spec.env may still set the variable, which wins. Lake runs a stdio MCP connection as an image
 	// App on it, so it is pinned by digest: lake refuses a stdio connection otherwise, and
@@ -65,6 +66,8 @@ var lakeDefaultLibrary = []oramav1alpha1.LakeLibraryAgent{
 //
 // ZETTA_EGRESS_ALLOW follows them (zetta#75, operator#724): rendered for each Zetta from what its
 // namespace's NetworkSandbox allows it (lake_zetta_egress.go), unless the spec's env names it.
+// For a workspace Zetta or managed Zetta service it goes in the cluster's egress ConfigMap, which an
+// image that re-reads ZETTA_EGRESS_ALLOW_FILE reads without a restart (zetta_egress_file.go).
 var lakeDefaultZettaEnv = []corev1.EnvVar{
 	{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
 	{Name: "MALLOC_ARENA_MAX", Value: "2"},
@@ -107,13 +110,14 @@ func lakeDataPlaneZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 	return withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Zetta.Env), zettaEgressDeny)
 }
 
-// serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta, with the
-// egress allowlist rendered from its workspace namespace (workspaceZettaEgressAllow) and, last, the
-// connector destinations approved from the Lake services in that namespace
+// serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta, with, last,
+// the connector destinations approved from the Lake services in that namespace
 // (workspaceZettaConnectorAllow, lake_zetta_connector_destinations.go), which the spec cannot set.
-func serviceZettaEnv(lake *oramav1alpha1.Lake, egressAllow, connectorAllow string) []corev1.EnvVar {
-	return withZettaConnectorAllow(
-		withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv), egressAllow), connectorAllow)
+// Its egress allowlist is not in the env: it is rendered from its workspace namespace
+// (workspaceZettaEgressAllow) into the cluster's ConfigMap, spec.egressAllowConfigMap
+// (zetta_egress_file.go, operator#724), unless spec.services.zettaEnv states ZETTA_EGRESS_ALLOW.
+func serviceZettaEnv(lake *oramav1alpha1.Lake, connectorAllow string) []corev1.EnvVar {
+	return withZettaConnectorAllow(withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv), connectorAllow)
 }
 
 // lakeAppsRuntimeImage is the image runtime-mode apps run.

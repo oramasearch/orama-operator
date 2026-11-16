@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -30,7 +27,7 @@ const listTunnelGrantsSQL = `SELECT g.id::text, g.customer_id::text, g.workspace
        st.grant_id IS NOT NULL, COALESCE(st.phase, ''), COALESCE(st.message, ''),
        COALESCE(st.endpoint, ''), COALESCE(st.relay_ca_pem, ''), COALESCE(st.observed_generation, 0)
   FROM network_tunnel_grants g
-  JOIN workspaces w ON w.id = g.workspace_id
+  JOIN workspaces w ON w.id = g.workspace_id AND w.customer_id = g.customer_id
   LEFT JOIN users u ON u.id = g.user_id
   LEFT JOIN network_tunnel_grant_status st ON st.grant_id = g.id
  WHERE NOT (COALESCE(st.phase, '') IN ('Expired', 'Revoked') AND st.observed_generation = g.generation)

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -15,7 +12,7 @@ const listNetworkEgressRulesSQL = `SELECT r.id::text, r.customer_id::text, r.wor
        st.rule_id IS NOT NULL, COALESCE(st.phase, ''), COALESCE(st.message, ''),
        COALESCE(st.observed_generation, 0)
   FROM network_egress_rules r
-  JOIN workspaces w ON w.id = r.workspace_id
+  JOIN workspaces w ON w.id = r.workspace_id AND w.customer_id = r.customer_id
   LEFT JOIN network_egress_rule_status st ON st.rule_id = r.id
  WHERE NOT (r.desired = 'absent' AND COALESCE(st.phase, '') = 'Deleted')
  ORDER BY r.created_at, r.id`

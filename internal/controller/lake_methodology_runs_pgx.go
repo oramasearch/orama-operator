@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -28,8 +25,8 @@ const listMethodologyRunsSQL = `SELECT m.id::text, m.customer_id::text, m.worksp
        ms.run_id IS NOT NULL, COALESCE(ms.phase, ''), COALESCE(ms.message, ''), ms.exit_code,
        COALESCE(ms.credential_sha256, ''), COALESCE(ms.observed_generation, 0), ms.started_at, ms.finished_at
   FROM methodology_runs m
-  LEFT JOIN workspaces w ON w.id = m.workspace_id
-  LEFT JOIN builds b ON b.id = m.build_id
+  LEFT JOIN workspaces w ON w.id = m.workspace_id AND w.customer_id = m.customer_id
+  LEFT JOIN builds b ON b.id = m.build_id AND b.customer_id = m.customer_id
   LEFT JOIN methodology_run_status ms ON ms.run_id = m.id
  WHERE m.desired = 'present'
     OR ms.run_id IS NULL

@@ -1,12 +1,10 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -21,7 +19,7 @@ import (
 // entry names a member, carries no lakeRef (the set fills it in), and is a rehearsal the controller
 // accepts. This is what Steve applies, so it is checked before he uncomments it.
 func TestCommittedLakeProdRestoreRehearsalsAreReadyToUncomment(t *testing.T) {
-	raw, err := os.ReadFile("../../config/clusters/sets/lake-prod.yaml")
+	raw, err := os.ReadFile(filepath.Join(clustersDir(), "sets", "lake-prod.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

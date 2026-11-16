@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -240,7 +237,13 @@ func TestMeshAgentIsPrivilegedInItsOwnNamespaceAndTheProjectorIsNot(t *testing.T
 			t.Fatalf("the agent mounts %s writable", mount.Name)
 		}
 	}
-	if projector.SecurityContext.Privileged != nil || *projector.SecurityContext.AllowPrivilegeEscalation || !*projector.SecurityContext.RunAsNonRoot ||
+	// operator#869: the projector opens each pod's ns/net to read its inode, which needs root with
+	// CAP_SYS_PTRACE and nothing else; it stays unprivileged otherwise.
+	projectorContext := projector.SecurityContext
+	if projectorContext.Privileged != nil || *projectorContext.AllowPrivilegeEscalation || *projectorContext.RunAsUser != 0 ||
+		len(projectorContext.Capabilities.Drop) != 1 || projectorContext.Capabilities.Drop[0] != "ALL" ||
+		len(projectorContext.Capabilities.Add) != 1 || projectorContext.Capabilities.Add[0] != "SYS_PTRACE" ||
+		!*projectorContext.ReadOnlyRootFilesystem ||
 		projector.Command[0] != "/mesh-projector" || projector.Image != "oramasearch/orama-operator:test" {
 		t.Fatalf("projector = %+v", projector)
 	}

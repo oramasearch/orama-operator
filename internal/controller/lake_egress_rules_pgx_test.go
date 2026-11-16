@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -47,6 +44,7 @@ func TestEgressRulesPgxStoreAgainstPostgres(t *testing.T) {
 		"SET LOCAL search_path TO " + scratch + ", pg_catalog",
 		`CREATE TABLE workspaces (
             id uuid PRIMARY KEY,
+            customer_id uuid NOT NULL,
             namespace text NOT NULL DEFAULT '',
             created_at timestamptz NOT NULL DEFAULT now()
         )`,
@@ -85,7 +83,7 @@ func TestEgressRulesPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	for _, statement := range []string{
 		`CREATE TABLE network_guard (applied_at timestamptz NOT NULL DEFAULT now())`,
-		fmt.Sprintf(`INSERT INTO workspaces (id, namespace) VALUES ('%s', '%s')`, testWorkspaceID, testWorkspaceName),
+		fmt.Sprintf(`INSERT INTO workspaces (id, customer_id, namespace) VALUES ('%s', '%s', '%s')`, testWorkspaceID, testServiceCustomer, testWorkspaceName),
 		fmt.Sprintf(`INSERT INTO network_egress_rules (id, customer_id, workspace_id, source_kind, source_id, dns_name, ports, generation)
             VALUES ('%s', '%s', '%s', 'app', '%s', 'api.example.com', ARRAY[443], 2)`,
 			testEgressNameRuleID, testServiceCustomer, testWorkspaceID, testEgressSourceID),

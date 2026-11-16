@@ -1,4 +1,4 @@
-# What the managing cluster installs onto orama-nonprod-cluster-01 (operator#363), in the
+# What the managing cluster installs onto example-nonprod (operator#363), in the
 # order it must happen: the operator's prerequisite first, then the operator. The operator
 # installed is the same one every cluster runs.
 #
@@ -9,7 +9,7 @@ kind: ClusterHelmRelease
 metadata:
   name: nonprod-cloudnative-pg
 spec:
-  clusterRef: orama-nonprod-cluster-01
+  clusterRef: example-nonprod
   releaseName: cnpg
   namespace: cnpg-system        # the workspace NetworkPolicies name this namespace (docs/install.md)
   chart:
@@ -20,9 +20,9 @@ spec:
 apiVersion: orama.cloud/v1alpha1
 kind: OramaOperator
 metadata:
-  name: orama-nonprod-cluster-01
+  name: example-nonprod
 spec:
-  clusterRef: orama-nonprod-cluster-01
+  clusterRef: example-nonprod
   version: dev-0000000          # the operator version the leaf runs; its chart must be published
   imagePullSecretRef:
     name: oramasearch-dockerhub

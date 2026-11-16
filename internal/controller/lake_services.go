@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -28,7 +25,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Managed services (liquid-bridge decision 46; the contract is lake's
+// Managed services (the contract is lake's
 // docs/control-plane/services.md). lake writes the services table in its control Postgres and never
 // talks to Kubernetes; the operator reads that table, creates one Lake-controlled
 // OramaZettaCluster or CloudNativePG Cluster named <lake>-<slug> per present service, deletes absent
@@ -37,7 +34,7 @@ import (
 // workspaces.zetta_service_id and its status, so this poll never writes that Zetta; it only copies
 // its connection into the services Secret, of which it is the one writer. The other kinds of the catalog (decision
 // 47: Kafka, ClickHouse, TiDB, Cassandra, Valkey) are written for their upstream operators by
-// lake_service_catalog.go, and SQLite, DuckDB and Polars (decision 47, amended; lake#195), which the
+// lake_service_catalog.go, and SQLite, DuckDB and Polars (lake#195), which the
 // operator runs itself behind lake-sqlite, lake-duckdb and lake-polars, go through the same code
 // (lake_service_wrapper.go).
 const (
@@ -204,6 +201,9 @@ type serviceResult struct {
 	endpoint      string
 	resourceReady bool
 	credential    []byte
+	// note is added to a Ready service's message, e.g. the users found at its administrator's
+	// rotation (operator#1172).
+	note string
 }
 
 // lakeServicesEnabled: every Lake runs managed services (operator#539); they need the control
@@ -214,6 +214,12 @@ func lakeServicesEnabled(lake *oramav1alpha1.Lake) bool {
 
 // lakeServicesSecret holds one <slug>.json connection per Ready service.
 func lakeServicesSecret(name string) string { return "lake-" + name + "-services" }
+
+// serviceWorkspaceAnnotation names, on lake-<lake>-services, the workspace of the service whose
+// connection is under its id (lake#945).
+const serviceWorkspaceAnnotationPrefix = "service-workspace.orama.cloud/"
+
+func serviceWorkspaceAnnotation(id string) string { return serviceWorkspaceAnnotationPrefix + id }
 
 // lakeWorkspacesSecret is the decision-45 credential Secret the services Secret replaces.
 func lakeWorkspacesSecret(name string) string { return "lake-" + name + "-workspaces" }
@@ -344,6 +350,8 @@ func validateService(lake *oramav1alpha1.Lake, svc *LakeService) (lakeServiceSpe
 		return lakeServiceSpec{}, fmt.Errorf("workspace_id and its reconciled namespace are required")
 	case len(validation.IsDNS1123Label(svc.WorkspaceNamespace)) != 0:
 		return lakeServiceSpec{}, fmt.Errorf("workspace namespace is invalid")
+	case svc.WorkspaceNamespace == lakeNamespace(lake):
+		return lakeServiceSpec{}, errors.New(lakeNamespaceServiceMessage(lake))
 	case len(serviceResourceName(lake.Name, svc.Slug))+serviceNameOverhead(svc.Kind) > validation.DNS1035LabelMaxLength:
 		return lakeServiceSpec{}, fmt.Errorf("lake name %q is too long for service resource names", lake.Name)
 	}
@@ -574,6 +582,15 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 				}
 				continue
 			}
+			// The Lake namespace never holds a tenant service, so nothing is deleted there in a
+			// service's name either (operator#778): a leftover there is reported, never removed.
+			if svc.WorkspaceNamespace == lakeNamespace(lake) {
+				result := serviceResult{phase: ServicePhaseFailed, message: lakeNamespaceServiceMessage(lake)}
+				if err := writeServiceStatus(ctx, store, svc, result); err != nil {
+					log.Error(err, "service status write deferred", "service", svc.ID)
+				}
+				continue
+			}
 			result, err := r.deleteLakeService(ctx, lake, svc.WorkspaceNamespace, namespace, svc)
 			if err != nil {
 				log.Error(err, "service deletion deferred", "service", svc.ID, "slug", svc.Slug)
@@ -615,6 +632,15 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		if mounts.unknown && isWrapperServiceKind(svc.Kind) {
 			// Its mounts could not be read: left as it is until they can.
 			changing = true
+			continue
+		}
+		refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, svc.WorkspaceNamespace, svc.WorkspaceID, svc.CustomerID)
+		if err != nil {
+			log.Error(err, "service reconcile deferred", "service", svc.ID, "slug", svc.Slug)
+			continue
+		}
+		if refusal != "" {
+			results[svc.ID] = serviceResult{phase: ServicePhaseFailed, message: refusal}
 			continue
 		}
 		result, err := r.reconcileLakeService(ctx, lake, svc.WorkspaceNamespace, svc, &live)
@@ -659,10 +685,21 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	}
 
 	aliases := preservedAliases
+	serviceWorkspaces := map[string]string{}
 	for _, svc := range present {
 		aliases[svc.ID] = svc.Slug
+		serviceWorkspaces[svc.ID] = svc.WorkspaceID
 	}
-	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, credentials, aliases)
+	// A connection file naming the administrator of a kind that delivers a tenant user is never
+	// kept or written (operator#771), so one an older operator wrote goes on this pass.
+	adminUsers := map[string][]string{}
+	for _, svc := range present {
+		if tenant, ok := catalogKinds[svc.Kind].(catalogTenantUser); ok {
+			adminUsers[svc.Slug] = tenant.adminUsers(svc)
+		}
+	}
+	refused := func(slug string, credential []byte) bool { return deliversAdministrator(credential, adminUsers[slug]) }
+	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, refused, credentials, aliases, serviceWorkspaces)
 	if err != nil {
 		log.Error(err, "service credentials deferred")
 	}
@@ -676,7 +713,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		}
 		if result.resourceReady {
 			if written[svc.Slug] {
-				result.phase, result.message = ServicePhaseReady, "service ready"
+				result.phase, result.message = ServicePhaseReady, "service ready"+result.note
 			} else {
 				result.phase, result.message = ServicePhaseProvisioning, "delivering the connection"
 			}
@@ -789,7 +826,7 @@ func setServiceMetadata(obj metav1.Object, lake *oramav1alpha1.Lake, svc *LakeSe
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	labels["app.kubernetes.io/name"] = "lake-service"
+	labels["app.kubernetes.io/name"] = serviceAppNameValue
 	labels["app.kubernetes.io/instance"] = lake.Name
 	labels["app.kubernetes.io/managed-by"] = "orama-operator"
 	labels[serviceLakeLabel] = lake.Name
@@ -872,6 +909,8 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 	}
 
 	operatorSchema := false
+	var egressAllow string
+	var egressGateway zettaEgressGateway
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		setServiceMetadata(cluster, lake, svc)
 		// Only the fields the service contract owns are written, so server-side defaults on the
@@ -887,7 +926,16 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		cluster.Spec.Image = serviceZettaImage(lake)
 		cluster.Spec.PullSecretName = lake.Spec.PullSecretName
 		cluster.Spec.Resources = serviceZettaResources(lake)
-		egressAllow, egressErr := workspaceZettaEgressAllow(ctx, r.Client, namespace, svc.ID, cluster.Spec.Env)
+		cluster.Spec.EgressAllowConfigMap = lakeZettaEgressConfigMapRef(lake, cluster.Name)
+		current, known := currentZettaEgressAllow(ctx, r.Client, cluster)
+		var egressErr error
+		egressAllow, egressErr = workspaceZettaEgressAllow(ctx, r.Client, namespace, svc.ID, current, known)
+		// The name rules' routes through the workspace egress gateway (operator#1179).
+		var gatewayErr error
+		egressGateway, gatewayErr = workspaceZettaEgressGateway(ctx, r.Client, cluster, namespace, svc.ID)
+		if gatewayErr != nil {
+			logf.FromContext(ctx).Error(gatewayErr, "Zetta egress gateway routes kept or emptied", "cluster", cluster.Name)
+		}
 		if egressErr != nil {
 			logf.FromContext(ctx).Error(egressErr, "Zetta egress allowlist kept or denied", "service", svc.ID)
 		}
@@ -895,7 +943,7 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		if connectorErr != nil {
 			logf.FromContext(ctx).Error(connectorErr, "Zetta connector destinations kept or emptied", "service", svc.ID)
 		}
-		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow, connectorAllow)
+		cluster.Spec.Env = serviceZettaEnv(lake, connectorAllow)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.ProvisionOperatorSchema = &operatorSchema
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
@@ -904,6 +952,11 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 	}
 	if creating {
 		*live++
+	}
+	// The egress allowlist file (operator#724): written once the cluster exists, which owns it. The
+	// cluster's StatefulSet waits for it.
+	if err := reconcileZettaEgressConfigMapWithGateway(ctx, r.Client, r.Scheme, cluster, egressAllow, egressGateway); err != nil {
+		return serviceResult{}, err
 	}
 
 	result := serviceResult{phase: ServicePhaseProvisioning, endpoint: endpoint, message: "waiting for the Zetta nodes"}
@@ -1201,8 +1254,9 @@ func (r *LakeReconciler) removeServiceCredential(ctx context.Context, lake *oram
 // or store whose connection is known (service slugs are svc- and ws-, store slugs st-, so they
 // never collide). A present one keeps its key while its connection cannot be read (a transient
 // read never removes a file lake depends on); a key keep refuses (absent, or no longer listed) is
-// dropped. It returns the slugs whose fresh credential is now in the Secret.
-func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, keep func(slug string) bool, credentials map[string][]byte, aliases map[string]string) (map[string]bool, error) {
+// dropped. A file refused says must never reach a tenant (an administrator's, operator#771) is
+// neither kept nor written. It returns the slugs whose fresh credential is now in the Secret.
+func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, keep func(slug string) bool, refused func(slug string, credential []byte) bool, credentials map[string][]byte, aliases map[string]string, serviceWorkspaces map[string]string) (map[string]bool, error) {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: namespace}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(secret), secret); err == nil && !metav1.IsControlledBy(secret, lake) {
 		return nil, fmt.Errorf("secret %s/%s exists and is not controlled by Lake %s", namespace, secret.Name, lake.Name)
@@ -1214,11 +1268,14 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 		secret.Type = corev1.SecretTypeOpaque
 		data := map[string][]byte{}
 		for key, value := range secret.Data {
-			if slug, ok := strings.CutSuffix(key, ".json"); ok && keep(slug) {
+			if slug, ok := strings.CutSuffix(key, ".json"); ok && keep(slug) && !refused(slug, value) {
 				data[key] = value
 			}
 		}
 		for slug, credential := range credentials {
+			if refused(slug, credential) {
+				continue
+			}
 			data[serviceCredentialKey(slug)] = credential
 		}
 		for id, slug := range aliases {
@@ -1227,6 +1284,20 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 			}
 		}
 		secret.Data = data
+		// Each present service's workspace, so an app is handed only a connection of its own
+		// workspace (lake#945). A service not listed has no annotation and binds to no app.
+		annotations := map[string]string{}
+		for key, value := range secret.Annotations {
+			if !strings.HasPrefix(key, serviceWorkspaceAnnotationPrefix) {
+				annotations[key] = value
+			}
+		}
+		for id, workspace := range serviceWorkspaces {
+			if workspace != "" && len(data[id]) > 0 {
+				annotations[serviceWorkspaceAnnotation(id)] = workspace
+			}
+		}
+		secret.Annotations = annotations
 		return controllerutil.SetControllerReference(lake, secret, r.Scheme)
 	})
 	if err != nil {
@@ -1236,10 +1307,33 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 		r.refreshLakeServiceMounts(ctx, namespace, labels, secret.ResourceVersion)
 	}
 	written := make(map[string]bool, len(credentials))
-	for slug := range credentials {
-		written[slug] = true
+	for slug, credential := range credentials {
+		if !refused(slug, credential) {
+			written[slug] = true
+		}
 	}
 	return written, nil
+}
+
+// deliversAdministrator reports whether a connection file names one of admins as its user. A file
+// that cannot be read is treated as one, so for a kind with administrators only a file the
+// operator can prove is the tenant user's reaches a tenant (operator#771).
+func deliversAdministrator(credential []byte, admins []string) bool {
+	if len(admins) == 0 {
+		return false
+	}
+	var connection struct {
+		User string `json:"user"`
+	}
+	if err := json.Unmarshal(credential, &connection); err != nil || connection.User == "" {
+		return true
+	}
+	for _, admin := range admins {
+		if connection.User == admin {
+			return true
+		}
+	}
+	return false
 }
 
 // lakeServicesSecretVersionAnnotation carries the services Secret's resourceVersion on each lake

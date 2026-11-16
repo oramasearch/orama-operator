@@ -1,15 +1,15 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // mysql_native_password is defined over SHA-1.
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -20,11 +20,22 @@ import (
 // follow that release's manifests/crd.yaml and its controller source.
 var tidbClusterGVK = schema.GroupVersionKind{Group: "pingcap.com", Version: "v1alpha1", Kind: "TidbCluster"}
 
+// configMapGVK is the ConfigMap holding a TiDB service's bootstrap SQL.
+var configMapGVK = schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
+
 const (
 	// tidbVersion is the TiDB release the operator's own v1.6.6 examples run.
 	tidbVersion = "v8.5.7"
 	tidbPort    = 4000
-	tidbUser    = "root"
+	// tidbRootUser is TiDB's administrator. Only the operator signs in as it; tenants receive
+	// tidbTenantUser (operator#771).
+	tidbRootUser = "root"
+	// tidbTenantUser is the user a tenant receives, with every privilege on its own databases and
+	// none on TiDB itself (operator#771). tidbTenantDatabase is the database made for it.
+	tidbTenantUser     = "app"
+	tidbTenantDatabase = "app"
+	// tidbTenantKey is the key of the tenant user's password in Secret <cluster>-tenant.
+	tidbTenantKey = "password"
 	// tidbRootKey is the key TiDB Operator reads the root password from in <cluster>-init.
 	tidbRootKey = "root"
 	// tidbInitSecretSuffix: with spec.tidb.initializer.createPassword, TiDB Operator sets the
@@ -32,6 +43,10 @@ const (
 	// does not), so that is the name the Orama operator creates it under.
 	tidbInitSecretSuffix = "-init"
 	tidbNormal           = "Normal"
+	// tidbBootstrapSuffix names the ConfigMap <cluster>-bootstrap whose key tidbBootstrapKey TiDB
+	// Operator mounts as TiDB's initialize-sql-file (spec.tidb.bootstrapSQLConfigMapName).
+	tidbBootstrapSuffix = "-bootstrap"
+	tidbBootstrapKey    = "bootstrap-sql"
 	// Labels TiDB Operator puts on every PD and TiKV claim.
 	tidbInstanceLabel  = "app.kubernetes.io/instance"
 	tidbManagedByLabel = "app.kubernetes.io/managed-by"
@@ -46,10 +61,33 @@ type tidbServiceKind struct{}
 func (tidbServiceKind) title() string { return "TiDB" }
 
 func (tidbServiceKind) objects(in catalogService) []catalogObject {
-	return []catalogObject{{gvk: tidbClusterGVK, name: in.name}}
+	return []catalogObject{{gvk: tidbClusterGVK, name: in.name}, {gvk: configMapGVK, name: in.name + tidbBootstrapSuffix}}
 }
 
-func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
+// tidbNativePasswordHash is the mysql_native_password hash of password: "*" and the upper-case hex
+// of SHA-1(SHA-1(password)), the form TiDB stores and accepts in IDENTIFIED WITH ... AS.
+func tidbNativePasswordHash(password string) string {
+	stage1 := sha1.Sum([]byte(password)) //nolint:gosec // the plugin's own definition.
+	stage2 := sha1.Sum(stage1[:])        //nolint:gosec // the plugin's own definition.
+	return "*" + strings.ToUpper(hex.EncodeToString(stage2[:]))
+}
+
+// tidbBootstrapSQL sets root's password while TiDB bootstraps its first start, before it accepts a
+// connection (operator#774), and creates the tenant user with its database (operator#771). TiDB
+// runs initialize-sql-file once, inside bootstrap, so there is no window in which root has an empty
+// password and a new cluster has its tenant user from the first start. The ConfigMap holds only the
+// passwords' hashes, never a password. TiDB Operator's initializer (createPassword) then finds root
+// already protected ("Access denied" with an empty password) and records passwordInitialized.
+// A cluster made before operator#771 gets its tenant user from the operator over SQL instead
+// (tenantUsers.ensureTiDB).
+func tidbBootstrapSQL(rootPassword, tenantPassword string) string {
+	statements := append([]string{
+		fmt.Sprintf("ALTER USER 'root'@'%%' IDENTIFIED WITH 'mysql_native_password' AS '%s'", tidbNativePasswordHash(rootPassword)),
+	}, tidbTenantCreateStatements(tenantPassword, []string{tidbTenantDatabase})...)
+	return strings.Join(statements, ";\n") + ";\n"
+}
+
+func (k tidbServiceKind) build(in catalogService, password string) []catalogResource {
 	replicas := int64(in.spec.Instances)
 	storage := map[string]interface{}{"storage": serviceStorage(in.spec)}
 	fields := []serviceField{
@@ -98,6 +136,9 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 		// password initializer waits for its endpoints.
 		{path: []string{"spec", "tidb", "service"}, value: map[string]interface{}{"type": "ClusterIP"}},
 		{path: []string{"spec", "tidb", "initializer"}, value: map[string]interface{}{"createPassword": true}},
+		// TiDB reads the bootstrap SQL only on its first start, and TiDB Operator asks for the
+		// field to be set only when the cluster is created (operator#774).
+		{path: []string{"spec", "tidb", "bootstrapSQLConfigMapName"}, createOnly: true, value: in.name + tidbBootstrapSuffix},
 		// Storage cannot be changed, so the requests are written once; they carry the sizes too.
 		{path: []string{"spec", "pd", "requests"}, createOnly: true, value: map[string]interface{}{"storage": storage["storage"], "cpu": "50m", "memory": "256Mi"}},
 		{path: []string{"spec", "tikv", "requests"}, createOnly: true, value: map[string]interface{}{"storage": storage["storage"], "cpu": "100m", "memory": "512Mi"}},
@@ -110,11 +151,39 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 			serviceField{path: []string{"spec", component, "securityContext"}, value: restrictedContainerSecurityContext()},
 		)
 	}
-	return []catalogResource{{catalogObject: k.objects(in)[0], fields: fields}}
+	objects := k.objects(in)
+	return []catalogResource{
+		{catalogObject: objects[0], fields: fields},
+		{catalogObject: objects[1], fields: []serviceField{
+			{path: []string{"data"}, value: map[string]interface{}{tidbBootstrapKey: tidbBootstrapSQL(password, in.tenantPassword)}},
+		}},
+	}
 }
 
 func (tidbServiceKind) passwordSecret(name string) (string, string) {
 	return name + tidbInitSecretSuffix, tidbRootKey
+}
+
+func (tidbServiceKind) tenantSecret(name string) (string, string) {
+	return name + serviceTenantSecretSuffix, tidbTenantKey
+}
+
+func (tidbServiceKind) adminUsers(*LakeService) []string { return []string{tidbRootUser} }
+
+// The administrator rotation (operator#1172): root's password is the generated one in
+// <cluster>-init, key root.
+func (tidbServiceKind) adminSecret(in catalogService) (string, string, string) {
+	return in.name + tidbInitSecretSuffix, tidbRootKey, ""
+}
+
+func (tidbServiceKind) adminUser() string { return tidbRootUser }
+
+func (tidbServiceKind) rotateAdmin(ctx context.Context, in catalogService, _, current, next string) error {
+	return tenantUsers.rotateTiDBRoot(ctx, in, current, next)
+}
+
+func (tidbServiceKind) otherUsers(ctx context.Context, in catalogService, _, password string) ([]string, error) {
+	return tenantUsers.otherTiDBUsers(ctx, in, password)
 }
 
 func tidbHost(in catalogService) string {
@@ -145,21 +214,30 @@ func (tidbServiceKind) ready(in catalogService, found map[string]*unstructured.U
 	return true, ""
 }
 
-func (tidbServiceKind) credential(_ context.Context, _ client.Reader, in catalogService, _ map[string]*unstructured.Unstructured, password string) ([]byte, string, error) {
-	if password == "" {
+// credential delivers the tenant user, never root (operator#771). The operator first makes sure, as
+// root, that the user exists with only its grants (tenantUsers.ensureTiDB); until it has, nothing is
+// delivered and the pass is retried.
+func (tidbServiceKind) credential(ctx context.Context, _ client.Reader, in catalogService, _ map[string]*unstructured.Unstructured, password string) ([]byte, string, error) {
+	if password == "" || in.tenantPassword == "" {
+		return nil, "", nil
+	}
+	if !ensureTenantUserOnce(ctx, in, func(ctx context.Context) error {
+		return tenantUsers.ensureTiDB(ctx, in, password, in.tenantPassword)
+	}) {
 		return nil, "", nil
 	}
 	address := fmt.Sprintf("%s:%d", tidbHost(in), tidbPort)
-	uri := (&url.URL{Scheme: "mysql", User: url.UserPassword(tidbUser, password), Host: address}).String()
+	uri := (&url.URL{Scheme: "mysql", User: url.UserPassword(tidbTenantUser, in.tenantPassword), Host: address, Path: "/" + tidbTenantDatabase}).String()
 	credential, err := json.Marshal(struct {
 		Kind     string `json:"kind"`
 		Endpoint string `json:"endpoint"`
 		Host     string `json:"host"`
 		Port     int    `json:"port"`
+		Database string `json:"database"`
 		User     string `json:"user"`
 		Password string `json:"password"`
 		URI      string `json:"uri"`
-	}{serviceKindTiDB, address, tidbHost(in), tidbPort, tidbUser, password, uri})
+	}{serviceKindTiDB, address, tidbHost(in), tidbPort, tidbTenantDatabase, tidbTenantUser, in.tenantPassword, uri})
 	return credential, "", err
 }
 

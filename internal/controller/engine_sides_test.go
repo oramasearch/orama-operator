@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -113,7 +110,7 @@ ai_server:
       default_model: "claude-sonnet-4-5"
 `
 
-// combinedReaderConfigFixture is combined-reader.yaml for the same CR (#795, LSR-133): the combined
+// combinedReaderConfigFixture is combined-reader.yaml for the same CR (#795): the combined
 // config with the writer's master key replaced by a key render-config generates, both sections
 // signed in as oramacore-reader, the writer section producing to oramacore-reader-local, and the
 // reader section recording analytics (#1051).

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -162,7 +159,11 @@ func newCredentialFixture(t *testing.T, scope *oramav1alpha1.ConnectionCredentia
 			"uri":      []byte("postgresql://app:" + testOwnerPassword + "@host:5432/app"),
 		},
 	}
-	objects := append([]client.Object{lake, sandbox, connection, app, cluster, superuser, owner}, extra...)
+	ca := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testCredentialCluster + "-ca", Namespace: connection.Namespace},
+		Data:       map[string][]byte{"ca.crt": testPostgresCAPEM(t)},
+	}
+	objects := append([]client.Object{lake, sandbox, connection, app, cluster, superuser, owner, ca}, extra...)
 	kube := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&oramav1alpha1.Connection{}).
@@ -228,8 +229,9 @@ func TestReadScopedConnectionIssuesItsOwnRoleAndWorkspaceSecret(t *testing.T) {
 		t.Fatalf("role = %+v (found %v)", issued, found)
 	}
 	// The operator signs in as the service's superuser, which only it reads.
+	// ... over a session that verifies the server against the cluster's CA (orama-operator#775).
 	if f.roles.lastTarget.User != "postgres" || f.roles.lastTarget.Password != testSuperuserPassword ||
-		f.roles.lastTarget.Host != testCredentialCluster+"-rw.workspace.svc.cluster.local" {
+		f.roles.lastTarget.Host != testCredentialCluster+"-rw.workspace.svc" || len(f.roles.lastTarget.CA) == 0 {
 		t.Fatalf("admin target = %+v", f.roles.lastTarget)
 	}
 	if len(f.secrets.puts) != 1 {
@@ -414,6 +416,23 @@ func TestCredentialOnANonPostgresServiceFails(t *testing.T) {
 	})
 	if got = f.reconcile(t); got.Status.Phase != oramav1alpha1.ConnectionPhaseDeleted {
 		t.Fatalf("status = %+v", got.Status)
+	}
+}
+
+// orama-operator#775: without the cluster's CA the operator does not sign in at all.
+func TestCredentialWaitsForThePostgresCA(t *testing.T) {
+	f := newCredentialFixture(t, readScope())
+	if err := f.kube.Delete(f.ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: testCredentialCluster + "-ca", Namespace: "workspace",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.reconciler.Reconcile(f.ctx, f.request)
+	if err != nil || result.RequeueAfter != connectionCredentialRequeue {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+	if f.roles.lastTarget.Password != "" {
+		t.Fatal("the operator signed in without the CA")
 	}
 }
 

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package v1alpha1
 
@@ -27,7 +24,7 @@ type LakeOrderDedicatedCluster struct {
 
 // LakeOrderSourceSpec names where the orders are read and how each offer is provisioned.
 type LakeOrderSourceSpec struct {
-	// LakeSetRef names the LakeSet whose Lakes take orders (lake.live: `lake-prod`). The orders
+	// LakeSetRef names the LakeSet whose Lakes take orders (for example `lake-prod`). The orders
 	// are read from every member's control-plane Postgres, in the `cloud_orders` table, through
 	// the member's cluster's kubeconfig. Every ordered Lake starts from this set's template and
 	// secrets, and runs on clusters of the same purpose.

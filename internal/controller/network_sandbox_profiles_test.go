@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -53,8 +50,8 @@ func sandboxDiscoveryObjects() []client.Object {
 		&corev1.Endpoints{
 			ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
 			Subsets: []corev1.EndpointSubset{{
-				Addresses:         []corev1.EndpointAddress{{IP: "20.237.72.161"}, {IP: "2603:1030:20e:3::10"}},
-				NotReadyAddresses: []corev1.EndpointAddress{{IP: "20.237.72.162"}, {IP: "2603:1030:20e:3::11"}},
+				Addresses:         []corev1.EndpointAddress{{IP: "11.2.3.4"}, {IP: "2603:1030:20e:3::10"}},
+				NotReadyAddresses: []corev1.EndpointAddress{{IP: "11.2.3.5"}, {IP: "2603:1030:20e:3::11"}},
 				Ports:             []corev1.EndpointPort{{Port: 6443}},
 			}},
 		},
@@ -277,8 +274,8 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 		"2603:1030:20e:42::/64",
 		"20.51.1.20/32",
 		"2603:1030:20e:3::20/128",
-		"20.237.72.161/32",
-		"20.237.72.162/32",
+		"11.2.3.4/32",
+		"11.2.3.5/32",
 		"2603:1030:20e:3::10/128",
 		"2603:1030:20e:3::11/128",
 	} {

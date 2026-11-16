@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -33,20 +30,20 @@ func productionLakeSet(members ...oramav1alpha1.SetMember) *oramav1alpha1.LakeSe
 }
 
 func productionClusters() []client.Object {
-	return append(managedCluster("orama-production-cluster-02", "swedencentral", "production"),
-		managedCluster("orama-production-cluster-03", "eastus", "production")...)
+	return append(managedCluster("example-production-eu", "swedencentral", "production"),
+		managedCluster("example-production-us", "eastus", "production")...)
 }
 
 // Decision 64: one LakeSet manages every region. Each member's region is its cluster's, every
 // labelled member gets the same region list, and the apex host stays on the member that states it.
 func TestALakeSetGivesEachRegionItsClusterRegionAndTheRegionList(t *testing.T) {
 	set := productionLakeSet(
-		oramav1alpha1.SetMember{ClusterRef: "orama-production-cluster-02", Name: "shared",
-			Spec: rawJSON(`{"host":"eu.lake.live","region":{"label":"Europe"},"apexHost":"lake.live"}`)},
-		oramav1alpha1.SetMember{ClusterRef: "orama-production-cluster-03", Name: "shared-us",
-			Spec: rawJSON(`{"host":"us.lake.live","region":{"label":"United States"}}`)},
-		oramav1alpha1.SetMember{ClusterRef: "orama-production-cluster-03", Name: "customer-1",
-			Spec: rawJSON(`{"host":"customer-1.lake.live"}`)},
+		oramav1alpha1.SetMember{ClusterRef: "example-production-eu", Name: "shared",
+			Spec: rawJSON(`{"host":"eu.lakelive.example","region":{"label":"Europe"},"apexHost":"lakelive.example"}`)},
+		oramav1alpha1.SetMember{ClusterRef: "example-production-us", Name: "shared-us",
+			Spec: rawJSON(`{"host":"us.lakelive.example","region":{"label":"United States"}}`)},
+		oramav1alpha1.SetMember{ClusterRef: "example-production-us", Name: "customer-1",
+			Spec: rawJSON(`{"host":"customer-1.lakelive.example"}`)},
 	)
 	members := &fakeMembers{ready: map[string]bool{}}
 	c := setTestClient(t, append(productionClusters(), set)...)
@@ -57,8 +54,8 @@ func TestALakeSetGivesEachRegionItsClusterRegionAndTheRegionList(t *testing.T) {
 		t.Fatalf("applied %d members", len(members.applied))
 	}
 	want := []oramav1alpha1.LakeRegion{
-		{Name: "swedencentral", Label: "Europe", Host: "eu.lake.live", Latitude: "60.67488", Longitude: "17.14127"},
-		{Name: "eastus", Label: "United States", Host: "us.lake.live", Latitude: "37.3719", Longitude: "-79.8164"},
+		{Name: "swedencentral", Label: "Europe", Host: "eu.lakelive.example", Latitude: "60.67488", Longitude: "17.14127"},
+		{Name: "eastus", Label: "United States", Host: "us.lakelive.example", Latitude: "37.3719", Longitude: "-79.8164"},
 	}
 	eu, us, dedicated := members.applied[0].Spec, members.applied[1].Spec, members.applied[2].Spec
 	for _, spec := range []map[string]any{eu, us} {
@@ -74,7 +71,7 @@ func TestALakeSetGivesEachRegionItsClusterRegionAndTheRegionList(t *testing.T) {
 	if region := us["region"].(map[string]any); region["name"] != "eastus" {
 		t.Fatalf("us region: %+v", region)
 	}
-	if eu["apexHost"] != "lake.live" || us["apexHost"] != nil {
+	if eu["apexHost"] != "lakelive.example" || us["apexHost"] != nil {
 		t.Fatalf("apex: eu %v, us %v", eu["apexHost"], us["apexHost"])
 	}
 	if _, found := dedicated["region"]; found {
@@ -93,23 +90,23 @@ func TestALakeSetRefusesARegionListThatCannotBeRight(t *testing.T) {
 		want    string
 	}{
 		"two apex hosts": {members: []oramav1alpha1.SetMember{
-			{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"host":"eu.lake.live","apexHost":"lake.live"}`)},
-			{ClusterRef: "orama-production-cluster-03", Name: "shared-us", Spec: rawJSON(`{"host":"us.lake.live","apexHost":"lake.live"}`)},
-		}, want: "at most one member serves the apex host, and these all set spec.apexHost: shared (lake.live), shared-us (lake.live)"},
+			{ClusterRef: "example-production-eu", Name: "shared", Spec: rawJSON(`{"host":"eu.lakelive.example","apexHost":"lakelive.example"}`)},
+			{ClusterRef: "example-production-us", Name: "shared-us", Spec: rawJSON(`{"host":"us.lakelive.example","apexHost":"lakelive.example"}`)},
+		}, want: "at most one member serves the apex host, and these all set spec.apexHost: shared (lakelive.example), shared-us (lakelive.example)"},
 		"a region with no host": {members: []oramav1alpha1.SetMember{
-			{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"region":{"label":"Europe"}}`)},
+			{ClusterRef: "example-production-eu", Name: "shared", Spec: rawJSON(`{"region":{"label":"Europe"}}`)},
 		}, want: `member shared has the region label "Europe" but no spec.host`},
 		"one region twice (separate environments)": {members: []oramav1alpha1.SetMember{
-			{ClusterRef: "orama-production-cluster-02", Name: "dev", Spec: rawJSON(`{"host":"lake-dev.example","region":{"label":"Dev"}}`)},
-			{ClusterRef: "orama-production-cluster-02", Name: "staging", Spec: rawJSON(`{"host":"lake-staging.example","region":{"label":"Staging"}}`)},
+			{ClusterRef: "example-production-eu", Name: "dev", Spec: rawJSON(`{"host":"lake-dev.example","region":{"label":"Dev"}}`)},
+			{ClusterRef: "example-production-eu", Name: "staging", Spec: rawJSON(`{"host":"lake-staging.example","region":{"label":"Staging"}}`)},
 		}, want: "members dev and staging both have a region label and both run in swedencentral"},
 		"the list stated by hand": {members: []oramav1alpha1.SetMember{
-			{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"host":"eu.lake.live","regions":[]}`)},
+			{ClusterRef: "example-production-eu", Name: "shared", Spec: rawJSON(`{"host":"eu.lakelive.example","regions":[]}`)},
 		}, want: "member shared states spec.regions, which the set computes"},
 		"a region with no known location": {members: []oramav1alpha1.SetMember{
-			{ClusterRef: "orama-production-cluster-04", Name: "shared", Spec: rawJSON(`{"host":"jp.lake.live","region":{"label":"Japan"}}`)},
-		}, objects: managedCluster("orama-production-cluster-04", "japaneast", "production"),
-			want: `member shared runs on orama-production-cluster-04, in region "japaneast", whose location the operator does not know`},
+			{ClusterRef: "example-production-asia", Name: "shared", Spec: rawJSON(`{"host":"jp.lakelive.example","region":{"label":"Japan"}}`)},
+		}, objects: managedCluster("example-production-asia", "japaneast", "production"),
+			want: `member shared runs on example-production-asia, in region "japaneast", whose location the operator does not know`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -131,31 +128,31 @@ func TestALakeSetRefusesARegionListThatCannotBeRight(t *testing.T) {
 
 // A member that states a region name other than its cluster's is refused, as for OramaCloudV1Set.
 func TestALakeMemberCannotStateAnotherRegion(t *testing.T) {
-	set := productionLakeSet(oramav1alpha1.SetMember{ClusterRef: "orama-production-cluster-02", Name: "shared",
-		Spec: rawJSON(`{"host":"eu.lake.live","region":{"name":"eastus","label":"Europe"}}`)})
+	set := productionLakeSet(oramav1alpha1.SetMember{ClusterRef: "example-production-eu", Name: "shared",
+		Spec: rawJSON(`{"host":"eu.lakelive.example","region":{"name":"eastus","label":"Europe"}}`)})
 	members := &fakeMembers{ready: map[string]bool{}}
 	c := setTestClient(t, append(productionClusters(), set)...)
 	_, err := reconcileLakeSet(t, c, members, "lake-prod")
-	if err == nil || !strings.Contains(err.Error(), `spec.region.name is "eastus", but the instance runs on orama-production-cluster-02, which is in swedencentral`) {
+	if err == nil || !strings.Contains(err.Error(), `spec.region.name is "eastus", but the instance runs on example-production-eu, which is in swedencentral`) {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestLakeRegionEnvComesOnlyFromTheSpec(t *testing.T) {
 	lake := &oramav1alpha1.Lake{Spec: oramav1alpha1.LakeSpec{
-		IngressEnabled: true, Host: "eu.lake.live", ApexHost: "lake.live",
+		IngressEnabled: true, Host: "eu.lakelive.example", ApexHost: "lakelive.example",
 		Region:  &oramav1alpha1.LakeRegionSpec{Name: "swedencentral", Label: "Europe"},
-		Regions: []oramav1alpha1.LakeRegion{{Name: "swedencentral", Label: "Europe", Host: "eu.lake.live", Latitude: "60.67488", Longitude: "17.14127"}},
-		Env:     []corev1.EnvVar{{Name: "LAKE_REGION", Value: "by-hand"}, {Name: "LAKE_PUBLIC_HOST", Value: "eu.lake.live"}},
+		Regions: []oramav1alpha1.LakeRegion{{Name: "swedencentral", Label: "Europe", Host: "eu.lakelive.example", Latitude: "60.67488", Longitude: "17.14127"}},
+		Env:     []corev1.EnvVar{{Name: "LAKE_REGION", Value: "by-hand"}, {Name: "LAKE_PUBLIC_HOST", Value: "eu.lakelive.example"}},
 	}}
 	got := map[string][]string{}
 	for _, variable := range lakeEnv(lake, lakeSealingMaterial{}) {
 		got[variable.Name] = append(got[variable.Name], variable.Value)
 	}
 	want := map[string]string{
-		"LAKE_REGION": "swedencentral", "LAKE_REGION_LABEL": "Europe", "LAKE_APEX_HOST": "lake.live",
-		"LAKE_REGIONS":     `[{"name":"swedencentral","label":"Europe","host":"eu.lake.live","latitude":"60.67488","longitude":"17.14127"}]`,
-		"LAKE_PUBLIC_HOST": "eu.lake.live",
+		"LAKE_REGION": "swedencentral", "LAKE_REGION_LABEL": "Europe", "LAKE_APEX_HOST": "lakelive.example",
+		"LAKE_REGIONS":     `[{"name":"swedencentral","label":"Europe","host":"eu.lakelive.example","latitude":"60.67488","longitude":"17.14127"}]`,
+		"LAKE_PUBLIC_HOST": "eu.lakelive.example",
 	}
 	for name, value := range want {
 		if len(got[name]) != 1 || got[name][0] != value {
@@ -163,7 +160,7 @@ func TestLakeRegionEnvComesOnlyFromTheSpec(t *testing.T) {
 		}
 	}
 
-	bare := lakeEnv(&oramav1alpha1.Lake{Spec: oramav1alpha1.LakeSpec{ApexHost: "lake.live"}}, lakeSealingMaterial{})
+	bare := lakeEnv(&oramav1alpha1.Lake{Spec: oramav1alpha1.LakeSpec{ApexHost: "lakelive.example"}}, lakeSealingMaterial{})
 	for _, variable := range bare {
 		for _, name := range lakeRegionEnvNames {
 			if variable.Name == name {
@@ -181,7 +178,7 @@ func TestLakeApexHostGetsAnIngressRuleAndADNSRecord(t *testing.T) {
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "shared"},
 		Spec: oramav1alpha1.LakeSpec{
-			Image: "hashicorp/http-echo:1.0", IngressEnabled: true, Host: "eu.lake.live", ApexHost: "lake.live",
+			Image: "hashicorp/http-echo:1.0", IngressEnabled: true, Host: "eu.lakelive.example", ApexHost: "lakelive.example",
 			DNSSecretRef: &corev1.LocalObjectReference{Name: "cloudflare-api-token-lake-live"},
 			TLS:          oramav1alpha1.LakeTLSSpec{SecretName: "lake-origin-tls"},
 		},
@@ -194,11 +191,11 @@ func TestLakeApexHostGetsAnIngressRuleAndADNSRecord(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-shared"}, &ing); err != nil {
 		t.Fatal(err)
 	}
-	if len(ing.Spec.Rules) != 2 || ing.Spec.Rules[0].Host != "eu.lake.live" || ing.Spec.Rules[1].Host != "lake.live" ||
+	if len(ing.Spec.Rules) != 2 || ing.Spec.Rules[0].Host != "eu.lakelive.example" || ing.Spec.Rules[1].Host != "lakelive.example" ||
 		ing.Spec.Rules[1].HTTP.Paths[0].Backend.Service.Name != "lake-shared" {
 		t.Fatalf("rules: %+v", ing.Spec.Rules)
 	}
-	if len(ing.Spec.TLS) != 1 || strings.Join(ing.Spec.TLS[0].Hosts, ",") != "eu.lake.live,lake.live" {
+	if len(ing.Spec.TLS) != 1 || strings.Join(ing.Spec.TLS[0].Hosts, ",") != "eu.lakelive.example,lakelive.example" {
 		t.Fatalf("TLS: %+v", ing.Spec.TLS)
 	}
 
@@ -211,7 +208,7 @@ func TestLakeApexHostGetsAnIngressRuleAndADNSRecord(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-shared-apex-dns"}, &apex); err != nil {
 		t.Fatalf("apex DNS record: %v", err)
 	}
-	if apex.Spec.Name != "lake.live" || apex.Spec.Content != "20.91.1.2" || !apex.Spec.Proxied ||
+	if apex.Spec.Name != "lakelive.example" || apex.Spec.Content != "20.91.1.2" || !apex.Spec.Proxied ||
 		apex.Spec.SecretRef != "cloudflare-api-token-lake-live" || len(apex.OwnerReferences) != 1 {
 		t.Fatalf("apex DNS record: %+v", apex)
 	}
@@ -230,7 +227,7 @@ func TestLakeApexHostGetsAnIngressRuleAndADNSRecord(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-shared"}, &ing); err != nil {
 		t.Fatal(err)
 	}
-	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "eu.lake.live" {
+	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "eu.lakelive.example" {
 		t.Fatalf("rules after removing the apex: %+v", ing.Spec.Rules)
 	}
 }

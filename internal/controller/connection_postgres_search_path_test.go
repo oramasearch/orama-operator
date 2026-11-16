@@ -1,12 +1,16 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"regexp"
 	"strings"
@@ -16,7 +20,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// TestConnectionRolesIgnoreTheOwnersSearchPath proves operator#800 (LSR-138) against a real server.
+// TestConnectionRolesIgnoreTheOwnersSearchPath proves operator#800 against a real server.
 // The service's database owner is the tenant: it may set the database's default search_path and
 // create objects in its own schemas. It puts a schema of its own ahead of pg_catalog and fills it
 // with look-alikes of every catalog view, function and operator the operator uses, each of which
@@ -153,6 +157,7 @@ func TestConnectionRolesIgnoreTheOwnersSearchPath(t *testing.T) {
 func TestConnectionPostgresSessionPinsSearchPath(t *testing.T) {
 	config, err := connectionPostgresConfig(ConnectionPostgresTarget{
 		Host: "svc-rw.ns.svc", Port: 5432, Database: "app", User: "postgres", Password: "p@ss/word",
+		CA: testPostgresCAPEM(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,4 +192,49 @@ func TestConnectionRoleSQLQualifiesEveryCatalogObject(t *testing.T) {
 			t.Errorf("unqualified operator in %s; write OPERATOR(pg_catalog.=)", literal)
 		}
 	}
+}
+
+// orama-operator#775: the superuser session verifies the server's certificate against the cluster's
+// CA and its host name, never falls back to plaintext, and is never opened without a CA.
+func TestConnectionPostgresSessionVerifiesTheServer(t *testing.T) {
+	target := ConnectionPostgresTarget{Host: "svc-rw.ns.svc", Port: 5432, Database: "app", User: "postgres", Password: "x"}
+	if _, err := connectionPostgresConfig(target); err == nil {
+		t.Fatal("a session was configured without a CA")
+	}
+	target.CA = []byte("not a certificate")
+	if _, err := connectionPostgresConfig(target); err == nil {
+		t.Fatal("a session was configured with an invalid CA")
+	}
+	target.CA = testPostgresCAPEM(t)
+	config, err := connectionPostgresConfig(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.TLSConfig == nil || config.TLSConfig.InsecureSkipVerify || config.TLSConfig.ServerName != "svc-rw.ns.svc" ||
+		config.TLSConfig.RootCAs == nil || len(config.Fallbacks) != 0 {
+		t.Fatalf("tls = %+v, fallbacks = %d", config.TLSConfig, len(config.Fallbacks))
+	}
+}
+
+// testPostgresCAPEM is a throwaway self-signed CA certificate in PEM.
+func testPostgresCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test postgres CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }

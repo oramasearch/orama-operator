@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package v1alpha1
 
@@ -155,7 +152,7 @@ type LakeSpec struct {
 	// +optional
 	TLS LakeTLSSpec `json:"tls,omitempty"`
 
-	// Host is the domain name the lake is exposed at (e.g. hello.lake.live) when IngressEnabled is
+	// Host is the domain name the lake is exposed at (e.g. hello.example.com) when IngressEnabled is
 	// true. Requires an ingress controller (class nginx).
 	// +optional
 	Host string `json:"host,omitempty"`
@@ -163,8 +160,8 @@ type LakeSpec struct {
 	// DNSSecretRef, if set together with Host, creates a proxied Cloudflare DNS record (Host -> the
 	// ingress LoadBalancer) using the Cloudflare credentials (keys `token`, `zoneID`) in the named
 	// Secret. The Secret must live in spec.namespace (the CloudflareDNSRecord is created there) and
-	// hold the zone ID of Host's zone: a lake.live host needs a lake.live-zone Secret, not the
-	// oramadev.net one the Zetta clusters use.
+	// hold the zone ID of Host's zone: a example.com host needs a example.com-zone Secret, not the
+	// example.net one the Zetta clusters use.
 	// +optional
 	DNSSecretRef *corev1.LocalObjectReference `json:"dnsSecretRef,omitempty"`
 
@@ -175,8 +172,8 @@ type LakeSpec struct {
 	// +optional
 	PreviewWildcard string `json:"previewWildcard,omitempty"`
 
-	// Region is where this Lake runs, for people choosing between a deployment's regions
-	// (decision 64). A LakeSet fills Name from the member's KubernetesCluster; Label is stated.
+	// Region is where this Lake runs, for people choosing between a deployment's regions.
+	// A LakeSet fills Name from the member's KubernetesCluster; Label is stated.
 	// The Lake receives them as LAKE_REGION and LAKE_REGION_LABEL.
 	// +optional
 	Region *LakeRegionSpec `json:"region,omitempty"`
@@ -187,8 +184,8 @@ type LakeSpec struct {
 	// +optional
 	Regions []LakeRegion `json:"regions,omitempty"`
 
-	// ApexHost is a second host this Lake answers, where it serves the region picker (lake.live in
-	// front of eu.lake.live and us.lake.live). The Ingress gets a rule for it and, with
+	// ApexHost is a second host this Lake answers, where it serves the region picker (example.com in
+	// front of eu.example.com and us.example.com). The Ingress gets a rule for it and, with
 	// DNSSecretRef, an owned proxied DNS record; removing the field removes both. The Lake receives
 	// it as LAKE_APEX_HOST. It has no effect without IngressEnabled and Host. At most one member of
 	// a LakeSet sets it.
@@ -216,8 +213,8 @@ type LakeSpec struct {
 	// +optional
 	Clerk *LakeClerkSpec `json:"clerk,omitempty"`
 
-	// Payments takes payments through a payment provider ([orama-bridge#199](https://github.com/oramasearch/orama-bridge/issues/199),
-	// docs/lake/payments.md). From the Secret the operator keeps a PaymentProvider, a
+	// Payments takes payments through a payment provider
+	// (docs/lake/payments.md). From the Secret the operator keeps a PaymentProvider, a
 	// PaymentWebhookEndpoint at https://<host>/billing/stripe/webhook and Lake's PaymentCatalog, and
 	// gives the Lake LAKE_STRIPE_SECRET_KEY and LAKE_STRIPE_WEBHOOK_SECRET. Without it nothing about
 	// payments is managed, and spec.env keeps whatever it says.
@@ -365,7 +362,7 @@ type LakeRegion struct {
 	// Label is the region's name for people.
 	// +kubebuilder:validation:MinLength=1
 	Label string `json:"label"`
-	// Host is the region's Lake host (eu.lake.live).
+	// Host is the region's Lake host (eu.example.com).
 	// +kubebuilder:validation:MinLength=1
 	Host string `json:"host"`
 	// Latitude and Longitude locate the region's datacenter in decimal degrees, so a picker can
@@ -400,7 +397,7 @@ type LakeSnapshotsSpec struct {
 // lake's apps table into LakeApp resources; there is no switch (operator#539).
 type LakeAppsSpec struct {
 	// Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>. Empty
-	// uses the Lake's spec.host, so an app is <app>.<lake host> (myapp.lake-dev.oramadev.net).
+	// uses the Lake's spec.host, so an app is <app>.<lake host> (myapp.lake-dev.example.net).
 	// lake receives it as LAKE_APPS_WILDCARD, and with DNSSecretRef the operator keeps the
 	// *.<wildcard> DNS record.
 	// +optional
@@ -435,6 +432,15 @@ type LakeBuildsSpec struct {
 	// Concurrency caps active Jobs for this Lake and for any one target registry space.
 	// +optional
 	Concurrency LakeBuildConcurrencySpec `json:"concurrency,omitempty"`
+
+	// BaseImagePullSecretName names a dockerconfigjson Secret in the Lake namespace that the
+	// builder may use to pull the base images a build starts FROM (the app and methodology
+	// runtimes). It must be a read-only credential scoped to exactly those repositories, and never
+	// the Lake's pullSecretName: tenant code runs in the builder and can read it (orama-operator#758).
+	// Empty: builds pull base images without a credential. The pullSecretName copy pulls only the
+	// builder image itself, through the kubelet, and is never mounted.
+	// +optional
+	BaseImagePullSecretName string `json:"baseImagePullSecretName,omitempty"`
 
 	// CacheEnabled exports and imports a per-space registry cache. The default is true.
 	// +kubebuilder:default=true
@@ -493,7 +499,7 @@ type LakeBuildConcurrencySpec struct {
 	PerSpace int32 `json:"perSpace,omitempty"`
 }
 
-// LakeServicesSpec configures a Lake's managed services (liquid-bridge decision 46). Every Lake
+// LakeServicesSpec configures a Lake's managed services. Every Lake
 // runs them, with no switch (operator#539): the operator reads the services table from lake's
 // control Postgres, creates <lake>-<slug> in the Lake's namespace for each present service, deletes
 // absent ones, writes service_status, and mounts Secret lake-<lake>-services in lake at

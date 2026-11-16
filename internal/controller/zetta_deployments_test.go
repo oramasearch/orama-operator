@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -27,7 +24,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-const testLakeHost = "lake-dev.oramadev.net"
+const testLakeHost = "lake-dev.nonprod.example"
 
 // insertTestRow appends a row with exactly the given text columns, as a writer would.
 func insertTestRow(t *testing.T, zetta *fakeZetta, table string, row map[string]string) {
@@ -258,8 +255,8 @@ func TestZettaDeploymentReadsOnlyTheLakesPublicHost(t *testing.T) {
 		t.Errorf("a LAKE_PUBLIC_HOST from a source gave row host %q", got)
 	}
 	literal := lake.DeepCopy()
-	literal.Spec.Env = []corev1.EnvVar{{Name: "LAKE_PUBLIC_HOST", Value: "lake.oramadev.net"}}
-	if got := lakeRowHost(literal); got != "lake.oramadev.net" {
+	literal.Spec.Env = []corev1.EnvVar{{Name: "LAKE_PUBLIC_HOST", Value: "lake.nonprod.example"}}
+	if got := lakeRowHost(literal); got != "lake.nonprod.example" {
 		t.Errorf("row host = %q, want spec.env's literal", got)
 	}
 }

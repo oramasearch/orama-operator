@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -22,7 +19,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Gap-fill components surfaced by the techops-docs gap analysis (operator issues #5–#7).
+// Gap-fill components surfaced by the operations gap analysis (operator issues #5–#7).
 // The QStash-equivalent queue (#8) is config wiring (workers → the in-cluster RabbitMQ), not a
 // reconciled component here.
 
@@ -102,7 +99,9 @@ const (
 // fills oramacore_analytics_search_aggregated, which the dashboard's top terms, no-results and totals
 // read. It runs even when the import fails, as Prod 1's two independent timers do, so readers an
 // earlier failed run did import are still aggregated; the Job fails when either call fails. Each
-// call has its own request deadline, together inside the Job's 300 s, and neither retries.
+// call has its own request deadline, together inside the Job's 300 s, and neither retries. The
+// processor's aggregation budget (80 s by default, analytics-processor#2) must stay below the
+// /aggregate2 deadline of 110 s, so the processor stops its own work before curl gives up.
 func analyticsImportScript(oc *oramav1alpha1.OramaCloudV1) string {
 	const curl = "curl --fail --silent --show-error --connect-timeout 10 --request POST --write-out '\\n'"
 	base := fmt.Sprintf("http://%s-analytics-processor:8080", oc.Name)
@@ -320,9 +319,8 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsImport(ctx context.Context, o
 	return err
 }
 
-// analyticsRetentionDays is how long the in-cluster ClickHouse keeps analytics rows: decision 4 of
-// the Cloud v1 migration (orama-bridge docs/projects/orama-cloud-v1/decisions-2026-10-16.md, 16 Oct),
-// analytics start fresh at the cutover and keep 30 days.
+// analyticsRetentionDays is how long the in-cluster ClickHouse keeps analytics rows: by the
+// Cloud v1 migration's decision, analytics start fresh at the cutover and keep 30 days.
 const analyticsRetentionDays = 30
 
 // analyticsRetentionTables is each processor table with the column its TTL counts from.

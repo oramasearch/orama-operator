@@ -2,29 +2,29 @@
 
 How to create a cluster, put its platform layer and operator on it, and run Lake and Orama Cloud v1
 instances on it, by editing resources on the managing cluster. The design and the reasons are in
-[`README.md`](README.md); every field is in [`../crd-reference.md`](../crd-reference.md). The
-`orama-clusters` Claude skill in the umbrella bridge
-(https://github.com/oramasearch/orama-bridge/blob/main/.claude/skills/orama-clusters/SKILL.md) is the
-short form of this page.
+[`README.md`](README.md); every field is in [`../crd-reference.md`](../crd-reference.md).
+
+> **Where the files this page names are.** A deployment keeps its own cluster resources in its own
+> repository, at the paths this page names as `config/clusters/...`. This repository's
+> [`config/clusters/`](../../config/clusters/README.md) is an example of the same shape, with placeholder values.
 
 ## The rule before any procedure: nothing is changed by hand
 
-Steve, 2026-10-13: *"the operator is how we affect change (or changing the CRs for the lakeset or
-v1 set)"*; *"that's state changes outside of our code, and therefore not reproducible"*.
+A change made by hand is state that exists nowhere in code, so it is not reproducible: the next
+cluster will not have it, and a recreated cluster loses it.
 
 Every procedure on this page changes a cluster in one of two ways: a change to the operator, or a
 change to a resource file in `config/clusters/` that is then applied. **Nothing else is done to any
-cluster without Steve's explicit consent for that action**: no `helm` against a cluster, no
+cluster without the cluster owner's explicit consent for that action**: no `helm` against a cluster, no
 `kubectl patch`, `edit`, `delete`, `scale` or `rollout restart`, no deleting an object so that it is
-recreated, on nonprod or production ([`CLAUDE.md`](../../CLAUDE.md), *Never change a cluster by
-hand*). Reading is always allowed. Where this page reaches a step that can only be done by hand
-today, it says so, and that step is a question for Steve and a gap to close in the operator.
+recreated, on nonprod or production. Reading is always allowed. Where this page reaches a step that can only be done by hand
+today, it says so, and that step is a question for the cluster owner and a gap to close in the operator.
 
 ## Where things are
 
 | What | Where |
 |---|---|
-| The managing cluster | `kubectl` context `orama-production-cluster-01` |
+| The managing cluster | `kubectl` context `example-management` |
 | What is applied to it | [`config/clusters/`](../../config/clusters/README.md), one folder per managed cluster and one for the sets |
 | A managed cluster's admin kubeconfig | Secret `orama-system/<cluster>-kubeconfig` on the managing cluster, key `kubeconfig` |
 | The operator's image and chart | `oramasearch/orama-operator:<tag>` and `oramasearch/orama-operator-chart:<chart version>`, both private |
@@ -32,8 +32,8 @@ today, it says so, and that step is a question for Steve and a gap to close in t
 To use a managed cluster directly (read-only checks; changes go through the managing cluster):
 
 ```sh
-kubectl --context orama-production-cluster-01 -n orama-system \
-  get secret orama-nonprod-cluster-01-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > /tmp/nonprod.kubeconfig
+kubectl --context example-management -n orama-system \
+  get secret example-nonprod-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > /tmp/nonprod.kubeconfig
 chmod 600 /tmp/nonprod.kubeconfig
 kubectl --kubeconfig /tmp/nonprod.kubeconfig get nodes
 ```
@@ -48,15 +48,12 @@ kubectl --kubeconfig /tmp/nonprod.kubeconfig get nodes
 | `OramaOperator` | `ooperator` | The managed cluster's own operator, at a version. |
 | `LakeSet` | `lset` | Lake instances on managed clusters, from one template. |
 | `OramaCloudV1Set` | `ocv1set` | Orama Cloud v1 instances on managed clusters, from one template. |
-| `LakeOrderSource` | `lorders` | Provisions the paid lake.live orders a `LakeSet`'s Lakes record ([orders](orders.md)). |
-| `ObservabilityProvider` | `obsprovider` | The pinned Pixie release, every image by digest ([observability](observability.md)). |
-| `ObservabilityHub` | `obshub` | A purpose's observability hub: production's on the managing cluster (no `clusterRef`), nonprod's on a nonprod cluster. |
-| `ObservabilityAgent` | `obsagent` | A cluster's Pixie agents, reporting to the hub of its purpose. |
+| `LakeOrderSource` | `lorders` | Provisions the paid lake.example.com orders a `LakeSet`'s Lakes record ([orders](orders.md)). |
 
 One command shows everything:
 
 ```sh
-kubectl --context orama-production-cluster-01 get kcp,kcluster,aks,chr,ooperator,lset,ocv1set,lorders,obsprovider,obshub,obsagent
+kubectl --context example-management get kcp,kcluster,aks,chr,ooperator,lset,ocv1set,lorders,obsprovider,obshub,obsagent
 ```
 
 Every one of them has a `Message` that says, in the words of whatever refused, why it is not
@@ -78,8 +75,8 @@ Every one of them has a `Message` that says, in the words of whatever refused, w
 4. **Apply the whole folder at once.** Nothing has to be sequenced by hand:
 
    ```sh
-   kubectl --context orama-production-cluster-01 apply --dry-run=server -f config/clusters/<cluster>/
-   kubectl --context orama-production-cluster-01 apply -f config/clusters/<cluster>/
+   kubectl --context example-management apply --dry-run=server -f config/clusters/<cluster>/
+   kubectl --context example-management apply -f config/clusters/<cluster>/
    ```
 
    The releases and the operator stay `Pending` while Azure creates the cluster, then install by
@@ -88,8 +85,8 @@ Every one of them has a `Message` that says, in the words of whatever refused, w
    `Operation` column and its error in `Message`. Then:
 
    ```sh
-   kubectl --context orama-production-cluster-01 wait kcluster/<cluster> --for=jsonpath='{.status.phase}'=Ready --timeout=30m
-   kubectl --context orama-production-cluster-01 get chr,ooperator
+   kubectl --context example-management wait kcluster/<cluster> --for=jsonpath='{.status.phase}'=Ready --timeout=30m
+   kubectl --context example-management get chr,ooperator
    ```
 6. **Check the cluster itself**: one node `Ready`, every pod `Running`, the operator's log with no
    error lines and all its controllers started.
@@ -97,13 +94,12 @@ Every one of them has a `Message` that says, in the words of whatever refused, w
 
 ## Upgrade the operator
 
-Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLAUDE.md)).
+Every cluster runs the same operator version.
 
-1. Merge the change into `dev`. **Ask Steve before rolling the managing cluster**: it is not managed
+1. Merge the change into `dev`. **Ask the cluster owner before rolling the managing cluster**: it is not managed
    by a resource yet, so its operator is rolled by a script that runs `helm upgrade` against it.
-   With his consent, `~/dev/oramasearch/codex-work/build/scripts/build-operator.sh` builds the
-   image, publishes the chart and rolls it from the operator checkout's current commit, and prints
-   the tag, `dev-<sha>`. It publishes the chart for the same tag, without which a managed cluster cannot
+   With that consent, a build script builds the image, publishes the chart and rolls it from the
+   operator checkout's current commit, and prints the tag, `dev-<sha>`. It publishes the chart for the same tag, without which a managed cluster cannot
    install that version.
 2. Set that version on every `OramaOperator`, in `config/clusters/<cluster>/operator.yaml`, and apply.
    Each managed cluster's operator is upgraded with its CRDs widened first and applied exactly once
@@ -114,7 +110,7 @@ Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLA
 3. Confirm every cluster is on it:
 
    ```sh
-   kubectl --context orama-production-cluster-01 get ooperator
+   kubectl --context example-management get ooperator
    ```
 
 ## Add or upgrade a platform chart
@@ -130,7 +126,7 @@ Make the same change in both (`version`, values, a new or removed chart), in one
 `go test ./cmd/ -run Helmfile` fails while they differ. Then:
 
 - apply each `platform.yaml` to the managing cluster: the operator upgrades the leaves;
-- apply the helmfile to the management cluster, **with Steve's consent**
+- apply the helmfile to the management cluster, **with the cluster owner's consent**
   (`helmfile -l name=<release> sync`), and check `helm list -A` there against the file.
 
 A chart whose images come from a private registry (the observability charts pull only Orama's
@@ -144,15 +140,11 @@ Edit the `ClusterHelmRelease` (`spec.chart.version`, `spec.values`) and
 apply. Read the chart's release notes for CRD changes first. `dependsOn` orders installs
 (cert-manager before K8ssandra); `crdURLs` names CRDs a chart ships in a separate file (TiDB).
 
-## Observability: hubs and agents
+## Observability
 
-Order, prerequisites and rollback are in [`observability.md`](observability.md#rolling-it-out):
-images from #455 first, then the platform layer (kube-prometheus-stack and Perses) on every cluster,
-then the operator, then nonprod's hub and agent, then production's hub on the managing cluster and
-production's agents. On a cluster, `kubectl get pxcloud -n plc` and `kubectl get pxvizier -n pl` show the
-concrete side; `kubectl get peer -n pl` the link. Nothing in `plc` or `pl` is edited by hand: the
-managing cluster writes the concrete resources, and each cluster's operator mints its own
-credentials.
+The platform layer's Prometheus, Alertmanager and Perses are installed like any other platform chart
+(above). The operator has no observability kinds since Pixie was removed (#1192); the order for
+rolling that removal onto a cluster is in [`observability.md`](observability.md#removed-pixie-and-the-observability-kinds).
 
 ## Run instances: sets
 
@@ -164,14 +156,14 @@ the set in `config/clusters/sets/`, then apply.
 
 ```yaml
   clusters:
-    - clusterRef: orama-nonprod-cluster-01
+    - clusterRef: example-nonprod
       name: qa                    # the instance's name; its namespace is lake-qa
       spec:                       # only what differs from the template
-        host: lake-qa.oramadev.net
+        host: lake-qa.nonprod.example.com
         args: ["--listen", "0.0.0.0:4900", "--node", "qa"]
         env:
           - {name: LAKE_LOG_MODE, value: air-gapped}
-          - {name: LAKE_PUBLIC_HOST, value: lake-qa.oramadev.net}
+          - {name: LAKE_PUBLIC_HOST, value: lake-qa.nonprod.example.com}
 ```
 
 **Change a version or a setting for every member**: edit `spec.template` and apply. It reaches all
@@ -231,76 +223,14 @@ commit, so a future change to that volume's storage cannot erase its data.
 **Check a set**:
 
 ```sh
-kubectl --context orama-production-cluster-01 get lset,ocv1set
-kubectl --context orama-production-cluster-01 get lset <name> \
+kubectl --context example-management get lset,ocv1set
+kubectl --context example-management get lset <name> \
   -o jsonpath='{range .status.memberStatuses[*]}{.name} {.namespace} {.phase} {.version} | {.message}{"\n"}{end}'
 ```
 
-## Preparing the production v1 dashboard
-
-[#885](https://github.com/oramasearch/orama-operator/issues/885) keeps the live sandbox-shaped
-`v1-prod` set unchanged until the production file is ready. Its members remain `Ready=False` at
-the production dashboard authentication gate and their existing dashboards keep serving. A source
-Secret update alone does not fix that: the live set does not copy the production dashboard or LLM
-Secrets. The prepared [`v1-prod.yaml`](../../config/clusters/sets/v1-prod.yaml) gives only `v1-eu`
-the restricted Stripe reference and disables `v1-us`'s dashboard. Applying it needs Steve's approval
-after every blocker in its header is resolved.
-
-Source checkpoint, 2026-10-23: the restricted Stripe source exists and matches protected staging;
-cron/webhook authentication, Google, dedicated Groq and a dedicated Prod 2 `PRIVATE_API_KEY` are
-prepared. The 64-character hex private key was generated locally, stored in the migration registry
-and source Secret, and read back equal to staging; every other source value was preserved.
-Juan explicitly deferred
-Anthropic and chose to retain its existing three-byte non-working value. Preserve it unchanged:
-the original all-four-real-provider-keys acceptance is unmet, and the rejected Prod 1 candidate
-must not replace it. This exception does not approve the production set apply.
-
-Other dashboard inputs still require preparation: the source retains placeholders for
-Resend, Slack, `S3_BUCKET_PREFIX` and `DATA_SOURCE_REQUEST_URL`, and has no Clerk
-keys. Validate scoped source candidates and record their ownership before updating the source.
-Check the rendered references before treating an old `envFrom` value as a missing input: the
-operator supplies the Redis HTTP URL/token and dashboard origin, and reconciles an uploads R2
-bucket with its own endpoint, bucket, region and access keys. Verify that bucket's readiness;
-copying Prod 1 AWS credentials does not establish it. Image qualification, Clerk cutover and
-the header's other prerequisites remain independent gates.
-
-`PRIVATE_API_KEY` authenticates the dashboard's machine routes, including import metadata/status
-and file-upload URL requests. The target import consumer reads the dashboard's same source key
-and calls its in-cluster Service. Its prepared key is dedicated to Prod 2; the current live sandbox
-set does not consume that source. Resend invitations send real
-email and Slack signup/payment notifications post to their configured channels. Suspended dashboard
-crons and analytics import do not suspend those request-driven effects, so review notification
-isolation before installing carried credentials. Source inspection alone does not qualify delivery.
-
-Prepare the inputs in this order, using values from secure files rather than command arguments:
-
-1. Create `orama-system/v1-prod-dashboard-stripe` on the managing cluster with key
-   `STRIPE_SECRET_KEY`, a live restricted key with exactly the permissions in
-   [the dashboard's Stripe key](../components.md#the-dashboards-stripe-key-a-restricted-key-of-its-own-802).
-   Check the permission metadata in Stripe; the operator checks only the `rk_live_` prefix.
-2. Preserve the prepared OpenAI, Google and Groq values in `orama-system/v1-prod-llm-keys`, and
-   retain Anthropic unchanged under Juan's deferred exception. Check lengths only in output;
-   the original requirement that all four exceed 20 bytes remains unmet. Record
-   any carried Prod 1 credential as a shared dependency before Prod 1 retirement revokes it.
-3. With the later production apply, remove `STRIPE_SECRET_KEY` from `v1-prod-dashboard-env`.
-   Leave it in place until then; the restricted-key reference refuses a second key in `envFrom`.
-   Verify that `CRON_SECRET` and `STRIPE_WEBHOOK_SECRET` contain real values too: the latter must
-   match the existing `app.orama.com` Stripe endpoint. Merely finding these key names is insufficient.
-4. Apply the merged production set file, with Steve's consent, only after its remaining blockers
-   are resolved. Keep EU dashboard crons and the analytics import suspended through the migration.
-
-After applying, read the set and both members' conditions and confirm none reports a dashboard
-error. On EU, inspect the dashboard Deployment's references: `envFrom` names
-`v1-prod-dashboard-env` (with real `CRON_SECRET` and `STRIPE_WEBHOOK_SECRET`) and the explicit
-`STRIPE_SECRET_KEY` reference names `v1-prod-dashboard-stripe`. On US, confirm the dashboard
-Deployment, Service and scheduled jobs are absent and downstream components still reconcile.
-Check Secret lengths or equality within the checking process, never by printing their contents.
-Record each credential change and the eventual apply in the production change and compliance records,
-with approver, timestamp and sanitized evidence.
-
 ## Paid orders: `LakeOrderSource`
 
-A private warehouse or a dedicated cluster bought on lake.live is provisioned by the management
+A private warehouse or a dedicated cluster bought on lake.example.com is provisioned by the management
 cluster's operator from lake's `cloud_orders` table, with nothing done by hand
 ([operator#634](https://github.com/oramasearch/orama-operator/issues/634); the design is
 [`orders.md`](orders.md)). One `LakeOrderSource` names the set whose Lakes take orders; the operator
@@ -309,7 +239,7 @@ for it on the management cluster and writes the order's state back (`provisionin
 with the host, or `failed` with the reason).
 
 **Turn it on for an environment**: commit a `LakeOrderSource` (the example is in
-[`orders.md`](orders.md#the-kind)) and apply it to the management cluster, with Steve's consent, after
+[`orders.md`](orders.md#the-kind)) and apply it to the management cluster, with the cluster owner's consent, after
 lake's `cloud_orders` migration (lake#831) is on that set's Lakes. Nonprod first: a source for
 `lake-nonprod`, a test-mode Stripe purchase, and the order reaching `ready`, before one for `lake-prod`.
 
@@ -318,15 +248,15 @@ are made by the operator, not written in a file, and `kubectl diff -R -f config/
 show them. Find them by their label:
 
 ```sh
-kubectl --context orama-production-cluster-01 get lorders
-kubectl --context orama-production-cluster-01 get lset,kcluster,chr,ooperator -l orama.cloud/order-id
-kubectl --context orama-production-cluster-01 get lorders lake-live \
+kubectl --context example-management get lorders
+kubectl --context example-management get lset,kcluster,chr,ooperator -l orama.cloud/order-id
+kubectl --context example-management get lorders lake-live \
   -o jsonpath='{range .status.orders[*]}{.id} {.offer} {.region} {.lakeSet} | {.message}{"\n"}{end}'
 ```
 
 **Never edit or delete an ordered resource by hand.** The operator brings it back to the described
 spec on its next pass, and removing one is a change of the order's state, which is not built yet
-([`orders.md`](orders.md#open-questions-for-steve)). A dedicated cluster copies the template cluster's
+([`orders.md`](orders.md#open-questions)). A dedicated cluster copies the template cluster's
 platform and operator, so it is upgraded by upgrading the template cluster's files, like every leaf.
 
 **What a source reports**: `Pending` while the set or lake's table is missing, `Degraded` when a
@@ -344,9 +274,9 @@ only after every cluster is cut over.
 
 | Symptom | Cause | What to do |
 |---|---|---|
-| A Lake member stays `Progressing` with "PersistentVolumeClaim … is not bound" | A Lake's store defaults to `ReadWriteMany`, which a disk-backed storage class cannot provide | State `store.accessModes: [ReadWriteOnce]` in the template. A claim's access mode cannot be changed, so the claim that never bound has to be replaced, and the operator does not do that yet: **ask Steve before deleting it**, on any cluster |
+| A Lake member stays `Progressing` with "PersistentVolumeClaim … is not bound" | A Lake's store defaults to `ReadWriteMany`, which a disk-backed storage class cannot provide | State `store.accessModes: [ReadWriteOnce]` in the template. A claim's access mode cannot be changed, so the claim that never bound has to be replaced, and the operator does not do that yet: **Ask the cluster owner before deleting it**, on any cluster |
 | `OramaOperator` is `Pending`: "the cluster lacks CRDs this operator version needs" | CloudNativePG is not on the cluster yet | Apply its `ClusterHelmRelease`; the operator installs by itself afterwards |
-| `OramaOperator` is `Degraded`, reason `ProductionCredential`: "… is a production credential and is never copied to a nonprod cluster" | Its `imagePullSecretRef` names a Secret production uses (a production set lists it, a production `OramaOperator` names it, or it is labelled `orama.cloud/purpose` for another purpose); nothing was copied to the cluster (orama-operator#832) | Name the cluster's own Secret in `config/clusters/<cluster>/operator.yaml`, copied under the old name with `imagePullSecretAs`, and apply the file. Creating that Secret on the managing cluster is Steve's |
+| `OramaOperator` is `Degraded`, reason `ProductionCredential`: "… is a production credential and is never copied to a nonprod cluster" | Its `imagePullSecretRef` names a Secret production uses (a production set lists it, a production `OramaOperator` names it, or it is labelled `orama.cloud/purpose` for another purpose); nothing was copied to the cluster (orama-operator#832) | Name the cluster's own Secret in `config/clusters/<cluster>/operator.yaml`, copied under the old name with `imagePullSecretAs`, and apply the file. Creating that Secret on the managing cluster is the cluster owner's |
 | `OramaOperator` is `Degraded`: the chart cannot be pulled | The chart for that version was not published | `go run ./hack/pushchart -version <tag>` from the commit the image was built from |
 | A set member is `Pending`: "does not have the Lake kind" | The cluster's operator is not installed or not `Ready` | Fix the `OramaOperator` first |
 | A `ClusterHelmRelease` is `Degraded` with "pre-upgrade hooks failed … timed out", and its Helm revision climbs | A chart's hook (the ClickHouse operator's CRD-install Job) outlasted Helm's timeout while the new cluster was still pulling images. Fixed 2026-10-12: hooks get ten minutes, where they had 30 seconds | Nothing, on a current operator. It recovers once the hook's image is on the node; check `helm history` on the cluster shows a final `deployed` |
@@ -358,17 +288,17 @@ only after every cluster is cut over.
 ## Rules that are not negotiable
 
 - **No differences between clusters' operators**: same chart, image, CRDs, controllers and RBAC
-  everywhere ([`CLAUDE.md`](../../CLAUDE.md) rule 11).
+  everywhere.
 - **A set never combines nonprod and production.**
 - **Nonprod never gets a production credential.** A Secret a production set lists, one labelled
   `orama.cloud/purpose: production`, or a migration's Prod 1 source credential is never copied into a
   nonprod member; the operator refuses it
   ([the rule](../crd-reference.md#production-credentials-never-reach-a-nonprod-member)).
 - **Per-instance keys are never copied** between clusters; only the Secrets a set lists travel.
-- **Nothing is changed by hand on any cluster without Steve's explicit consent** (the section at
+- **Nothing is changed by hand on any cluster without the cluster owner's explicit consent** (the section at
   the top of this page). Change the operator, or change a resource file and apply it.
 - **A hostname that production traffic already uses is never pointed at a new cluster** without an
-  explicit decision. Instances created so far use names in `oramadev.net`.
+  explicit decision. Instances created so far use names in `nonprod.example.com`.
 - **Pull requests target `dev`.**
 
 ## Configure node-pool sysctls

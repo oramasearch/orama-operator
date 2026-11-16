@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -444,7 +441,7 @@ func meshPolicyPort(port networkingv1.NetworkPolicyPort, target *corev1.Pod) (in
 }
 
 // Each node's template, and the workload certificates and private keys it names, are in that
-// node's own Secret, mounted only by that node's agent (orama-operator#788, LSR-039). The kubelet
+// node's own Secret, mounted only by that node's agent (orama-operator#788). The kubelet
 // delivers a Secret to a node only for a pod bound there that mounts it, so root on one node reads
 // only the keys of the workloads on that node, never another node's.
 
@@ -700,12 +697,17 @@ func (r *zettaTunnelMeshReconciler) reconcileDaemonSet(ctx context.Context, pull
 						"--output", zettaTunnelMeshProjectionDir,
 					},
 					Env: []corev1.EnvVar{{Name: "NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}}},
+					// The projector opens each enrolled pod's /proc/<pid>/ns/net to read the namespace's
+					// inode (orama-operator#869, zetta-tunnel LSR-264), and the kernel allows that only
+					// to a process with CAP_SYS_PTRACE over the target: root with that one capability,
+					// every other capability dropped, no escalation, a read-only root filesystem. It
+					// still has no credential and makes no API call.
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: boolPtr(false),
 						ReadOnlyRootFilesystem:   boolPtr(true),
-						RunAsNonRoot:             boolPtr(true),
-						RunAsUser:                int64Ptr(65532),
-						Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+						RunAsNonRoot:             boolPtr(false),
+						RunAsUser:                int64Ptr(0),
+						Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"SYS_PTRACE"}},
 						SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Resources: corev1.ResourceRequirements{

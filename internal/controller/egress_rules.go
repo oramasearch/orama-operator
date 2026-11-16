@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -36,9 +33,14 @@ const (
 	workspaceInternetRuleName = "internet-https"
 )
 
-// egressRuleNeverReachable is always removed from a CIDR rule, whatever it names: loopback and
-// link-local (the cloud metadata address included). Cluster addresses are added at render time.
-var egressRuleNeverReachable = []string{"127.0.0.0/8", "169.254.0.0/16", "::1/128", "fe80::/10"}
+// egressRuleNeverReachable is always removed from a CIDR rule, whatever it names. Cluster addresses
+// are added at render time. An explicit CIDR rule never reaches what public-internet egress never reaches
+// (workspacePublicIPExceptions): private (RFC 1918), CGNAT, ULA, loopback, link-local and metadata,
+// documentation, multicast and reserved ranges, and every cluster address (LSR-217,
+// orama-operator#812, #780, #764). A range inside one of them is refused; a wider range is opened
+// minus all of them. On an overlay network the pod and Service ranges are private addresses, so they
+// are excluded even when no node reports them.
+var egressRuleNeverReachable = workspacePublicIPExceptions
 
 func sortedInt32(values []int32) []int32 {
 	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
@@ -160,8 +162,9 @@ func tcpPolicyPorts(ports []int32) []networkingv1.NetworkPolicyPort {
 	return out
 }
 
-// cidrRulePeers is the rule's range minus loopback, link-local and every cluster address inside it.
-// A range that lies wholly inside an excluded range allows nothing and is refused.
+// cidrRulePeers is the rule's range minus every range public egress excludes (egressRuleNeverReachable)
+// and every cluster address inside it. A range that lies wholly inside an excluded range allows
+// nothing and is refused.
 func cidrRulePeers(rule netip.Prefix, cluster []string) ([]networkingv1.NetworkPolicyPeer, error) {
 	var except []string
 	for _, value := range append(append([]string(nil), egressRuleNeverReachable...), cluster...) {

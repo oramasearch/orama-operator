@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -81,7 +78,7 @@ const listAppsSQL = `SELECT a.id::text, a.customer_id::text, a.workspace_id::tex
  COALESCE(a.observed_generation, 0), COALESCE(a.token_hashes_json, 'null'::jsonb)::text,
  COALESCE((to_jsonb(a)->>'restart_generation')::bigint, 0)
  FROM apps a
- JOIN workspaces w ON w.id = a.workspace_id
+ JOIN workspaces w ON w.id = a.workspace_id AND w.customer_id = a.customer_id
  ORDER BY a.id`
 
 func (s *pgxAppsStore) ListApps(ctx context.Context) ([]LakeAppRow, error) {

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // check-image-digests rejects mutable executable image references in rendered release manifests.
 package main
 

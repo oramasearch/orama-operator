@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -50,7 +47,7 @@ const (
 // through the operator's own reconcilers: the OramaCloudV1 reconciler renders the ConfigMap and the
 // ordered PostgresSchemas, the PostgresSchema reconciler renders each migration Job, and the Job's
 // script runs natively against a fresh database (there is no kubelet). The reference rows are the
-// committed export from Prod 1. Opt in with
+// built-in example catalog. Opt in with
 // CONTROLDB_SCHEMA_TEST_POSTGRES_URI, an admin connection to a disposable server; each case creates
 // and drops its own database.
 func TestControlDBSchemasAgainstPostgres(t *testing.T) {

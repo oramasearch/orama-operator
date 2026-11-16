@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -100,6 +97,15 @@ func (r *LakeReconciler) syncLakeEgressRules(
 		if !found || workspace.Namespace == "" || workspace.Namespace != row.WorkspaceNamespace {
 			status := failedEgressRuleStatus(row, "workspace and its reconciled namespace are required")
 			if writeEgressRuleStatus(ctx, store, row, status) != nil {
+				changing = true
+			}
+			continue
+		}
+		if refusal, err := workspaceNamespaceRefusal(ctx, r.Client, lake, row.WorkspaceNamespace, row.WorkspaceID, row.CustomerID); err != nil || refusal != "" {
+			if err != nil {
+				log.Error(err, "egress rule reconciliation deferred", "rule", row.ID)
+				changing = true
+			} else if writeEgressRuleStatus(ctx, store, row, failedEgressRuleStatus(row, refusal)) != nil {
 				changing = true
 			}
 			continue

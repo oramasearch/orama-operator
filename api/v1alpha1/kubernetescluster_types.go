@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package v1alpha1
 
@@ -222,7 +219,7 @@ type AksProviderSettings struct {
 	// Defaults to empty, with the suffix below.
 	// +optional
 	ResourceGroupPrefix string `json:"resourceGroupPrefix,omitempty"`
-	// ResourceGroupSuffix defaults to "_group", matching orama-production-cluster-01_group.
+	// ResourceGroupSuffix defaults to "_group", matching an AKS cluster named <name> in <name>_group.
 	// +kubebuilder:default="_group"
 	// +optional
 	ResourceGroupSuffix string `json:"resourceGroupSuffix,omitempty"`

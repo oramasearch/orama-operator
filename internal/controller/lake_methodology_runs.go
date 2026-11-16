@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -93,6 +90,43 @@ const (
 	// running or collecting at once when spec.methodologies.maxConcurrentRunsPerWorkspace is unset.
 	methodologyDefaultConcurrentRuns = int32(2)
 )
+
+// Lake's own maxima for a methodology run or a served model (lake include/lake/control/methodologies.hpp),
+// held by the operator too, so a row that exceeds them is refused here even if lake's intake let it
+// through (operator#782).
+const (
+	methodologyMaxCPUMillis      = int32(16000)
+	methodologyMaxMemoryBytes    = int64(64) << 30
+	methodologyMaxGPUs           = int32(8)
+	methodologyMaxTimeoutSeconds = int32(24 * 3600)
+)
+
+// methodologySizeRefusal says why a row's sizes exceed lake's maxima, or "" when they do not.
+func methodologySizeRefusal(cpuMillis int32, memoryBytes int64, gpus int32, timeoutSeconds int32) string {
+	switch {
+	case cpuMillis > methodologyMaxCPUMillis:
+		return fmt.Sprintf("CPU %dm exceeds the maximum of %dm", cpuMillis, methodologyMaxCPUMillis)
+	case memoryBytes > methodologyMaxMemoryBytes:
+		return fmt.Sprintf("memory %d bytes exceeds the maximum of %d", memoryBytes, methodologyMaxMemoryBytes)
+	case gpus > methodologyMaxGPUs:
+		return fmt.Sprintf("%d GPUs exceed the maximum of %d", gpus, methodologyMaxGPUs)
+	case timeoutSeconds > methodologyMaxTimeoutSeconds:
+		return fmt.Sprintf("time limit %ds exceeds the maximum of %ds", timeoutSeconds, methodologyMaxTimeoutSeconds)
+	}
+	return ""
+}
+
+// methodologyImageRefusal refuses a sandbox or serve image lake named that is not in the Lake's own
+// registry (operator#782). Lake names only images it built and serves under its public host; the
+// Lake's hosts are spec.host, a literal LAKE_PUBLIC_HOST and spec.customDomain.host.
+func methodologyImageRefusal(lake *oramav1alpha1.Lake, image string) string {
+	for _, host := range []string{lakePublicHost(lake), lake.Spec.Host, lakeCustomDomainHost(lake)} {
+		if host != "" && strings.HasPrefix(image, host+"/") {
+			return ""
+		}
+	}
+	return "the image must be in the Lake's own registry"
+}
 
 var (
 	methodologyRunSlugPattern = regexp.MustCompile(`^mr-[0-9a-f]{12}$`)
@@ -481,7 +515,9 @@ func methodologyTransferEnv(lake *oramav1alpha1.Lake, run *LakeMethodologyRun) [
 // a GPU run, zones are the zones where nodes of its GPU class are (methodologyRunPlacement), so its
 // sandbox can be scheduled next to its data; empty leaves the stage pod free to go anywhere.
 func methodologyStagePod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun, zones []string) corev1.PodSpec {
-	pod := methodologyPod(run.RuntimeImage,
+	// The stage and collect pods hold the run credential, so they run the Lake's own runtime image,
+	// never an image the row names (operator#782).
+	pod := methodologyPod(lakeMethodologyRuntimeImage(lake),
 		[]string{methodologyCLI, "stage", "--lake", "$(LAKE_URL)", "--run", "$(RUN_ID)",
 			"--credential-file", methodologyCredentialDir + "/" + methodologyCredentialFile, "--out", methodologyWorkPath + "/in"},
 		methodologyTransferEnv(lake, run), methodologyTransferResources(),
@@ -617,7 +653,7 @@ func methodologyCollectPod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun, ex
 	if exitCode != nil {
 		command = append(command, "--run-exit-code", fmt.Sprint(*exitCode))
 	}
-	return methodologyPod(run.RuntimeImage, command,
+	return methodologyPod(lakeMethodologyRuntimeImage(lake), command,
 		methodologyTransferEnv(lake, run), methodologyTransferResources(),
 		methodologyWorkClaim(run.Slug), methodologyPullSecret(run.Slug), methodologyCredentialSecret(run.Slug))
 }
@@ -918,10 +954,18 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 	case run.CPUMillis <= 0 || run.MemoryBytes <= 0 || run.TimeoutSeconds <= 0 || run.GPUs < 0:
 		status.Phase, status.Message = MethodologyPhaseFailed, "the run's CPU, memory and time limit must be positive"
 		return status, false, nil
+	case methodologySizeRefusal(run.CPUMillis, run.MemoryBytes, run.GPUs, run.TimeoutSeconds) != "":
+		status.Phase, status.Message = MethodologyPhaseFailed, "the run's "+methodologySizeRefusal(run.CPUMillis, run.MemoryBytes, run.GPUs, run.TimeoutSeconds)
+		return status, false, nil
 	}
 
 	// The image: lake's, or the build's once it has succeeded.
 	image := run.Image
+	if image != "" {
+		if refusal := methodologyImageRefusal(lake, image); refusal != "" {
+			return fail(refusal)
+		}
+	}
 	if image == "" {
 		build := run.Build
 		switch {

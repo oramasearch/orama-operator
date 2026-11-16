@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package main
 
@@ -22,8 +19,8 @@ import (
 // from helmfile.yaml, and every leaf by the management cluster's operator from the
 // ClusterHelmRelease resources in config/clusters/<cluster>/platform.yaml. The two paths must
 // install the same charts at the same versions, in the same namespaces, with the same values, so
-// that a management cluster and a leaf are effectively the same cluster. Steve, 2026-10-13: "both
-// the helmfile and the operator need to be kept in sync".
+// that a management cluster and a leaf are effectively the same cluster: the helmfile and the
+// operator are kept in sync.
 //
 // This test is what keeps them in step. It fails when a chart, a version, a namespace, a value, a
 // dependency or a separately-shipped CRD manifest is in one and not the other.
@@ -240,7 +237,7 @@ func TestHelmfileAndEveryLeafInstallTheSamePlatform(t *testing.T) {
 	if len(management) == 0 {
 		t.Fatal("found no third-party releases in helmfile.yaml; the format this test reads changed")
 	}
-	leaves, err := filepath.Glob(filepath.Join("..", "config", "clusters", "*", "platform.yaml"))
+	leaves, err := filepath.Glob(filepath.Join(clustersDir(), "*", "platform.yaml"))
 	if err != nil || len(leaves) == 0 {
 		t.Fatalf("found no config/clusters/*/platform.yaml: %v", err)
 	}
@@ -272,7 +269,7 @@ func TestHelmfileAndEveryLeafInstallTheSamePlatform(t *testing.T) {
 // other. (The management cluster's own version is whatever was last rolled onto it from the
 // helmfile path; it is not in a file yet, which docs/infrastructure/README.md records as a gap.)
 func TestEveryLeafRunsTheSameOperatorVersion(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("..", "config", "clusters", "*", "operator.yaml"))
+	files, err := filepath.Glob(filepath.Join(clustersDir(), "*", "operator.yaml"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("found no config/clusters/*/operator.yaml: %v", err)
 	}
@@ -325,7 +322,7 @@ func TestIngressTrustsCloudflaresClientAddressOnlyFromCloudflare(t *testing.T) {
 		}
 	}
 	check("helmfile.yaml", helmfilePlatform(t)["ingress-nginx"])
-	paths, err := filepath.Glob("../config/clusters/*/platform.yaml")
+	paths, err := filepath.Glob(filepath.Join(clustersDir(), "*", "platform.yaml"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no leaf platform files (%v)", err)
 	}

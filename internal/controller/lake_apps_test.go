@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -154,8 +151,9 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 		Data:       map[string][]byte{"uri": []byte("postgresql://test:private@localhost/lake")},
 	}
 	connections := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: "lake"},
-		Data:       map[string][]byte{testPostgresID: []byte(`{"uri":"postgresql://user:private@db/app"}`)},
+		ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: "lake",
+			Annotations: map[string]string{serviceWorkspaceAnnotation(testPostgresID): testWorkspaceID}},
+		Data: map[string][]byte{testPostgresID: []byte(`{"uri":"postgresql://user:private@db/app"}`)},
 	}
 	pullSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "docker-pull", Namespace: "lake"},
@@ -779,13 +777,15 @@ func TestLakeAppsOrphansAndReadFailures(t *testing.T) {
 
 func TestLakeAppsRejectForeignBindingsAndNames(t *testing.T) {
 	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"}, Spec: oramav1alpha1.LakeSpec{Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps.example.test"}}}
-	for _, name := range []string{"foreign customer", "missing service", "unsafe filename", "outside host", "invalid env", "mutable image"} {
+	for _, name := range []string{"foreign customer", "foreign workspace", "missing service", "unsafe filename", "outside host", "invalid env", "mutable image"} {
 		t.Run(name, func(t *testing.T) {
 			row := testLakeAppRow()
-			services := []LakeService{{ID: testPostgresID, CustomerID: row.CustomerID, Name: "db", Desired: "present"}}
+			services := []LakeService{{ID: testPostgresID, CustomerID: row.CustomerID, WorkspaceID: row.WorkspaceID, Name: "db", Desired: "present"}}
 			switch name {
 			case "foreign customer":
 				services[0].CustomerID = "other"
+			case "foreign workspace":
+				services[0].WorkspaceID = "another-workspace"
 			case "missing service":
 				services = nil
 			case "unsafe filename":
@@ -840,5 +840,31 @@ func TestLakeAppRowAuthNoneIsPublic(t *testing.T) {
 	row.Auth = "anyone"
 	if _, err := lakeAppRowSpec(lake, &row, services); err == nil {
 		t.Fatal("unknown auth accepted")
+	}
+}
+
+// lake#945: the bindings copy hands an app only a connection the services Secret records as being
+// in the app's own workspace, whatever the LakeApp's bindings name.
+func TestLakeAppBindingsCopyOnlyTheAppsWorkspaceServices(t *testing.T) {
+	scheme := newLakeAppScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&oramav1alpha1.LakeApp{}).Build()
+	h := newAppsSyncHarness(t, c)
+	connections := &corev1.Secret{}
+	if err := c.Get(h.ctx, client.ObjectKey{Namespace: "lake", Name: lakeServicesSecret(h.lake.Name)}, connections); err != nil {
+		t.Fatal(err)
+	}
+	connections.Annotations[serviceWorkspaceAnnotation(testPostgresID)] = "another-workspace"
+	if err := c.Update(h.ctx, connections); err != nil {
+		t.Fatal(err)
+	}
+	h.converge()
+	var secrets corev1.SecretList
+	if err := c.List(h.ctx, &secrets); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range secrets.Items {
+		if secret.Name == lakeAppBindingsName(h.app()) && len(secret.Data[testPostgresID]) > 0 {
+			t.Fatalf("a service of another workspace was copied into %s/%s", secret.Namespace, secret.Name)
+		}
 	}
 }

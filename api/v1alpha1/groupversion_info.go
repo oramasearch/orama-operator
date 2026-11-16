@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 // Package v1alpha1 contains API Schema definitions for the orama.cloud v1alpha1 API group.
 // +kubebuilder:object:generate=true

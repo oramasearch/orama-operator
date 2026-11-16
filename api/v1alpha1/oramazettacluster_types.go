@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package v1alpha1
 
@@ -27,7 +24,7 @@ const (
 )
 
 // OramaZettaClusterSpec describes a headless Orama Zetta cluster — N equal-peer CRDT nodes.
-// Step 1 of the One Orama plan (orama-bridge#130): the operator only *runs* Zetta headless; the
+// Step 1 of the One Orama plan: the operator only *runs* Zetta headless; the
 // bi-directional operator↔Zetta symbiosis (Zetta as the operator's datastore) is a later stage.
 type OramaZettaClusterSpec struct {
 	// Replicas is the number of equal-peer headless zetta nodes.
@@ -60,6 +57,25 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// EgressAllowConfigMap names a ConfigMap in this namespace whose key `allow` is the node's egress
+	// allowlist, in the engine's ZETTA_EGRESS_ALLOW syntax (operator#724, zetta#1332). The Lake
+	// reconcilers set it on every workspace Zetta and managed Zetta service and write the ConfigMap
+	// from the namespace's NetworkSandbox. It is mounted on every node at /etc/zetta/egress/allow,
+	// named by ZETTA_EGRESS_ALLOW_FILE. A Zetta image that re-reads that file (status.imageFeatures
+	// .egressAllowFile) gets ZETTA_EGRESS_ALLOW empty, so a rule change reaches the node without a
+	// restart; any other image gets the ConfigMap's value as ZETTA_EGRESS_ALLOW, which rolls the
+	// nodes as before. A ZETTA_EGRESS_ALLOW in spec.env is kept and wins. Until the ConfigMap exists
+	// the StatefulSet is not created or changed. Empty: no file, and the allowlist is spec.env's.
+	// +optional
+	EgressAllowConfigMap string `json:"egressAllowConfigMap,omitempty"`
+
+	// Identity rotates the cluster's identity root (operator#1174, zetta#1342). Raising
+	// adminTokenGeneration makes the operator mint a new admin token, call rotate_identity_root with it
+	// on node 0 while every node still runs the current token, and only then roll the new token to
+	// the pods. See docs/zetta-cluster-mtls.md#rotating-the-admin-token.
+	// +optional
+	Identity ZettaIdentitySpec `json:"identity,omitempty"`
+
 	// NOTE: inter-node peer traffic is ALWAYS mutual-TLS. The operator mints one shared cluster join
 	// token per cluster (Secret `<name>-zetta-cluster`) and injects it into every node as
 	// ZETTA_CLUSTER_TOKEN; the engine derives the cluster CA from it, so all nodes form ONE cluster
@@ -85,7 +101,7 @@ type OramaZettaClusterSpec struct {
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
 	// Host is the domain name the cluster's HTTP API/UI (:4800 — MCP + REST + serving) is exposed at
-	// (e.g. zetta.oramadev.net) when IngressEnabled is true. Requires an ingress controller.
+	// (e.g. zetta.example.net) when IngressEnabled is true. Requires an ingress controller.
 	// +optional
 	Host string `json:"host,omitempty"`
 
@@ -238,7 +254,7 @@ type OramaZettaCapacity struct {
 // (`limits`); the provider-specific NodeClass (EC2NodeClass on EKS / AKSNodeClass on AKS) is owned by
 // the platform and referenced via NodeClassRef, because it carries cluster-specific cloud details
 // (AMI/subnet/IAM on AWS) the operator cannot invent. Karpenter reference model: NodePool → NodeClass →
-// NodeClaim → Node (see docs/research/karpenter-manual.md).
+// NodeClaim → Node.
 type KarpenterCapacity struct {
 	// Enabled turns on operator-managed Karpenter capacity. When true the operator reconciles the Zetta
 	// NodePool and pins the Zetta pods onto it (a dedicated taint + toleration and a pool nodeSelector),
@@ -423,10 +439,74 @@ type OramaZettaClusterStatus struct {
 	// sorted and de-duplicated so a steady collision does not cause status writes.
 	// +optional
 	IgnoredEnvVars []string `json:"ignoredEnvVars,omitempty"`
+	// ImageFeatures is what an image said about itself in `zetta --help`, read once per spec.image
+	// by Job <name>-zetta-features (operator#724, operator#1174). The operator acts on it only while
+	// its image is spec.image.
+	// +optional
+	ImageFeatures *ZettaImageFeatures `json:"imageFeatures,omitempty"`
+	// Identity is the cluster's identity root generation and enrollment CA as the operator has put
+	// them in place (operator#1174).
+	// +optional
+	Identity ZettaIdentityStatus `json:"identity,omitempty"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ZettaImageFeatures is what one Zetta image reported about itself.
+type ZettaImageFeatures struct {
+	// Image is the spec.image the features were read from.
+	Image string `json:"image"`
+	// EgressAllowFile is true when the image's usage lists ZETTA_EGRESS_ALLOW_FILE: it re-reads its
+	// egress allowlist from that file while it runs (zetta#1332).
+	EgressAllowFile bool `json:"egressAllowFile"`
+	// IdentityRootRotation is true when the image's usage lists ZETTA_IDENTITY_MIN_EPOCH, which
+	// came in the same zetta release as rotate_identity_root (zetta#1342, zetta#1360).
+	// +optional
+	IdentityRootRotation bool `json:"identityRootRotation,omitempty"`
+	// ClusterCA is true when the image's usage lists ZETTA_CLUSTER_CA: a node that is not enrolled
+	// enrolls only through a member the enrollment CA signed (zetta#1513).
+	// +optional
+	ClusterCA bool `json:"clusterCA,omitempty"`
+	// ClusterCASeedFile is true when the image's usage lists ZETTA_CLUSTER_CA_SEED_FILE: a node
+	// given the enrollment CA's seed holds the CA and signs enrollments (zetta#1513).
+	// +optional
+	ClusterCASeedFile bool `json:"clusterCASeedFile,omitempty"`
+	// EgressGateway is true when the image's usage lists ZETTA_EGRESS_GATEWAY and
+	// ZETTA_EGRESS_GATEWAY_ROUTES: it sends the routed names through the workspace egress gateway
+	// (zetta#1331, operator#1179).
+	// +optional
+	EgressGateway bool `json:"egressGateway,omitempty"`
+}
+
+// ZettaIdentitySpec asks for an identity root rotation.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.adminTokenGeneration) || (has(self.adminTokenGeneration) && self.adminTokenGeneration >= oldSelf.adminTokenGeneration)",message="spec.identity.adminTokenGeneration cannot be lowered"
+type ZettaIdentitySpec struct {
+	// AdminTokenGeneration is the admin token's generation. 1 is the token the operator minted with
+	// the cluster. Raising it rotates the identity root to a new admin token (operator#1174); it cannot
+	// be lowered. The rotation waits for an image whose usage lists ZETTA_IDENTITY_MIN_EPOCH and for
+	// every node to be ready on the current token; condition IdentityRootRotated reports it.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	AdminTokenGeneration int64 `json:"adminTokenGeneration,omitempty"`
+}
+
+// ZettaIdentityStatus is what the operator has put in place for the cluster's identity.
+type ZettaIdentityStatus struct {
+	// AdminTokenGeneration is the generation of the admin token in Secret <name>-zetta-admin: the
+	// identity root the nodes run on once they have rolled.
+	// +optional
+	AdminTokenGeneration int64 `json:"adminTokenGeneration,omitempty"`
+	// ClusterCA is the enrollment CA's public key (64 hex) the nodes are given as ZETTA_CLUSTER_CA.
+	// Public, like the identity root.
+	// +optional
+	ClusterCA string `json:"clusterCA,omitempty"`
+	// ClusterCASource says where it came from: Operator (a seed the operator minted, held by this
+	// slice's nodes), Members (the CA the nodes generated under zetta#1512, read from a node's join
+	// command) or Sibling (another slice of the same cluster in this namespace).
+	// +optional
+	ClusterCASource string `json:"clusterCASource,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -443,8 +523,7 @@ type OramaZettaClusterStatus struct {
 // OramaZettaCluster deploys a headless Orama Zetta cluster (a StatefulSet of equal-peer CRDT nodes)
 // from one CR. Peer replication is TCP 7777 (always mTLS — every node shares one operator-minted
 // cluster join token that derives the cluster CA, operator#92); the HTTP API (MCP + REST + serving)
-// is 4800; each node persists to a per-node PVC at /data. See the plan of record in
-// oramasearch/orama-bridge docs/projects/one-orama.
+// is 4800; each node persists to a per-node PVC at /data.
 type OramaZettaCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

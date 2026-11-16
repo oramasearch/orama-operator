@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -32,7 +29,7 @@ const listWorkloadObjectsSQL = `SELECT 'workspace', w.id::text, COALESCE(w.names
 UNION ALL
 SELECT 'service', s.id::text, COALESCE(w.namespace, ''), s.desired, s.kind, s.slug
   FROM services s
-  JOIN workspaces w ON w.id = s.workspace_id
+  JOIN workspaces w ON w.id = s.workspace_id AND w.customer_id = s.customer_id
   LEFT JOIN service_status st ON st.service_id = s.id
  WHERE NOT EXISTS (SELECT 1 FROM workspaces z WHERE z.zetta_service_id = s.id)
    AND (($2::boolean AND NOT (s.desired = 'absent' AND COALESCE(st.phase, '') = 'Deleted'))
@@ -40,7 +37,7 @@ SELECT 'service', s.id::text, COALESCE(w.namespace, ''), s.desired, s.kind, s.sl
 UNION ALL
 SELECT 'app', a.id::text, COALESCE(w.namespace, ''), a.desired, a.mode, ''
   FROM apps a
-  JOIN workspaces w ON w.id = a.workspace_id
+  JOIN workspaces w ON w.id = a.workspace_id AND w.customer_id = a.customer_id
  WHERE ($2::boolean AND NOT (a.desired = 'deleted' AND COALESCE(a.phase, '') = 'Deleted'))
     OR a.id = ANY($1::text[]::uuid[])
 UNION ALL
@@ -50,14 +47,14 @@ SELECT 'build', b.id::text, '', b.desired, '', ''
 UNION ALL
 SELECT 'agent_launch', l.id::text, COALESCE(w.namespace, ''), l.desired, l.mode, l.slug
   FROM agent_launches l
-  JOIN workspaces w ON w.id = l.workspace_id
+  JOIN workspaces w ON w.id = l.workspace_id AND w.customer_id = l.customer_id
  WHERE ($2::boolean AND l.mode = 'service' AND l.desired = 'present')
     OR l.id = ANY($1::text[]::uuid[])
 UNION ALL
 SELECT 'agent_cron_run', r.id::text, COALESCE(w.namespace, ''), s.desired, 'job', s.slug
   FROM agent_cron_runs r
   JOIN agent_cron_schedules s ON s.id = r.schedule_id
-  JOIN workspaces w ON w.id = s.workspace_id
+  JOIN workspaces w ON w.id = s.workspace_id AND w.customer_id = s.customer_id
  WHERE r.id = ANY($1::text[]::uuid[])`
 
 // listUnmeteredJobsSQL reads the finished runs with no workload_resources row (lake#658): builds
@@ -72,7 +69,7 @@ const listUnmeteredJobsSQL = `SELECT 'build', b.id::text, '', b.desired, '', ''
 UNION ALL
 SELECT 'agent_launch', l.id::text, COALESCE(w.namespace, ''), l.desired, l.mode, l.slug
   FROM agent_launches l
-  JOIN workspaces w ON w.id = l.workspace_id
+  JOIN workspaces w ON w.id = l.workspace_id AND w.customer_id = l.customer_id
   JOIN agent_launch_status st ON st.launch_id = l.id
  WHERE l.mode = 'job' AND st.phase IN ('Succeeded', 'Failed')
    AND NOT EXISTS (SELECT 1 FROM workload_resources x
@@ -81,7 +78,7 @@ UNION ALL
 SELECT 'agent_cron_run', r.id::text, COALESCE(w.namespace, ''), s.desired, 'job', s.slug
   FROM agent_cron_runs r
   JOIN agent_cron_schedules s ON s.id = r.schedule_id
-  JOIN workspaces w ON w.id = s.workspace_id
+  JOIN workspaces w ON w.id = s.workspace_id AND w.customer_id = s.customer_id
  WHERE r.phase IN ('Succeeded', 'Failed')
    AND NOT EXISTS (SELECT 1 FROM workload_resources x
                     WHERE x.object_kind = 'agent_cron_run' AND x.object_id = r.id)`

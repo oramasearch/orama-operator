@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -27,7 +24,7 @@ func TestStripeFormEncodesNestedKeysInOneOrder(t *testing.T) {
 		t.Errorf("stripeField = %q", got)
 	}
 	first := url.Values{}
-	first.Set("url", "https://eu.lake.live/stripe?x=1")
+	first.Set("url", "https://eu.lakelive.example/stripe?x=1")
 	first.Set(stripeField("metadata", "orama_owner"), "lake-eu/lake")
 	first[stripeField("enabled_events", "")] = []string{"customer.subscription.updated", "invoice.paid"}
 	first.Set(stripeField("price_data", "product"), "lake_usage")
@@ -35,11 +32,11 @@ func TestStripeFormEncodesNestedKeysInOneOrder(t *testing.T) {
 	second.Set(stripeField("price_data", "product"), "lake_usage")
 	second[stripeField("enabled_events", "")] = []string{"customer.subscription.updated", "invoice.paid"}
 	second.Set(stripeField("metadata", "orama_owner"), "lake-eu/lake")
-	second.Set("url", "https://eu.lake.live/stripe?x=1")
+	second.Set("url", "https://eu.lakelive.example/stripe?x=1")
 
 	want := "enabled_events%5B%5D=customer.subscription.updated&enabled_events%5B%5D=invoice.paid" +
 		"&metadata%5Borama_owner%5D=lake-eu%2Flake&price_data%5Bproduct%5D=lake_usage" +
-		"&url=https%3A%2F%2Feu.lake.live%2Fstripe%3Fx%3D1"
+		"&url=https%3A%2F%2Feu.lakelive.example%2Fstripe%3Fx%3D1"
 	if first.Encode() != want || second.Encode() != want {
 		t.Errorf("encoded\n %s\n %s\nwant\n %s", first.Encode(), second.Encode(), want)
 	}
@@ -52,7 +49,7 @@ func TestStripeFormEncodesNestedKeysInOneOrder(t *testing.T) {
 // A key is orama-<uid>-<operation>-<target>-<16 hex of the body's sha256>, the same for the same
 // body, different for another body or target, with the attempt as a suffix after a 5xx.
 func TestStripeIdempotencyKeyNamesOneRequest(t *testing.T) {
-	form := url.Values{"url": {"https://eu.lake.live/stripe"}, stripeField("enabled_events", ""): {"invoice.paid"}}
+	form := url.Values{"url": {"https://eu.lakelive.example/stripe"}, stripeField("enabled_events", ""): {"invoice.paid"}}
 	key := stripeIdempotencyKey("0d5c8e1a-uid", "create", "new", form, 0)
 	sum := sha256.Sum256([]byte(form.Encode()))
 	if want := fmt.Sprintf("orama-0d5c8e1a-uid-create-new-%x", sum[:8]); key != want {
@@ -61,11 +58,11 @@ func TestStripeIdempotencyKeyNamesOneRequest(t *testing.T) {
 	if !regexp.MustCompile(`^orama-0d5c8e1a-uid-create-new-[0-9a-f]{16}$`).MatchString(key) {
 		t.Errorf("key %q has the wrong shape", key)
 	}
-	reordered := url.Values{stripeField("enabled_events", ""): {"invoice.paid"}, "url": {"https://eu.lake.live/stripe"}}
+	reordered := url.Values{stripeField("enabled_events", ""): {"invoice.paid"}, "url": {"https://eu.lakelive.example/stripe"}}
 	if again := stripeIdempotencyKey("0d5c8e1a-uid", "create", "new", reordered, 0); again != key {
 		t.Errorf("the same body gave %q, then %q", key, again)
 	}
-	changed := url.Values{"url": {"https://eu.lake.live/stripe"}, stripeField("enabled_events", ""): {"invoice.paid", "invoice.created"}}
+	changed := url.Values{"url": {"https://eu.lakelive.example/stripe"}, stripeField("enabled_events", ""): {"invoice.paid", "invoice.created"}}
 	if other := stripeIdempotencyKey("0d5c8e1a-uid", "create", "new", changed, 0); other == key {
 		t.Error("another body gave the same key")
 	}

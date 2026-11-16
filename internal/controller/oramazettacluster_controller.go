@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -12,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -24,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -47,6 +46,19 @@ const (
 	zettaClusterTokenFile      = zettaClusterTokenMountPath + "/token"
 	// 0440: owner root, group fsGroup (10001, the zetta user's group), no access for others.
 	zettaClusterTokenFileMode int32 = 0o440
+
+	// The connector-credential root secret (operator#1166, zetta#1314), mounted from Secret
+	// <name>-zetta-connection-root (key root) as a read-only file outside the data volume. Zetta
+	// seals every saved connection's credential under it, so a copy of /data alone opens none of
+	// them. The engine refuses a file inside --data-dir, one writable by group or others, and a
+	// secret shorter than 32 characters; 0440 (root, and fsGroup 10001 the zetta user) and 64 hex
+	// characters satisfy all three.
+	zettaConnectionRootVolume    = "connection-root"
+	zettaConnectionRootMountPath = "/run/secrets/zetta-connection-root"
+	zettaConnectionRootKey       = "root"
+	zettaConnectionRootFile      = zettaConnectionRootMountPath + "/" + zettaConnectionRootKey
+	zettaConnectionRootFileEnv   = "ZETTA_CONNECTION_ROOT_SECRET_FILE"
+	zettaConnectionRootSuffix    = "-zetta-connection-root"
 )
 
 var zettaManagedEnvNames = map[string]struct{}{
@@ -63,6 +75,16 @@ var zettaManagedEnvNames = map[string]struct{}{
 	// spec.env may not set them (operator#279).
 	"ZETTA_SEED_PEER": {},
 	"ZETTA_DATA_DIR":  {},
+	// The enrollment CA (operator#1174, zetta_identity.go): its key and seed are the operator's.
+	zettaClusterCAEnv:         {},
+	zettaClusterCASeedFileEnv: {},
+	// Named egress through the workspace gateway (operator#1179, lake_zetta_egress_gateway.go).
+	zettaEgressGatewayEnv:       {},
+	zettaEgressGatewayRoutesEnv: {},
+	// The connector-credential root and the egress allowlist are files the operator mounts
+	// (operator#1166, zetta_egress_file.go); spec.env may not point the engine elsewhere.
+	zettaConnectionRootFileEnv: {},
+	zettaEgressAllowFileEnv:    {},
 }
 
 // zettaCustomEnv returns accepted spec.env entries in authored order and a stable list of names the
@@ -87,7 +109,7 @@ func zettaCustomEnv(env []corev1.EnvVar) ([]corev1.EnvVar, []string) {
 }
 
 // OramaZettaClusterReconciler deploys a headless Orama Zetta cluster (StatefulSet of equal-peer CRDT
-// nodes) from an OramaZettaCluster CR. Step 1 of One Orama (orama-bridge#130): it only RUNS Zetta
+// nodes) from an OramaZettaCluster CR. Step 1 of One Orama: it only RUNS Zetta
 // headless — no operator↔Zetta symbiosis and no changes to Zetta's MCP service.
 type OramaZettaClusterReconciler struct {
 	client.Client
@@ -115,6 +137,13 @@ type OramaZettaClusterReconciler struct {
 	// may own the cluster-wide Karpenter install (operator#280); a tenant's CR, in its own namespace,
 	// is refused.
 	OperatorNamespace string
+	// Clientset reads the features Job's pod log (`zetta --help`, zetta_egress_file.go). PodLogs
+	// replaces that read in tests. With neither, no image is asked and every image keeps
+	// ZETTA_EGRESS_ALLOW in its environment.
+	Clientset kubernetes.Interface
+	PodLogs   func(ctx context.Context, namespace, pod string) (string, error)
+	// ZettaNodeURL replaces node 0's in-cluster API address in tests (zetta_identity.go).
+	ZettaNodeURL func(z *oramav1alpha1.OramaZettaCluster) string
 }
 
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
@@ -128,6 +157,8 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// The features Job's `zetta --help` is read from its pod log (zetta_egress_file.go).
+//+kubebuilder:rbac:groups=core,resources=pods/log,verbs=get
 // Zetta data PVCs of an absent Lake service are deleted by the services poll (lake_services.go).
 //+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
 // ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace for its UID — `get`
@@ -398,6 +429,14 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	// 2.58 Connector-credential root secret — UNCONDITIONAL (operator#1166, zetta#1314). Zetta seals
+	//      saved connector credentials under it instead of a key derived from the join token it keeps in
+	//      /data, so a copy of the data volume opens no stored source credential. Minted once into
+	//      `<name>-zetta-connection-root` and mounted on every node before the StatefulSet references it.
+	if err := r.reconcileZettaConnectionRoot(ctx, &z); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 2.6 Peer LoadBalancer — OPT-IN (spec.exposePeerLoadBalancer) and ONLY for a wan-accessible slice.
 	//     A cloud LB fronting the peer port makes a GENUINELY wan-accessible slice reachable from other
 	//     clusters (its public IP → siblings' spec.externalPeers + this slice's .status.wanAddress).
@@ -486,18 +525,38 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// unreachable bound pod IP — otherwise external peers learn a 10.244.x and dial it forever
 	// (oramasearch/zetta#739). The resolved subset becomes .status.wanAddress below. Recomputed each
 	// reconcile; a later LB IP just rolls the pods once.
-	if len(specInvalid) == 0 {
+	//
+	// The egress allowlist file (operator#724, zetta#1332): spec.egressAllowConfigMap is mounted, and
+	// the image's own `zetta --help` decides whether it reads it or keeps ZETTA_EGRESS_ALLOW. While the
+	// named ConfigMap does not exist yet the StatefulSet is left as it is (egress.hold).
+	//
+	// The image's answer is read for every cluster: the identity root rotation and the enrollment CA
+	// (operator#1174, zetta_identity.go) follow it too. A new cluster waits for it (identity.hold), so
+	// it is created with a CA seed when its image reads one.
+	features, featuresRequeue, err := r.reconcileZettaImageFeatures(ctx, &z)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	egress, err := r.reconcileZettaEgressFileWith(ctx, &z, features, featuresRequeue)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	identity, err := r.reconcileZettaIdentity(ctx, &z, features, stsName, headlessName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(specInvalid) == 0 && !egress.hold && !identity.hold {
 		advertiseMap := strings.Join(r.zettaWANAddresses(ctx, &z, peerLBName, stsName), ",")
 		sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
-			return r.mutateZettaStatefulSet(&z, sts, headlessName, stsName, lbls, advertiseMap, derivedPeers)
+			return r.mutateZettaStatefulSetWith(&z, sts, headlessName, stsName, lbls, advertiseMap, derivedPeers, egress.render, identity.render)
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// 4. Optional external exposure — Ingress (+ proxied Cloudflare DNS) for the HTTP API/UI on 4800
-	//    (e.g. zetta.oramadev.net). No-op unless spec.host is set.
+	//    (e.g. zetta.example.net). No-op unless spec.host is set.
 	if err := r.reconcileZettaIngress(ctx, &z, clientName, lbls); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -518,15 +577,21 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// 6. Status — readiness roll-up + the capacity/install conditions/count and the slice's reachability
 	//    type + (for a wan-accessible slice) the routable rendezvous address (write only on change; anti-flap).
 	wanAddress := r.zettaWANAddress(ctx, &z, peerLBName, stsName)
-	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, peerCond, provisionedNodes, reachability, wanAddress); err != nil {
+	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, peerCond, provisionedNodes, reachability, wanAddress, egress.features, identity); err != nil {
 		return ctrl.Result{}, err
 	}
 	// When acting as the datastore, poll at the shortest Lake deploySync interval in this namespace.
 	// The same tick keeps coarse state sync current; both write paths are anti-flapped.
+	var requeue time.Duration
 	if syncEnabled {
-		return ctrl.Result{RequeueAfter: r.deploymentSyncInterval(ctx, z.Namespace)}, nil
+		requeue = r.deploymentSyncInterval(ctx, z.Namespace)
 	}
-	return ctrl.Result{}, nil
+	for _, next := range []time.Duration{egress.requeue, identity.requeue} {
+		if next > 0 && (requeue == 0 || next < requeue) {
+			requeue = next
+		}
+	}
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 // reconcileZettaAdminToken ensures a Secret holding a 64-char (32-byte hex) ADMIN token exists for this
@@ -598,6 +663,45 @@ func (r *OramaZettaClusterReconciler) reconcileZettaClusterToken(ctx context.Con
 		logf.FromContext(ctx).Info("provisioned shared cluster join token — every node forms ONE mTLS cluster from this CA",
 			"component", "zetta-cluster", "secret", name,
 			"retrieve", fmt.Sprintf("kubectl get secret %s -n %s -o jsonpath='{.data.token}' | base64 -d", name, z.Namespace))
+	}
+	return nil
+}
+
+// zettaConnectionRootSecretName is the Secret holding a cluster's connector-credential root secret.
+func zettaConnectionRootSecretName(z *oramav1alpha1.OramaZettaCluster) string {
+	return z.Name + zettaConnectionRootSuffix
+}
+
+// reconcileZettaConnectionRoot ensures the Secret holding this cluster's connector-credential root
+// secret exists (operator#1166, zetta#1314). Every node of the cluster mounts the same Secret, because
+// each node opens what another sealed. The operator mints it ONCE (32 random bytes as 64 hex) and never
+// writes the key again while it holds anything: a new value would orphan every sealed credential.
+// Rotation is by hand and the engine's own: put the new secret on the first line and keep the old one
+// below it; each node re-seals at its next start, and the old line is dropped once every node has
+// restarted. The value is never logged.
+func (r *OramaZettaClusterReconciler) reconcileZettaConnectionRoot(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) error {
+	name := zettaConnectionRootSecretName(z)
+	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
+		sec.Labels = zettaLabels(z)
+		if len(sec.Data[zettaConnectionRootKey]) == 0 { // mint once; preserve (and any rotation lines) after
+			secret, gerr := randHex(32) // 32 bytes → 64 hex chars, above the engine's 32-character minimum
+			if gerr != nil {
+				return gerr
+			}
+			if sec.Data == nil {
+				sec.Data = map[string][]byte{}
+			}
+			sec.Data[zettaConnectionRootKey] = []byte(secret)
+		}
+		return controllerutil.SetControllerReference(z, sec, r.Scheme)
+	})
+	if err != nil {
+		return err
+	}
+	if op == controllerutil.OperationResultCreated {
+		logf.FromContext(ctx).Info("provisioned the connector-credential root secret — saved connections are sealed under it, outside the data volume (zetta#1314)",
+			"component", "zetta-connection-root", "secret", name)
 	}
 	return nil
 }
@@ -719,15 +823,25 @@ func (r *OramaZettaClusterReconciler) zettaIngressTarget(ctx context.Context, z 
 	return ""
 }
 
+// mutateZettaStatefulSet renders the StatefulSet with no egress allowlist file.
 func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string, advertise string, derivedPeers []string) error {
+	return r.mutateZettaStatefulSetWithEgress(z, sts, headlessName, stsName, lbls, advertise, derivedPeers, zettaEgressRender{})
+}
+
+// mutateZettaStatefulSetWithEgress renders the StatefulSet, with the egress allowlist file of
+// spec.egressAllowConfigMap as reconcileZettaEgressFile decided it.
+func (r *OramaZettaClusterReconciler) mutateZettaStatefulSetWithEgress(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string, advertise string, derivedPeers []string, egress zettaEgressRender) error {
+	return r.mutateZettaStatefulSetWith(z, sts, headlessName, stsName, lbls, advertise, derivedPeers, egress, zettaIdentityRender{})
+}
+
+// mutateZettaStatefulSetWith renders the StatefulSet with the egress allowlist file and the identity
+// render (the admin token generation, ZETTA_CLUSTER_CA and the CA seed, zetta_identity.go).
+func (r *OramaZettaClusterReconciler) mutateZettaStatefulSetWith(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string, advertise string, derivedPeers []string, egress zettaEgressRender, identity zettaIdentityRender) error {
 	replicas := z.Spec.Replicas
 	if replicas < 1 {
 		replicas = 1
 	}
-	image := z.Spec.Image
-	if image == "" {
-		image = "oramasearch/zetta:headless-v1-sandbox"
-	}
+	image := zettaImage(z)
 	storageSize := z.Spec.Storage.Size
 	if storageSize == "" {
 		storageSize = "10Gi"
@@ -796,6 +910,10 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 		// (operator#721).
 		{Name: "ZETTA_CLUSTER_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-cluster"}, Key: "token"}}},
+		// The connector-credential root secret as a file outside /data (operator#1166, zetta#1314). An
+		// image that predates zetta#1314 ignores the variable and keeps its old sealing; one that has it
+		// and finds no file refuses connector credentials, so the operator rolls before that image.
+		{Name: zettaConnectionRootFileEnv, Value: zettaConnectionRootFile},
 	}
 	if z.Spec.HostNetwork {
 		// Pack ordinals onto per-ordinal ports; seed peers off HOST_IP (the node's real address, via the
@@ -843,6 +961,14 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 					Items:       []corev1.KeyToPath{{Key: "token", Path: "token"}},
 					DefaultMode: int32Ptr(zettaClusterTokenFileMode),
 				}},
+			}, {
+				// The connector-credential root secret, outside the data volume (operator#1166).
+				Name: zettaConnectionRootVolume,
+				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+					SecretName:  zettaConnectionRootSecretName(z),
+					Items:       []corev1.KeyToPath{{Key: zettaConnectionRootKey, Path: zettaConnectionRootKey}},
+					DefaultMode: int32Ptr(zettaClusterTokenFileMode),
+				}},
 			}},
 			// The image runs zetta as uid 10001; fsGroup makes the mounted PVC group-writable so the
 			// node can create /data/security (mints its cluster cert/token) etc. Azure/most CSI disks
@@ -871,6 +997,7 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: "data", MountPath: zettaDataDir},
 					{Name: zettaClusterTokenVolume, MountPath: zettaClusterTokenMountPath, ReadOnly: true},
+					{Name: zettaConnectionRootVolume, MountPath: zettaConnectionRootMountPath, ReadOnly: true},
 				},
 				Resources: resources,
 				SecurityContext: &corev1.SecurityContext{
@@ -916,6 +1043,11 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	if sts.ResourceVersion == "" || len(sts.Spec.VolumeClaimTemplates) == 0 {
 		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{pvc}
 	}
+
+	// The egress allowlist file and its variables (operator#724, zetta_egress_file.go).
+	applyZettaEgressRender(&sts.Spec.Template.Spec, egress, z.Spec.Env)
+	// The admin token generation, the enrollment CA and its seed (operator#1174, zetta_identity.go).
+	applyZettaIdentityRender(z, &sts.Spec.Template, identity)
 
 	// hostNetwork makes :7777/:4800 reachable at the k8s node's own address — the simplest way for a
 	// node to be dialable by siblings in other clusters (esp. a single-node cluster).
@@ -965,7 +1097,7 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 // effective node-reachability type and (for a wan-accessible slice) the routable rendezvous address.
 // Writes only on a real change (anti-flap — operator principle #7); reachability + wanAddress are computed
 // by the caller (zettaReachability / zettaWANAddress) so the reconcile and status agree.
-func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond, peerCond *metav1.Condition, provisionedNodes int32, reachability, wanAddress string) error {
+func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond, peerCond *metav1.Condition, provisionedNodes int32, reachability, wanAddress string, features *oramav1alpha1.ZettaImageFeatures, identity zettaIdentityState) error {
 	desired := z.Spec.Replicas
 	if desired < 1 {
 		desired = 1
@@ -995,7 +1127,9 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 		z.Status.ProvisionedNodes != provisionedNodes ||
 		z.Status.Reachability != reachability || z.Status.Ephemeral != z.Spec.Ephemeral ||
 		z.Status.WanAddress != wanAddress ||
-		!slices.Equal(z.Status.IgnoredEnvVars, ignoredEnvVars)
+		!slices.Equal(z.Status.IgnoredEnvVars, ignoredEnvVars) ||
+		!zettaImageFeaturesEqual(z.Status.ImageFeatures, features) ||
+		z.Status.Identity != identity.status
 
 	if capCond != nil {
 		capCond.ObservedGeneration = z.Generation
@@ -1018,6 +1152,14 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	if setPeerAddressesCondition(z, peerCond) {
 		changed = true
 	}
+	// IdentityRootRotated exists only on a cluster with spec.identity.adminTokenGeneration (operator#1174).
+	if identity.condition != nil {
+		if meta.SetStatusCondition(&z.Status.Conditions, *identity.condition) {
+			changed = true
+		}
+	} else if meta.RemoveStatusCondition(&z.Status.Conditions, zettaIdentityConditionType) {
+		changed = true
+	}
 
 	if storageCond != nil {
 		storageCond.ObservedGeneration = z.Generation
@@ -1035,7 +1177,17 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	z.Status.ProvisionedNodes = provisionedNodes
 	z.Status.Reachability, z.Status.Ephemeral, z.Status.WanAddress = reachability, z.Spec.Ephemeral, wanAddress
 	z.Status.IgnoredEnvVars = ignoredEnvVars
+	z.Status.ImageFeatures = features
+	z.Status.Identity = identity.status
 	return r.Status().Update(ctx, z)
+}
+
+// zettaImageFeaturesEqual compares two answers, nil included.
+func zettaImageFeaturesEqual(a, b *oramav1alpha1.ZettaImageFeatures) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // storageTemplateConditionType reports a spec.storage the StatefulSet's immutable claim template

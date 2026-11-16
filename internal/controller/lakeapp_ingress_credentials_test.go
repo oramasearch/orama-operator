@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -64,7 +61,7 @@ func appIngressCredentialConfigs(t *testing.T) map[string]appIngressCredentialCo
 			}
 		}
 	}
-	paths, err := filepath.Glob("../../config/clusters/*/platform.yaml")
+	paths, err := filepath.Glob(filepath.Join(clustersDir(), "*", "platform.yaml"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("platform paths: %v", err)
 	}

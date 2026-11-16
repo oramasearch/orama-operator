@@ -13,7 +13,7 @@ by a workspace's `zetta_service_id`: the workspace reconciler owns that cluster 
 `service_status`, while this poll only delivers its connection into the services Secret. The authoritative contract is
 lake's
 [`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/aee5cdada63cb6fed886c67a6fff86123b742bf5/docs/control-plane/services.md)
-(liquid-bridge decisions 46 and 47, amended; lake#195; lake branch `feat/duckdb-polars-kinds`); this page is the
+(lake#195); this page is the
 operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
 (`spec.services`). Workspace namespaces are reconciled separately from the
@@ -75,8 +75,9 @@ spec:
     zettaImage: oramasearch/zetta:<tag>
     zettaEnv:                # copied to every Zetta service, including the workspace-owned cluster; the
                              # operator adds ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
-                             # MALLOC_ARENA_MAX=2 and ZETTA_EGRESS_ALLOW (rendered from the
-                             # workspace NetworkSandbox) for each name the list does not set,
+                             # MALLOC_ARENA_MAX=2 for each name the list does not set, and, unless
+                             # it sets ZETTA_EGRESS_ALLOW, the allowlist rendered from the workspace
+                             # NetworkSandbox into ConfigMap <cluster>-zetta-egress (#724),
                              # then ZETTA_CONNECTOR_ALLOW_DESTINATIONS (the namespace's postgres,
                              # tidb, sqlite, duckdb and polars endpoints; a stated value is dropped)
       - { name: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES, value: "134217728" }
@@ -193,7 +194,7 @@ Anything else already holding the name fails the service and is never modified o
 | a sqlite service whose `spec.instances` is not 1 | `a sqlite service has exactly one instance, because SQLite has one writer; spec.instances is <n>` |
 | a duckdb service whose `spec.instances` is not 1 | `a duckdb service has exactly one instance, because one DuckDB process owns its database file; spec.instances is <n>` |
 
-## The catalog (decision 47)
+## The catalog
 
 Kafka, ClickHouse, TiDB, Cassandra and Valkey are each run by their own upstream operator, which the
 operator's `helmfile.yaml` installs cluster-wide. The Orama operator writes that operator's
@@ -218,9 +219,9 @@ defaults, are written once at creation.
 | Resources written | `kafka.strimzi.io/v1` `Kafka` `<name>`; `KafkaNodePool` `<name>-pool`; `KafkaUser` `<name>-app` (both labelled `strimzi.io/cluster=<name>`) | `clickhouse.altinity.com/v1` `ClickHouseInstallation` `<name>`; with `instances` > 1, `clickhouse-keeper.altinity.com/v1` `ClickHouseKeeperInstallation` `<name>` | `pingcap.com/v1alpha1` `TidbCluster` `<name>` | `k8ssandra.io/v1alpha1` `K8ssandraCluster` `<name>` | `valkey.io/v1alpha1` `ValkeyCluster` `<name>` |
 | `instances` → | node pool `replicas`, roles `controller` and `broker` (KRaft) | `configuration.clusters[main].layout`: `shardsCount: 1`, `replicasCount` | `pd`, `tikv`, `tidb` `replicas` each, `maxFailoverCount: 0` | the one datacenter's `size` | `shards: 3`, `replicas: instances - 1` |
 | `storage_gi` → | node pool `storage`: `persistent-claim`, `size`, `deleteClaim: false` | volume claim template `data` (`defaults.templates.dataVolumeClaimTemplate`); the Keeper gets `1Gi` | `pd.requests.storage`, `tikv.requests.storage` | datacenter `storageConfig.cassandraDataVolumeClaimSpec` | `persistence.size` |
-| Other fields | listener `scram` on 9092, `internal`, TLS (the cluster CA), `scram-sha-512` authentication, `networkPolicyPeers` the owning Lake's pods; `authorization: simple`; entity operator with topic and user operators; broker `config` replication factors = `instances`, min ISR 1 (2 for three brokers); `KafkaUser` `authentication: scram-sha-512` and `authorization: simple` with the ACLs in [Kafka's listener](#kafkas-listener-tls-peers-and-acls-operator770) | `configuration.users`: `app/password_sha256_hex`, `app/networks/ip: ["::/0"]`, `app/profile`, `app/quota` `default`; `configuration.zookeeper.keeper.name` when replicated; Keeper: cluster `keeper`, one replica | `version: v8.5.7`, `pvReclaimPolicy: Delete`, `discovery: {}`, `pd.config.replication.max-replicas: instances`, `tikv.config.storage.reserve-space` a tenth of the volume, `tidb.service.type: ClusterIP`, `tidb.initializer.createPassword: true` | `serverType: cassandra`, `serverVersion: 5.0.4`, `clusterName: <slug>`, datacenter `metadata.name: <slug>`, `datacenterName: dc1` | users: `default` disabled; `app` with `passwordSecret` `<name>-credentials`/`password`, `commands.allow: ["@all"]`, `keys.readWrite: ["*"]`, `channels.patterns: ["*"]` |
+| Other fields | listener `scram` on 9092, `internal`, TLS (the cluster CA), `scram-sha-512` authentication, `networkPolicyPeers` the owning Lake's pods; `authorization: simple`; entity operator with topic and user operators; broker `config` replication factors = `instances`, min ISR 1 (2 for three brokers); `KafkaUser` `authentication: scram-sha-512` and `authorization: simple` with the ACLs in [Kafka's listener](#kafkas-listener-tls-peers-and-acls-operator770) | `configuration.users`: `app/password_sha256_hex`, `app/networks/ip: ["::/0"]`, `app/profile`, `app/quota` `default`; `configuration.zookeeper.keeper.name` when replicated; Keeper: cluster `keeper`, one replica | `version: v8.5.7`, `pvReclaimPolicy: Delete`, `discovery: {}`, `pd.config.replication.max-replicas: instances`, `tikv.config.storage.reserve-space` a tenth of the volume, `tidb.service.type: ClusterIP`, `tidb.initializer.createPassword: true`, `tidb.bootstrapSQLConfigMapName: <name>-bootstrap` (on create) | `serverType: cassandra`, `serverVersion: 5.0.4`, `clusterName: <slug>`, datacenter `metadata.name: <slug>`, `datacenterName: dc1` | users: `default` disabled; `app` with `passwordSecret` `<name>-credentials`/`password`, `commands.allow: ["@all"]`, `keys.readWrite: ["*"]`, `channels.patterns: ["*"]` |
 | Ready when | `Kafka` condition `Ready=True`, the `KafkaUser` Secret exists, and the cluster CA Secret `<name>-cluster-ca-cert` exists | `status.status` = `Completed` (and the Keeper's, when there is one) | `status.{pd,tikv,tidb}.phase` = `Normal` with `statefulSet.readyReplicas` = `instances`, and `status.tidb.passwordInitialized` | `status.datacenters.<slug>.cassandra`: `cassandraOperatorProgress: Ready` and condition `Ready=True` | condition `Ready=True` |
-| Credential source | Secret named by the `KafkaUser`'s `status.secret`, key `password`, owned by that `KafkaUser`; Secret `<name>-cluster-ca-cert`, key `ca.crt`, owned by the `Kafka` | Secret `<name>-credentials`, key `password`, generated by the Orama operator | Secret `<name>-init`, key `root`, generated by the Orama operator | Secret `<slug>-superuser`, keys `username`, `password`, controlled by the `K8ssandraCluster` | Secret `<name>-credentials`, key `password`, generated by the Orama operator |
+| Credential source | Secret named by the `KafkaUser`'s `status.secret`, key `password`, owned by that `KafkaUser`; Secret `<name>-cluster-ca-cert`, key `ca.crt`, owned by the `Kafka` | Secret `<name>-credentials`, key `password`, generated by the Orama operator | user `app`: Secret `<name>-tenant`, key `password`, generated by the Orama operator; root's Secret `<name>-init`, key `root`, also generated, is the operator's sign-in only ([tenant users](#tenant-users-for-tidb-and-cassandra-operator771)) | role `app`: Secret `<name>-tenant`, key `password`, generated by the Orama operator; the superuser Secret `<slug>-superuser`, keys `username`, `password`, controlled by the `K8ssandraCluster`, is the operator's sign-in only | Secret `<name>-credentials`, key `password`, generated by the Orama operator |
 | `endpoint` | `<name>-kafka-bootstrap.<ns>.svc.cluster.local:9092` | `clickhouse-<name>.<ns>.svc.cluster.local:8123` | `<name>-tidb.<ns>.svc.cluster.local:4000` | `<slug>-<slug>-service.<ns>.svc.cluster.local:9042` | `valkey-<name>.<ns>.svc.cluster.local:6379` |
 | PVCs deleted after the resources, selected by | `strimzi.io/cluster=<name>`, `strimzi.io/kind=Kafka` | `clickhouse.altinity.com/chi=<name>` or `clickhouse-keeper.altinity.com/chk=<name>`, `…/app=chop` (Altinity normally deletes them itself) | `app.kubernetes.io/instance=<name>`, `app.kubernetes.io/managed-by=tidb-operator` | `cassandra.datastax.com/cluster=<slug>` | `valkey.io/cluster=<name>`, `app.kubernetes.io/managed-by=valkey-operator` |
 
@@ -244,7 +245,16 @@ the service fails with `Secret <ns>/<name> exists and is not this Lake's service
 - **TiDB password Secret.** The v1.6.6 CRD's `tidb.initializer` has one field, `createPassword`;
   with it, TiDB Operator sets the root password from Secret `<cluster>-init`, key `root`, when that
   Secret exists. So the Orama operator generates `<name>-init` rather than `<name>-credentials`,
-  and readiness also waits for `status.tidb.passwordInitialized`. TiDB Operator keeps PD and TiKV
+  and readiness also waits for `status.tidb.passwordInitialized`. Root is never open with an empty
+  password ([#774](https://github.com/oramasearch/orama-operator/issues/774)): the operator also
+  writes ConfigMap `<name>-bootstrap`, key `bootstrap-sql`, holding
+  `ALTER USER 'root'@'%' IDENTIFIED WITH 'mysql_native_password' AS '<hash>'` (the hash of the
+  generated password, never the password), then the tenant user's statements
+  ([below](#tenant-users-for-tidb-and-cassandra-operator771)), and names it in
+  `tidb.bootstrapSQLConfigMapName` when the cluster is created. TiDB runs that file once, during the bootstrap of its first start and
+  before it accepts a connection; TiDB Operator's initializer then finds root protected and
+  records `passwordInitialized`. Services created before this change keep the initializer path.
+  TiDB Operator keeps PD and TiKV
   claims after the `TidbCluster` is deleted, so deletion removes them as it does for Kafka,
   Cassandra and Valkey (the contract lists only those three).
 - **Cassandra names.** The contract's endpoint `<name>-dc1-service` needs a `CassandraDatacenter`
@@ -279,6 +289,64 @@ characters, Kafka 16 (`-kafka-bootstrap`), TiDB 16 (`<name>-tikv` + hash), Valke
 Polars 11 (the StatefulSet `<name>`'s revision hash, so Zetta's 15 is the bound). Cassandra's derived names come
 from the slug alone. With a 16-character slug, ClickHouse allows Lake names up to 20
 characters and every other kind at least 24.
+
+### Tenant users for TiDB and Cassandra (operator#771)
+
+TiDB Operator and K8ssandra make only an administrator: TiDB's `root` and the `<slug>-superuser`
+role. A tenant never receives either. The Orama operator signs in as that administrator and keeps a
+user of its own for the tenant, and the connection names only that user. Its password is generated
+like the others, into Secret `<name>-tenant`, key `password` (32 hex characters, controlled by the
+Lake, never rotated, deleted last with the other password Secret).
+
+| | TiDB | Cassandra |
+|---|---|---|
+| Tenant user | `'app'@'%'`, `mysql_native_password` set from the hash | role `app`, `LOGIN = true`, `SUPERUSER = false` |
+| Its own database | `app` (`CREATE DATABASE IF NOT EXISTS`) | keyspace `app`, `NetworkTopologyStrategy` with `dc1` at `min(instances, 3)` |
+| Rights | `ALL PRIVILEGES` on `app.*` and on every database that is not TiDB's (`mysql`, `INFORMATION_SCHEMA`, `PERFORMANCE_SCHEMA`, `METRICS_SCHEMA`, `sys`); no global privilege, no `GRANT OPTION`, no role | `CREATE`, `ALTER`, `DROP`, `SELECT`, `MODIFY` on keyspace `app` and on every keyspace that is not the system's (`system*`, `reaper_db`, `data_endpoint_auth`); no `AUTHORIZE`, no role management, no superuser |
+| How the operator signs in | as `root` over SQL on 4000 (`go-sql-driver/mysql` v1.9.3) | as `<slug>-superuser` over CQL on 9042 (`apache/cassandra-gocql-driver/v2` v2.1.2); the management API has no `GRANT` |
+| Workspace NetworkPolicy | `allow-orama-operator-tidb-sql` | `allow-orama-operator-cassandra-cql` |
+| A new cluster | the user, its database and grant are also in the bootstrap SQL, so they exist from TiDB's first start | made once the datacenter is `Ready` |
+
+- **Every pass until it has succeeded once.** After the service is ready, the operator makes sure
+  the tenant user is there, then delivers it. The statements are idempotent (`IF NOT EXISTS`, the
+  password set again, the grants given again). Success is remembered per service and tenant
+  password (not the administrator's, which is rotated), so a steady service makes no call; a restarted operator checks each service once
+  more. A failure is logged and tried on the next pass, and until it succeeds no connection is
+  delivered (the service stays `Provisioning`, `delivering the connection`).
+- **A user it did not leave as it wants it is made again.** Before creating, the operator reads
+  the user's hosts and `SHOW GRANTS` (TiDB), or its `system_auth.roles` row and
+  `system_auth.role_permissions` (Cassandra). A user on any host but `%`, a superuser, one granted
+  a role, or one with a right beyond the tenant's own databases or keyspaces is dropped first,
+  then made again: while a tenant held the administrator's credential it could have made one.
+- **Rights on what the tenant already made.** The databases or keyspaces a tenant made while it
+  held the administrator's credential are its own data, so the tenant user gets the same rights on
+  them, and the data stays reachable after the change. The tenant user cannot make a database, or
+  a keyspace, beyond those.
+- **Migration of a service made before operator#771.** On the first pass of an operator with this
+  change, the tenant user is made and delivered in place of the administrator. The services
+  Secret never keeps or writes a connection file whose `user` is an administrator of its kind
+  (TiDB `root`; Cassandra `<slug>-superuser` and `cassandra`), so the old file goes on that pass
+  even if the tenant user cannot be made yet. Bound apps roll with the new connection.
+- **The administrator's password is rotated once** ([#1172](https://github.com/oramasearch/orama-operator/issues/1172)).
+  Tenants of a service made before #771 have seen it. Once the tenant user's connection is
+  delivered, the operator generates a new administrator password, writes it to the tenant Secret
+  as key `admin-next`, changes it in the store (TiDB `ALTER USER 'root'@'%'` from the hash;
+  Cassandra `ALTER ROLE "<slug>-superuser" WITH PASSWORD`), then writes it to the administrator's
+  Secret (`<name>-init` key `root`; the K8ssandra `<slug>-superuser` key `password`, which K8ssandra
+  makes only when missing). It records the time as annotation
+  `orama.cloud/admin-password-rotated` on `<name>-tenant` and removes `admin-next`; with that
+  annotation it never rotates again and makes no call. A pass that stops halfway is finished by
+  the next one with the same new password: if the old one no longer signs in but the new one
+  does, the store was already changed. A failure is logged and retried and never holds back the
+  tenant's connection. Every service is rotated once, including one made after #771, which costs
+  one statement and needs no record of which services were exposed.
+- **Users and roles the operator did not make are reported, not dropped.** At the rotation the
+  operator lists every TiDB account (`user@host`) or Cassandra role other than the administrator,
+  the tenant user and Cassandra's stock `cassandra` (dropped by #772). The list is recorded as
+  annotation `orama.cloud/unmanaged-users` on `<name>-tenant`, added to the Ready status message
+  (`service ready; users and roles the operator did not make: …`), and raised as a Warning event
+  `UnmanagedUsers` on the Lake (the rotation itself is a Normal event `AdminPasswordRotated`). A
+  tenant may rely on a user it made, so dropping one is left to the tenant or to Steve.
 
 ### Kafka's listener: TLS, peers and ACLs (operator#770)
 
@@ -338,7 +406,7 @@ Who reconnects by themselves:
 - **A pod outside the workspace and its Lake** that reached the listener before loses it when
   Strimzi rewrites the policy. That is the point of the change.
 
-## SQLite (decision 47, amended)
+## SQLite
 
 SQLite has no upstream operator, so the Orama operator runs it directly behind
 **[lake-sqlite](lake-sqlite.md)**, a small web service in its own private repository (`oramasearch/lake-sqlite`,
@@ -355,7 +423,7 @@ built-in Kubernetes kinds rather than an upstream operator's.
 | Resources written | `apps/v1` `StatefulSet` `<name>` and `v1` `Service` `<name>` (ClusterIP, port `8080` → the pod's `http` port), plus Secret `<name>-credentials` |
 | `instances` → | must be 1 (the default); anything else fails the service (SQLite has one writer; lake enforces the same) |
 | `storage_gi` → | the StatefulSet's `volumeClaimTemplates` `data` (`ReadWriteOnce`, the default StorageClass), mounted at `/data`; the database is `/data/main.db`, in WAL mode |
-| Pod | one container `lake-sqlite`, image `spec.services.sqliteImage`, then the operator's `--lake-sqlite-image` (the chart's `lakeServices.sqliteImage`), then `oramasearch/lake-sqlite:0.1.1`; the Lake's `pullSecretName`; requests `50m` CPU and `64Mi` memory, limit `512Mi` memory, handed to the binary as `LAKE_SQLITE_MEMORY_LIMIT` (it holds the Go heap to three quarters and SQLite's soft heap limit to a quarter); startup, readiness and liveness probes on `GET /healthz`; uid/gid/fsGroup `65532`, `runAsNonRoot`, read-only root filesystem, no privilege escalation, every capability dropped, `RuntimeDefault` seccomp, no service-account token; a `1Gi` `emptyDir` at `/tmp` for SQLite's temporary files; `LAKE_SQLITE_TOKEN` from `<name>-credentials` key `token` |
+| Pod | one container `lake-sqlite`, image `spec.services.sqliteImage`, then the operator's `--lake-sqlite-image` (the chart's `lakeServices.sqliteImage`), then `oramasearch/lake-sqlite:0.2.0`; the Lake's `pullSecretName`; requests `50m` CPU and `64Mi` memory, limit `512Mi` memory, handed to the binary as `LAKE_SQLITE_MEMORY_LIMIT` (it holds the Go heap to three quarters, leaving the rest to SQLite); startup, readiness and liveness probes on `GET /healthz`; uid/gid/fsGroup `65532`, `runAsNonRoot`, read-only root filesystem, no privilege escalation, every capability dropped, `RuntimeDefault` seccomp, no service-account token; a `1Gi` `emptyDir` at `/tmp` for SQLite's temporary files; `LAKE_SQLITE_TOKEN` from `<name>-credentials` key `token` |
 | Ready when | the StatefulSet's `status.readyReplicas` is 1 — its readiness probe passes only while `/healthz` opens the database and answers `SELECT 1` — and the credential is written |
 | Credential source | Secret `<name>-credentials`, key `token`: 32 random bytes as 64 hex characters, generated by the Orama operator, never rotated |
 | `endpoint` | `http://<name>.<ns>.svc.cluster.local:8080` |
@@ -417,7 +485,7 @@ security and applied-hash template writes. What differs:
 | Resources written | `StatefulSet` `<name>`, ClusterIP `Service` `<name>` (8080 → `http`), Secret `<name>-credentials` | the same |
 | `instances` → | must be 1 (the default); anything else fails the service — one DuckDB process owns its file | the StatefulSet's `replicas` (1–3): workers sharing nothing, each with its own volume, behind the one Service. Datasets are per worker until shared storage exists (lake#196), so 1 is the useful value. A StatefulSet, not a Deployment, so a volume stays with its pod |
 | `storage_gi` → | `volumeClaimTemplates` `data` (`ReadWriteOnce`), mounted at `/data`; the database is `/data/main.duckdb` (WAL and spill files beside it) | the same claim template, one `data-<name>-<i>` per worker, at `/data`; each dataset is `/data/<name>.parquet` |
-| Pod | container `lake-duckdb`, image `spec.services.duckdbImage`, then `--lake-duckdb-image` (the chart's `lakeServices.duckdbImage`), then `oramasearch/lake-duckdb:0.1.0`; requests `50m` CPU, `256Mi` memory, limit `2Gi`, handed over as `LAKE_DUCKDB_MEMORY_LIMIT` (DuckDB's `memory_limit` is half of it, the Go heap a quarter); `LAKE_DUCKDB_THREADS=2` (no CPU limit, so DuckDB would otherwise start a thread per node CPU); `LAKE_DUCKDB_TOKEN` from the Secret | container `lake-polars`, image `spec.services.polarsImage`, then `--lake-polars-image` (`lakeServices.polarsImage`), then `oramasearch/lake-polars:0.1.0`; requests `50m` CPU, `256Mi` memory, limit `2Gi`, handed over as `LAKE_POLARS_MEMORY_LIMIT` (an upload is capped at a quarter of it); `LAKE_POLARS_THREADS=2`; `TMPDIR=/tmp`; `LAKE_POLARS_ADDR=0.0.0.0:8080`; `LAKE_POLARS_TOKEN` from the Secret |
+| Pod | container `lake-duckdb`, image `spec.services.duckdbImage`, then `--lake-duckdb-image` (the chart's `lakeServices.duckdbImage`), then `oramasearch/lake-duckdb:0.2.0`; requests `50m` CPU, `256Mi` memory, limit `2Gi`, handed over as `LAKE_DUCKDB_MEMORY_LIMIT` (DuckDB's `memory_limit` is half of it, the Go heap a quarter); `LAKE_DUCKDB_THREADS=2` (no CPU limit, so DuckDB would otherwise start a thread per node CPU); `LAKE_DUCKDB_TOKEN` from the Secret | container `lake-polars`, image `spec.services.polarsImage`, then `--lake-polars-image` (`lakeServices.polarsImage`), then `oramasearch/lake-polars:0.1.0`; requests `50m` CPU, `256Mi` memory, limit `2Gi`, handed over as `LAKE_POLARS_MEMORY_LIMIT` (an upload is capped at a quarter of it); `LAKE_POLARS_THREADS=2`; `TMPDIR=/tmp`; `LAKE_POLARS_ADDR=0.0.0.0:8080`; `LAKE_POLARS_TOKEN` from the Secret |
 | Both | the Lake's `pullSecretName`; startup, readiness and liveness probes on `GET /healthz`; uid/gid/fsGroup `65532`, `runAsNonRoot`, read-only root filesystem, no privilege escalation, every capability dropped, `RuntimeDefault` seccomp, no service-account token; a `1Gi` `emptyDir` at `/tmp`; `terminationGracePeriodSeconds` 45 | |
 | Ready when | `status.readyReplicas` is 1 (`/healthz` runs `SELECT 1`) and the credential is written | `status.readyReplicas` equals `instances` (every worker's `/healthz` lists and writes its directory) and the credential is written |
 | Credential | `{"kind":"duckdb","endpoint":…,"token":…,"database":"main"}` | `{"kind":"polars","endpoint":…,"token":…}` |
@@ -446,18 +514,20 @@ Secret **`lake-<lake>-services`** (controlled by the Lake) holds one key per Rea
 {"kind":"postgres","host":"prod-svc-0123456789ab-rw.prod-ws-123e4567e89b.svc.cluster.local","port":5432,"database":"app","user":"app","password":"…","uri":"postgresql://app:…@prod-svc-0123456789ab-rw.prod-ws-123e4567e89b:5432/app"}
 {"kind":"kafka","endpoint":"prod-svc-0123456789ab-kafka-bootstrap.prod-ws-123e4567e89b.svc.cluster.local:9092","bootstrap":"prod-svc-0123456789ab-kafka-bootstrap.prod-ws-123e4567e89b.svc.cluster.local:9092","username":"prod-svc-0123456789ab-app","password":"…","sasl_mechanism":"SCRAM-SHA-512","security_protocol":"SASL_SSL","ca_certificate":"-----BEGIN CERTIFICATE-----\n…"}
 {"kind":"clickhouse","endpoint":"clickhouse-prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:8123","host":"clickhouse-prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local","http_port":8123,"native_port":9000,"user":"app","password":"…","database":"default"}
-{"kind":"tidb","endpoint":"prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000","host":"prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local","port":4000,"user":"root","password":"…","uri":"mysql://root:…@prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000"}
-{"kind":"cassandra","endpoint":"svc-0123456789ab-svc-0123456789ab-service.prod-ws-123e4567e89b.svc.cluster.local:9042","host":"svc-0123456789ab-svc-0123456789ab-service.prod-ws-123e4567e89b.svc.cluster.local","port":9042,"datacenter":"dc1","user":"svc-0123456789ab-superuser","password":"…"}
+{"kind":"tidb","endpoint":"prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000","host":"prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local","port":4000,"database":"app","user":"app","password":"…","uri":"mysql://app:…@prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000/app"}
+{"kind":"cassandra","endpoint":"svc-0123456789ab-svc-0123456789ab-service.prod-ws-123e4567e89b.svc.cluster.local:9042","host":"svc-0123456789ab-svc-0123456789ab-service.prod-ws-123e4567e89b.svc.cluster.local","port":9042,"datacenter":"dc1","keyspace":"app","user":"app","password":"…"}
 {"kind":"valkey","endpoint":"valkey-prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:6379","host":"valkey-prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local","port":6379,"user":"app","password":"…","cluster":true}
 {"kind":"sqlite","endpoint":"http://prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
 {"kind":"duckdb","endpoint":"http://prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
 {"kind":"polars","endpoint":"http://prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"<64 hex>"}
 ```
 
-`uri` is CloudNativePG's own, copied unchanged; TiDB's is built from the host and the generated
-password. A present service keeps its key while its
-connection cannot be read, so a transient failure never removes a file lake depends on; the key
-of an absent service, or of a row that no longer exists, is dropped.
+`uri` is CloudNativePG's own, copied unchanged; TiDB's is built from the host, the tenant user,
+its generated password and its database. A present service keeps its key while its connection
+cannot be read, so a transient failure never removes a file lake depends on; the key of an absent
+service, or of a row that no longer exists, is dropped. A file naming an administrator (TiDB
+`root`, Cassandra's superusers) is never kept or written, whatever else happens
+([tenant users](#tenant-users-for-tidb-and-cassandra-operator771)).
 
 For [Apps](apps.md), every present service with a connection also has a key equal to its service
 ID in this same Secret. It is an exact alias of `<slug>.json`, retained across temporary credential
@@ -481,7 +551,7 @@ Secret `lake-<lake>-workspaces` is deleted once services run.
 | `Provisioning` | the resource is ready but its credential is not yet in the Secret | `delivering the connection` |
 | `Provisioning` | a previous resource or data volume of that name is still terminating | `waiting for the previous … to be deleted` |
 | `Ready` | the resource is ready **and** its credential was written in this poll | `service ready` |
-| `Failed` | ownership, validation, a missing upstream operator or the quota refused the service | see above; quota: exactly `service quota reached (<n>)`; `the <kind> operator is not installed on this cluster` |
+| `Failed` | ownership, validation, a missing upstream operator or the quota refused the service | see above; quota: exactly `service quota reached (<n>)`; `the <kind> operator is not installed on this cluster`; a workspace namespace that is the Lake's own: `workspace namespace <ns> is the Lake namespace; a tenant service runs only in its workspace namespace` ([below](#never-in-the-lake-namespace-operator778)) |
 | `Deleting` | an absent service's resources are still going | `deleting the Zetta cluster`, `deleting the Zetta data volumes`, `deleting the Postgres cluster`, `deleting the Postgres data volumes`, and for the catalog `deleting the <Kafka\|ClickHouse\|TiDB\|Cassandra\|Valkey\|SQLite\|DuckDB\|Polars> cluster`, then `… data volumes` |
 | `Deleted` | nothing remains | `service deleted` |
 
@@ -540,6 +610,45 @@ that Strimzi, TiDB Operator, cass-operator and the Valkey operator keep, are not
 path. The Lake's `spec.zetta` reconcile skips service
 clusters.
 
+## Never in the Lake namespace (operator#778)
+
+A tenant's service runs only in its workspace namespace. The Lake namespace holds the Lake's
+control database, admin token, instance key and every projection, and its policies are the Lake's,
+not the workspace sandbox's; a tenant's database there would sit beside all of that, and its
+Secrets would be Lake-namespace Secrets
+([operator#778](https://github.com/oramasearch/orama-operator/issues/778): a CloudNativePG
+`Cluster` `lake/prod-svc-5d97f8ed8de9` was left there from before services moved to workspace
+namespaces). Three rules keep it out, in `internal/controller/lake_tenant_isolation.go`:
+
+- **Never created there.** A service row whose workspace namespace is the Lake namespace fails
+  with `workspace namespace <ns> is the Lake namespace; a tenant service runs only in its workspace
+  namespace`, whatever its kind, before anything is written. An absent row there fails the same
+  way and deletes nothing. The workspace reconciler refuses a workspace whose namespace would be
+  the Lake namespace with the same message, so a workspace Zetta never goes there either.
+- **Always owned.** Every object the operator writes for a service carries the Lake's controller
+  reference (the Lake is cluster-scoped, so the reference holds in any namespace) and the labels
+  `orama.cloud/lake`, `orama.cloud/service-id`, `orama.cloud/workspace` and
+  `app.kubernetes.io/name=lake-service`. What an upstream operator makes from it (CloudNativePG's
+  Services and Secrets, a StatefulSet's pods) is owned by that object. Deleting the service or the
+  Lake removes them, except the data volumes listed in
+  [Other ways a service goes away](#other-ways-a-service-goes-away).
+- **Reported, never deleted.** Every Lake reconcile lists the Lake namespace for what is left of a
+  tenant service: an `OramaZettaCluster` that is a service or workspace Zetta; a CloudNativePG
+  `Cluster`, a catalog kind's primary object, a StatefulSet, Deployment, Service, Secret or
+  PersistentVolumeClaim that carries `orama.cloud/service-id` or `app.kubernetes.io/name=lake-service`,
+  or whose name is a service's (`<lake>-svc-<12 hex>` or `<lake>-ws-<12 hex>`, alone or followed by
+  `-…`, and `data-` before either), which finds what CloudNativePG derived without the labels. The
+  Lake's own objects there (its Zetta, control database, the services Secret, a bucket store's
+  delivered credential) are not reported. The result is the Lake's `TenantServicesIsolated`
+  condition: `True` (`NoTenantObjects`), `False` (`TenantObjectsInLakeNamespace`, naming up to ten
+  objects and the count), or `Unknown` (`CheckFailed`) when a list fails. When the finding is new or
+  changes, a Warning event `TenantObjectInLakeNamespace` is recorded on the Lake. The condition does
+  not change the Lake's `phase`.
+
+The check never deletes: a leftover may hold data a tenant wrote, and removing it is a person's
+decision, with the consent the cluster rules ask for. Read-only first:
+`kubectl get lake <name> -o jsonpath='{.status.conditions[?(@.type=="TenantServicesIsolated")]}'`.
+
 ## RBAC
 
 Zetta and Postgres need nothing beyond what the manager already had (`postgresql.cnpg.io/clusters`,
@@ -557,8 +666,7 @@ manager to start. SQLite, DuckDB and Polars need nothing new: the manager alread
 ## Known limits
 
 - lake receives each Zetta service's **admin** token, and the operator connects to lake's control
-  Postgres with lake's own owner credential (decision 46 explains why a narrower role was not worth
-  it yet).
+  Postgres with lake's own owner credential.
 - Postgres services get CloudNativePG's default resources and no backup; Zetta services have no
   backup either. Endpoints are in-cluster only.
 - `spec` cannot change after creation.

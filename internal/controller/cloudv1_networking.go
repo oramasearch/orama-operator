@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -49,7 +46,7 @@ func readerPublicHost(oc *oramav1alpha1.OramaCloudV1) string {
 const annotationNginxProxyBodySize = "nginx.ingress.kubernetes.io/proxy-body-size"
 
 // The engine Ingresses admit exactly the largest body OramaCore accepts on that side, so the engine,
-// not nginx, decides what is too large. OramaCore's DefaultBodyLimit (LSR-150, oramacore-private
+// not nginx, decides what is too large. OramaCore's DefaultBodyLimit (oramacore-private
 // 1e0dc346, src/web_server/api/collection/mod.rs; in builds b6ee20fb and 86bc17ea): write routes
 // WRITE_MAX_BODY_SIZE 400 MiB, read routes and the server default READ_MAX_BODY_SIZE 16 MiB (MCP
 // lower, 1 MiB). nginx's "m" is MiB. Change these with the engine's limits.

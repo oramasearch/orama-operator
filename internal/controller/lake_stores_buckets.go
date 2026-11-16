@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -27,7 +24,7 @@ import (
 //
 // A cloud bucket (r2, s3, b2 and gcs over the S3 protocol, azure over Blob REST) is the customer's
 // own bucket. The operator never creates, changes or deletes it: it delivers the workspace's
-// credential for it, which lives in lake's secret store sealed in the workspace Zetta (decision 58),
+// credential for it, which lives in lake's secret store sealed in the workspace Zetta,
 // as a LakeSealedSecret <lake>-<slug> in the Lake namespace with a lake source. The operator never
 // sees the credential through Postgres; the store's spec only names the secret.
 //

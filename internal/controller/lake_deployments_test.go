@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -56,7 +53,7 @@ func TestEveryLakeGetsTheOperatorZettaPair(t *testing.T) {
 		lake := bareLake()
 		env := lakeEnvMap(lake)
 		assertPair(t, env)
-		if got := env["LAKE_PUBLIC_HOST"].Value; got != "lake-dev.oramadev.net" {
+		if got := env["LAKE_PUBLIC_HOST"].Value; got != "lake-dev.nonprod.example" {
 			t.Errorf("LAKE_PUBLIC_HOST = %q, want spec.host", got)
 		}
 		assertLakeRunsEveryFeature(t, lake)
@@ -64,10 +61,10 @@ func TestEveryLakeGetsTheOperatorZettaPair(t *testing.T) {
 
 	t.Run("spec.env keeps its LAKE_PUBLIC_HOST, once", func(t *testing.T) {
 		lake := bareLake()
-		lake.Spec.Env = []corev1.EnvVar{{Name: "LAKE_PUBLIC_HOST", Value: "lake.oramadev.net"}}
+		lake.Spec.Env = []corev1.EnvVar{{Name: "LAKE_PUBLIC_HOST", Value: "lake.nonprod.example"}}
 		env := lakeEnvMap(lake)
 		assertPair(t, env)
-		if got := env["LAKE_PUBLIC_HOST"].Value; got != "lake.oramadev.net" || count(lake, "LAKE_PUBLIC_HOST") != 1 {
+		if got := env["LAKE_PUBLIC_HOST"].Value; got != "lake.nonprod.example" || count(lake, "LAKE_PUBLIC_HOST") != 1 {
 			t.Errorf("LAKE_PUBLIC_HOST = %q, appearing %d times", got, count(lake, "LAKE_PUBLIC_HOST"))
 		}
 	})
@@ -75,7 +72,7 @@ func TestEveryLakeGetsTheOperatorZettaPair(t *testing.T) {
 	t.Run("an empty LAKE_PUBLIC_HOST in spec.env is replaced by spec.host", func(t *testing.T) {
 		lake := bareLake()
 		lake.Spec.Env = []corev1.EnvVar{{Name: "LAKE_PUBLIC_HOST"}}
-		if got := lakeEnvMap(lake)["LAKE_PUBLIC_HOST"].Value; got != "lake-dev.oramadev.net" || count(lake, "LAKE_PUBLIC_HOST") != 1 {
+		if got := lakeEnvMap(lake)["LAKE_PUBLIC_HOST"].Value; got != "lake-dev.nonprod.example" || count(lake, "LAKE_PUBLIC_HOST") != 1 {
 			t.Errorf("LAKE_PUBLIC_HOST = %q, appearing %d times", got, count(lake, "LAKE_PUBLIC_HOST"))
 		}
 	})
@@ -204,7 +201,7 @@ func TestTheLakeZettaIsTheOneOperatorSchemaZettaInItsNamespace(t *testing.T) {
 		token.ValueFrom.SecretKeyRef.Name != target.Zetta.Name+"-zetta-admin" {
 		t.Fatalf("LAKE_OPERATOR_ZETTA_TOKEN = %+v", token)
 	}
-	if host := findEnv(env, "LAKE_PUBLIC_HOST"); host == nil || host.Value != "lake-dev.oramadev.net" {
+	if host := findEnv(env, "LAKE_PUBLIC_HOST"); host == nil || host.Value != "lake-dev.nonprod.example" {
 		t.Fatalf("LAKE_PUBLIC_HOST = %+v", host)
 	}
 }

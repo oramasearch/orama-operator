@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -172,6 +169,43 @@ var workspaceOperatorIngresses = []workspaceOperatorIngress{
 		from:  workspaceValkeyOperator,
 		ports: []int32{valkeyPort},
 	},
+}
+
+// workspaceOramaOperatorIngresses are the flows the Orama operator itself opens into a workspace's
+// datastores, one NetworkPolicy each, from its own pods in its own namespace (the reconciler's
+// OperatorNamespace; from is filled in by workspaceOramaOperatorIngressPolicy).
+var workspaceOramaOperatorIngresses = []workspaceOperatorIngress{
+	{
+		// The operator signs in as root over TiDB's SQL port to keep the tenant user
+		// (operator#771).
+		name:    "allow-orama-operator-tidb-sql",
+		comment: "The Orama operator signs in to TiDB as root to keep the tenant user (operator#771).",
+		pods:    tidbComponentPods("tidb"),
+		ports:   []int32{tidbPort},
+	},
+	{
+		// The operator signs in as the generated superuser over CQL to keep the tenant role; the
+		// management API has no GRANT (operator#771).
+		name:    "allow-orama-operator-cassandra-cql",
+		comment: "The Orama operator signs in to Cassandra as the superuser to keep the tenant role (operator#771).",
+		pods: metav1.LabelSelector{
+			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(cassandraClusterLabel)},
+		},
+		ports: []int32{cassandraPort},
+	},
+}
+
+// workspaceOramaOperatorPeer selects the Orama operator's pods in operatorNamespace.
+func workspaceOramaOperatorPeer(operatorNamespace string) workspaceOperatorPeer {
+	return workspaceOperatorPeer{
+		namespace: operatorNamespace,
+		pods:      metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "orama-operator"}},
+	}
+}
+
+func workspaceOramaOperatorIngressPolicy(allowance workspaceOperatorIngress, operatorNamespace, namespace string, labels map[string]string) *networkingv1.NetworkPolicy {
+	allowance.from = workspaceOramaOperatorPeer(operatorNamespace)
+	return workspaceOperatorIngressPolicy(allowance, namespace, labels)
 }
 
 // workspaceAPIServerClient is a kind of operand pod that reads the Kubernetes API with its own

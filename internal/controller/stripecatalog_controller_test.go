@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -407,7 +404,7 @@ func TestStripeCatalogArchivesThePriceAnInterruptedReplacementLeftBehind(t *test
 func TestStripeCatalogNeverWritesAnotherAppsProduct(t *testing.T) {
 	for name, metadata := range map[string]map[string]string{
 		"made by hand": nil,
-		"lake's":       {"orama_app": "lake", "lake_instance": "eu.lake.live"},
+		"lake's":       {"orama_app": "lake", "lake_instance": "eu.lakelive.example"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			stripe := newFakeStripe(t, testStripeKey, testStripeAccount)

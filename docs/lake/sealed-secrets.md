@@ -124,6 +124,22 @@ carry a credential digest that rolls the app's pods (see [apps](apps.md#lake-sec
 A bucket store owns one too, `<lake>-<slug>` in the Lake namespace, delivering the bucket's
 credential from the workspace's secret store (see [stores](stores.md#customer-buckets-lake664)).
 
+#### When lake stops delivering a secret (orama-operator#777)
+
+The produced Secret is a projection, never the only copy, so it does not outlive the secret it
+projects. Lake's refusal is read from its error envelope, whatever the HTTP status:
+
+| Lake answers | The operator |
+|---|---|
+| `not_found`: the mount or the secret is gone, or the version is deleted or destroyed (`read_secret` answers all of them this way) | deletes the produced Secret, sets `phase: Error`, `Ready=False` reason `Revoked`, clears `status.version` and `status.lease`, and asks again every refresh interval, so a secret put again under the name is delivered again |
+| anything else: lake unreachable, a non-JSON answer, `store_unavailable`, `workspace_not_ready`, `unauthorized` | keeps the last delivered value, reports `MintFailed`, and retries with backoff |
+
+`unauthorized` is not a revocation: the call carries the operator's own credential, so it says that
+credential is wrong, and deleting every projection on it would make an operator fault an outage of
+every app. A LakeApp whose lake secret is `Revoked` deletes its copy in the app namespace too, and its
+workload stays down (`SecretDeliveryPending`) until the secret is delivered again (see
+[apps](apps.md#lake-secret-references-lake625)).
+
 ### Dynamic secret
 
 `source.type: dynamic` carries `{engine, role, ttl}`. The same capability mints a scoped credential
@@ -169,11 +185,8 @@ live in the shared Lake namespace, so it does not bind the workspace, and lake's
 `mint_sealed_secret` does not check that the mount belongs to the workspace the projection is for:
 the only workspace check is when the reference is written (`check_secret_references`,
 `create_store`). Binding it at delivery is
-[lake#950](https://github.com/oramasearch/lake/issues/950). When lake stops delivering a secret
-(deleted, destroyed, revoked), the last projected Secret is kept and retried every five minutes;
-removing it on a definite refusal is
-[orama-operator#777](https://github.com/oramasearch/orama-operator/issues/777). The security review is
-[`docs/security/deep-search-714-workspace-services.md`](../security/deep-search-714-workspace-services.md).
+[lake#950](https://github.com/oramasearch/lake/issues/950). It was found in the
+security review of workspace services.
 
 #### The operator's Kubernetes token never reaches Lake (orama-operator#791)
 
@@ -181,7 +194,7 @@ The mint request carries no `attestation`. Until 2026-10-21 it carried the opera
 service-account token, read from `/var/run/secrets/kubernetes.io/serviceaccount/token`, which Lake
 never verified. That token is the operator's own Kubernetes credential, with cluster-wide Secret and
 workload rights, so anyone who could read a mint request inside Lake could act as the operator
-against the cluster (finding LSR-042 of the Lake pre-launch security review). The reconciler no
+against the cluster (finding of the Lake pre-launch security review). The reconciler no
 longer reads any service-account token, and the admin bearer is the only credential in the request.
 
 If Lake ever needs to know which cluster identity is calling, beyond the admin bearer, the

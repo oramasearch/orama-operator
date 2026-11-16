@@ -17,7 +17,7 @@ server; `TestCustomDomainValidationEnvtest` the CEL rules).
 apiVersion: orama.cloud/v1alpha1
 kind: Lake
 spec:
-  host: acme.lake.live            # the Orama host: stays, as an alias
+  host: acme.lake.example.com            # the Orama host: stays, as an alias
   ingressEnabled: true
   dnsSecretRef: { name: cloudflare-lake-live }
   customDomain:
@@ -32,9 +32,9 @@ credential for their zone.
 
 | Phase | What the operator has done | What the customer sees |
 |---|---|---|
-| `Pending` | Published the records below in `status.customDomain.records` and written the origin record in the Lake's zone. Looks DNS up every minute | Nothing on their host. `acme.lake.live` works as before |
+| `Pending` | Published the records below in `status.customDomain.records` and written the origin record in the Lake's zone. Looks DNS up every minute | Nothing on their host. `acme.lake.example.com` works as before |
 | `Verified` | Both records were found once. Created the host's own Ingress and a Let's Encrypt `Certificate`, solved with HTTP-01. Clerk allows `https://data.example.com` | Their host answers once the certificate is issued |
-| `Routed` | The certificate is `Ready`. The Lake's environment moves to the customer's host (below) and the pods roll once | Every link, sign-in, callback and page is on `data.example.com`. Pages opened on `acme.lake.live` are redirected there; the API, MCP, git and the registry keep answering on it |
+| `Routed` | The certificate is `Ready`. The Lake's environment moves to the customer's host (below) and the pods roll once | Every link, sign-in, callback and page is on `data.example.com`. Pages opened on `acme.lake.example.com` are redirected there; the API, MCP, git and the registry keep answering on it |
 
 Condition `CustomDomainReady` says the same: `RecordsNotFound` or `WaitingForLoadBalancer`, then
 `CertificatePending`, then `Routed` (True). The Lake's own `Ready` does not depend on it: the Orama
@@ -47,13 +47,13 @@ its cluster) and hand them over:
 
 | Purpose | Type | Name | Value |
 |---|---|---|---|
-| `routing` | `CNAME` | `data.example.com` | `acme.origin.lake.live` (with a DNS credential), else the ingress load balancer's name, or an `A`/`AAAA` record for its address |
+| `routing` | `CNAME` | `data.example.com` | `acme.origin.lake.example.com` (with a DNS credential), else the ingress load balancer's name, or an `A`/`AAAA` record for its address |
 | `ownership` | `TXT` | `_orama-verification.data.example.com` | `orama-verification=<token>` |
 | `clerk` | as Clerk asks | under the customer's zone | Only for a Clerk production instance on the customer's domain (below) |
 
 - **The origin record.** With a `dnsSecretRef`, the operator keeps a DNS-only (not proxied)
   `CloudflareDNSRecord` `lake-<name>-custom-domain-origin` in the Lake's own zone:
-  `<the Lake's host without its zone, dots as dashes>.origin.<zone>` (`acme.origin.lake.live`),
+  `<the Lake's host without its zone, dots as dashes>.origin.<zone>` (`acme.origin.lake.example.com`),
   pointing at the ingress load balancer. The customer's CNAME points at it, so their record never
   changes when the load balancer does. It is not proxied: the customer's users must reach the origin
   directly, where the customer's certificate is served.
@@ -93,8 +93,8 @@ was, so adding this field to the operator restarts no existing Lake.
 | Variable | Value once routed | What lake does with it |
 |---|---|---|
 | `LAKE_PUBLIC_HOST` | `data.example.com` | Every link, OAuth/OIDC/SAML callback, passkey relying party, the console's origin, image references |
-| `LAKE_HOST_ALIASES` | `acme.lake.live` (`spec.host`) | Requests there are the Lake itself: browser pages are redirected to the public host, everything else is served as on it ([lake#1136](https://github.com/oramasearch/lake/issues/1136)) |
-| `LAKE_CONTROL_HOST` | `acme.lake.live` | The Lake's name on its `orama_control` rows. The operator keys those rows on `spec.host` too (`lakeRowHost`), so deployments, environments and domains keep matching when the public host moves |
+| `LAKE_HOST_ALIASES` | `acme.lake.example.com` (`spec.host`) | Requests there are the Lake itself: browser pages are redirected to the public host, everything else is served as on it ([lake#1136](https://github.com/oramasearch/lake/issues/1136)) |
+| `LAKE_CONTROL_HOST` | `acme.lake.example.com` | The Lake's name on its `orama_control` rows. The operator keys those rows on `spec.host` too (`lakeRowHost`), so deployments, environments and domains keep matching when the public host moves |
 
 The CEL rules refuse `spec.customDomain` without `host` and `ingressEnabled`, a custom host equal to
 `host` or `apexHost`, and any of these three variables in `spec.env` alongside it. A lake image older
@@ -102,7 +102,7 @@ than lake#1136 ignores `LAKE_HOST_ALIASES` and `LAKE_CONTROL_HOST` and would nam
 the customer's host, so **lake is rolled first** (below).
 
 The operator itself keeps using `spec.host` for what is internal: the image pull host of methodology
-runs, the Clerk webhook URL (`https://acme.lake.live/identity/clerk-webhook`), and the control rows.
+runs, the Clerk webhook URL (`https://acme.lake.example.com/identity/clerk-webhook`), and the control rows.
 Both hosts route to the same Lake.
 
 ### Clerk

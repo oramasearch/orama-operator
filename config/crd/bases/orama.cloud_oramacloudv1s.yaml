@@ -282,8 +282,8 @@ spec:
                     - enabled
                     type: object
                   analyticsProcessor:
-                    description: 'Additional v1 components (gap fill — techops-docs
-                      issues #5–#7):'
+                    description: 'Additional v1 components (gap fill, operator issues
+                      #5–#7):'
                     properties:
                       enabled:
                         default: true
@@ -690,6 +690,17 @@ spec:
                         enum:
                         - local
                         - central
+                        type: string
+                      referenceRows:
+                        description: |-
+                          ReferenceRows is this stack's catalog: the dashboard reference rows (subscription_plans,
+                          stripe_addon_prices, llms) the operator seeds, one statement per line, in the shape
+                          hack/export-dashboard-reference-rows.sh prints:
+                          INSERT INTO reference_<table> SELECT * FROM json_populate_record(NULL::reference_<table>, '<row JSON>');
+                          Lines starting with "--" and blank lines are allowed; any other line fails the stack's
+                          reconcile, visibly. The rows must include the default plan the dashboard's migration 0008
+                          names. Empty seeds the operator's built-in example catalog.
+                        maxLength: 262144
                         type: string
                       replicate:
                         description: |-
@@ -1106,7 +1117,7 @@ spec:
                         description: |-
                           ExtraHosts are further names the component's Ingress answers, each routed to the same backend
                           as host and covered by the origin certificate. The operator creates no DNS record for them: a
-                          name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                          name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
                           host; no name may repeat across the hosts and extra hosts of every component.
                         items:
                           maxLength: 253
@@ -1275,7 +1286,7 @@ spec:
                         description: |-
                           ExtraHosts are further names the component's Ingress answers, each routed to the same backend
                           as host and covered by the origin certificate. The operator creates no DNS record for them: a
-                          name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                          name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
                           host; no name may repeat across the hosts and extra hosts of every component.
                         items:
                           maxLength: 253
@@ -1361,7 +1372,7 @@ spec:
                             description: |-
                               ExtraHosts are further names the component's Ingress answers, each routed to the same backend
                               as host and covered by the origin certificate. The operator creates no DNS record for them: a
-                              name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                              name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
                               host; no name may repeat across the hosts and extra hosts of every component.
                             items:
                               maxLength: 253
@@ -1372,7 +1383,7 @@ spec:
                             x-kubernetes-list-type: set
                           host:
                             description: |-
-                              Host publishes the readers on this public DNS name (for example reader.orama.ing), without a
+                              Host publishes the readers on this public DNS name (for example reader.example.org), without a
                               scheme, path or port: an owned Ingress with origin TLS to the reader Service on 80 (through
                               Envoy when it is enabled) and, with Cloudflare DNS managed, a proxied DNS record. Empty keeps
                               the readers internal.
@@ -1480,7 +1491,7 @@ spec:
                             description: |-
                               ExtraHosts are further names the component's Ingress answers, each routed to the same backend
                               as host and covered by the origin certificate. The operator creates no DNS record for them: a
-                              name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                              name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
                               host; no name may repeat across the hosts and extra hosts of every component.
                             items:
                               maxLength: 253
@@ -1499,7 +1510,7 @@ spec:
                             type: boolean
                           host:
                             description: |-
-                              Host publishes the writer on this public DNS name (for example writer.orama.ing), without a
+                              Host publishes the writer on this public DNS name (for example writer.example.org), without a
                               scheme, path or port: an owned Ingress with origin TLS to the writer Service on 8080 and, with
                               Cloudflare DNS managed, a proxied DNS record. Only a primary region publishes its writer.
                               Empty keeps the writer internal.
@@ -1948,7 +1959,7 @@ spec:
                         description: |-
                           ExtraHosts are further names the component's Ingress answers, each routed to the same backend
                           as host and covered by the origin certificate. The operator creates no DNS record for them: a
-                          name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                          name such as app.example.com is pointed at the cluster by a reviewed Cloudflare change. Requires
                           host; no name may repeat across the hosts and extra hosts of every component.
                         items:
                           maxLength: 253
@@ -2018,8 +2029,17 @@ spec:
                     - enabled
                     type: object
                   pgAdmin:
-                    description: Toggle is a simple on/off component.
+                    description: PgAdminSpec is pgAdmin's toggle plus the address
+                      of its login.
                     properties:
+                      email:
+                        description: |-
+                          Email is the address of pgAdmin's login (PGADMIN_DEFAULT_EMAIL); its password is generated into
+                          the stack's pgAdmin Secret. pgAdmin refuses an address without a public top-level domain (such
+                          as .local). Empty is admin@example.com.
+                        maxLength: 254
+                        pattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+                        type: string
                       enabled:
                         default: true
                         type: boolean

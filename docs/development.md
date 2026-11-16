@@ -18,7 +18,6 @@ config/crd|samples/  # generated CRDs + example CRs (generated and committed)
 chart/               # the install Helm chart (operator + CRDs + RBAC; the ClusterRole is hand-maintained)
 helmfile.yaml        # composition: platform operators + this chart
 docs/                # this guide, the CRD reference, the component reconcilers, the Lake CR
-DESIGN.md            # architecture + decision log + open questions
 CLAUDE.md            # working rules (incl. docs discipline)
 Makefile             # standard kubebuilder targets (manifests/build/docker/helm)
 ```
@@ -91,44 +90,23 @@ and check its CEL rule and field validation in the API server: the issue's examp
 changing the target, team, projects, run or source is refused, and step, apply, attempt and the
 order of `projectIDs` may change.
 
-The same assets run `TestObservabilityCRDsRefuseMalformedResources` (operator#15): the observability
-CRDs install on a real API server (a CEL rule over the provider's image map exceeded the API
-server's cost budget and was replaced by a bounded value pattern), refuse an image by tag, a
-receiver that is both Slack and a webhook, a hub moved to another cluster, onto or off the managing cluster, and a `PixieCloud` for a purpose
-it does not take, and default `storage` and `nodeMemory`. The setup-envtest of controller-runtime
+The setup-envtest of controller-runtime
 0.18 fetches from a bucket that now answers 401; `setup-envtest@release-0.21 use 1.30.0` fetches
 the same binaries from GitHub.
 
-### The hub's metrics in real Prometheus
+### Cloud v1 rules in real Prometheus
 
-`TestHubMetricsRulesInPrometheus` and `TestHubMetricsRulesIgnoreRestartsAndRemovedClusters` (promtool
-`check config` and `test rules`) and `TestHubFederatesEachLeafLive` (a hub and two leaf Prometheus
-servers, really federating, with a forging leaf, a lost leaf, a hub restart and a removal) run the
-hub's rendered configuration and rules in Prometheus 3.15, the version of the platform mirror. They
-need the release tarball's `prometheus` and `promtool`, checked against its `sha256sums.txt`:
+`TestOramaCloudV1AnalyticsAlertsInPrometheus` runs a stack's rendered rules through promtool's
+rule tests, in Prometheus 3.15, the version of the platform mirror. It needs the release tarball's
+`promtool`, checked against its `sha256sums.txt`:
 
 ```sh
 curl -LO https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.<os>-<arch>.tar.gz
 export PROMETHEUS_BINARY_DIR=$PWD/prometheus-3.15.0.<os>-<arch>
-go test ./internal/controller -run 'HubMetrics|HubFederates'
+go test ./internal/controller -run 'AnalyticsAlertsInPrometheus'
 ```
 
-Without it they are skipped, as the envtests are without `KUBEBUILDER_ASSETS`.
-
-### Re-vendoring Pixie
-
-The operator embeds the kustomize output of one commit of `oramasearch/pixie`
-(`internal/controller/assets/pixie/`). To move it, check that commit out (the umbrella bridge's
-`modules/pixie`), then:
-
-```sh
-PIXIE_COMMIT=<sha> ./hack/fetch-pixie-manifests.sh   # refuses another HEAD or local changes
-# update pixieManifestCommit in internal/controller/pixie_render.go
-go test ./internal/controller -run 'Pixie|RenderVizier'
-```
-
-The tests name every new object, image or unbudgeted container. The provider's images must then be
-built from the same commit (#455); [`observability.md`](infrastructure/observability.md#upgrading-pixie).
+Without it the test is skipped, as the envtests are without `KUBEBUILDER_ASSETS`.
 
 ### The observability platform charts
 
@@ -252,7 +230,7 @@ and RBAC, plus permission to pull its private repository. Obtain both from the O
 maintainer before following [install.md](install.md). The chart's `v1-sandbox` default is mutable;
 it is not a release recommendation. This guide does not assert that any new tag is published.
 
-The development machine does not run Docker (bridge decision 33). Native build and verification:
+The development machine does not run Docker. Native build and verification:
 
 ```sh
 go build ./...
@@ -308,7 +286,7 @@ The standard loop: run the manager **out-of-cluster** against your current kube-
 using your kubeconfig creds (no in-cluster deploy needed to iterate):
 
 ```sh
-go run ./cmd --control-plane-bind-address=""
+go run ./cmd --control-plane-bind-address=""   # what `make run` runs
 ```
 
 This disables the deployment listener for the local reconciler loop. To exercise that listener,
@@ -335,7 +313,7 @@ manager deliberately (e.g. debugging), override the ports:
 
 ## AKS smoke test
 
-Context `orama-production-cluster-01` is a fresh, empty, single-node **sandbox**
+Context `example-management` is a fresh, empty, single-node **sandbox**
 (`Standard_D8as_v7`, **no GPU**). Steps that were verified:
 
 ```sh
@@ -355,5 +333,4 @@ Result: the CRD installs, the sample CR is accepted, and the manager logs
 
 ## Ship
 
-Commit + push this repo → bump the pointer in `orama-cloud-v1-bridge` → bump the
-pointer in the umbrella `orama-bridge` (fast-forward to `main`). No AI attribution.
+Open a pull request against `dev` ([`CONTRIBUTING.md`](../CONTRIBUTING.md)).

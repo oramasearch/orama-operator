@@ -1,6 +1,6 @@
 # Restore rehearsals: lake-prod's control plane and store
 
-How a restore of lake.live's data is rehearsed, what backups exist to restore from, and what to
+How a restore of lake.example.com's data is rehearsed, what backups exist to restore from, and what to
 record afterwards ([#127](https://github.com/oramasearch/orama-operator/issues/127), launch
 checklist [lake#1158](https://github.com/oramasearch/lake/issues/1158)). A rehearsal restores into
 throwaway resources and reads them; it never touches the live database, the live store, their
@@ -8,11 +8,11 @@ backups or their snapshots.
 
 ## What exists to restore from (read-only, 2026-10-24)
 
-lake.live is the `LakeSet` `lake-prod` on the managing cluster, with two members:
+lake.example.com is the `LakeSet` `lake-prod` on the managing cluster, with two members:
 
 | | EU | US |
 |---|---|---|
-| Cluster | `orama-production-cluster-02` (`swedencentral`) | `orama-production-cluster-03` (`eastus`) |
+| Cluster | `example-production-eu` (`swedencentral`) | `example-production-us` (`eastus`) |
 | Lake, namespace | `shared`, `lake-shared` | `shared-us`, `lake-shared-us` |
 | Control database | CNPG `lake-shared-controldb`, 1 instance, 10Gi | CNPG `lake-shared-us-controldb`, 1 instance, 10Gi |
 | Control database backups | **None**: no `spec.backup`, no `ScheduledBackup`, no CNPG `Backup`; `BackupReady=False` (`BackupDisabled`) | **None**, the same |
@@ -30,9 +30,9 @@ copy elsewhere. Read the current state with:
 
 ```sh
 # On the managing cluster: the leaf's kubeconfig, into a private file outside any repository.
-kubectl --context orama-production-cluster-01 -n orama-system get secret orama-production-cluster-02-kubeconfig \
-  -o jsonpath='{.data.kubeconfig}' | base64 -d > "$KC/orama-production-cluster-02"; chmod 600 "$KC/orama-production-cluster-02"
-export KUBECONFIG="$KC/orama-production-cluster-02"
+kubectl --context example-management -n orama-system get secret example-production-eu-kubeconfig \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d > "$KC/example-production-eu"; chmod 600 "$KC/example-production-eu"
+export KUBECONFIG="$KC/example-production-eu"
 kubectl get lake shared
 kubectl get clusters.postgresql.cnpg.io,scheduledbackups.postgresql.cnpg.io,backups.postgresql.cnpg.io -n lake-shared
 kubectl get volumesnapshots -n lake-shared -l orama.cloud/snapshot-target=store
@@ -107,7 +107,7 @@ the live database. The scratch cluster has no `backup` section, so it never writ
 cluster's backup path. It needs #957 and #958 first; until then the entries stay commented out (or,
 if applied, fail at once and create nothing).
 
-## What Steve applies
+## What the cluster owner applies
 
 Nothing in this change is applied. In order:
 
@@ -120,7 +120,7 @@ Nothing in this change is applied. In order:
 2. **Uncomment the store entries** in `config/clusters/sets/lake-prod.yaml` and apply that file:
 
    ```sh
-   kubectl --context orama-production-cluster-01 apply -f config/clusters/sets/lake-prod.yaml
+   kubectl --context example-management apply -f config/clusters/sets/lake-prod.yaml
    ```
 
    Commit the uncommented file with the apply. The members' Lakes are not changed by it: the only
@@ -133,7 +133,7 @@ Nothing in this change is applied. In order:
 On the managing cluster, for both regions at once:
 
 ```sh
-kubectl --context orama-production-cluster-01 get lakeset lake-prod \
+kubectl --context example-management get lakeset lake-prod \
   -o jsonpath='{range .status.restoreRehearsals[*]}{.name}{"\t"}{.phase}{"\t"}{.selected}{"\t"}{.evidence}{"\t"}{.message}{"\n"}{end}'
 ```
 
@@ -156,7 +156,7 @@ kubectl get ns,volumesnapshotcontents -l app.kubernetes.io/name=lake-postgres-re
 
 A pass is `Succeeded` in both regions. The controller fails a store with no files; a file count
 far below the previous rehearsal's is also a fail, judged by whoever reads it, so compare `evidence`
-with the last one recorded in techops-docs.
+with the last one you recorded.
 
 ## Cleaning up
 
@@ -171,21 +171,12 @@ kubectl get volumesnapshotcontents -l app.kubernetes.io/name=lake-postgres-rehea
 Both must be empty. The `LakeRestoreRehearsal` itself stays as the record. To remove it, delete its
 entry from the set file and apply the file; the set deletes it on the leaf. If a scratch namespace
 or content is left behind, say so and file it: deleting it by hand is a change to a production
-cluster and needs Steve's consent.
+cluster and needs the cluster owner's consent.
 
 ## What to record afterwards
 
-In the same session as the apply (umbrella `CLAUDE.md`, *Every change to the stack is recorded*):
+Record each rehearsal in your own operations log: the date, the operator version, the commit of the
+set file, which rehearsals ran in which region, their phase, the selected snapshot or Backup and the
+evidence, and who approved the apply. The rehearsal is evidence of recovery testing; keep it with your
+change records.
 
-- **techops-docs**, `docs/lake/changes.md`: the date, the operator version, the set file commit, which
-  rehearsals ran in which region, their phase, the selected snapshot or Backup and the evidence, who
-  approved the apply, and links to #127 and the PR. Update `docs/lake/backups.md` there (what is
-  backed up, and the last successful rehearsal per region).
-- **compliance**: the rehearsal is evidence for availability and recovery testing (A1.3) and change
-  management (CC8.1). Add the result to the change-management exhibit under `soc2-type-ii/evidence/`
-  (what was rehearsed, the result, the approver). Enabling control-plane backups (#957) changes the
-  described system and is an entry in `soc2-type-ii/SIGNIFICANT-CHANGES.md`; the rehearsal alone is
-  not.
-- **#127**: comment with the result per region; close it once both the store and the Postgres
-  rehearsals have succeeded in both regions. Tick the line in
-  [lake#1158](https://github.com/oramasearch/lake/issues/1158) then.

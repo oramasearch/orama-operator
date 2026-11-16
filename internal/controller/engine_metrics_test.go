@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -183,7 +180,7 @@ func assertMetricsCompanion(t *testing.T, h *publicHarness, component string, po
 func TestMetricsCompanionsShadowPublicEngineIngresses(t *testing.T) {
 	for name, extra := range map[string][2][]string{
 		"hosts only":  {nil, nil},
-		"extra hosts": {{"writer-alt.oramadev.net"}, {"reader-alt.oramadev.net", "reader-alt2.oramadev.net"}},
+		"extra hosts": {{"writer-alt.nonprod.example"}, {"reader-alt.nonprod.example", "reader-alt2.nonprod.example"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newPublicHarness(t, publicStack(func(o *oramav1alpha1.OramaCloudV1) {
@@ -201,7 +198,7 @@ func TestMetricsCompanionsShadowPublicEngineIngresses(t *testing.T) {
 // The builder narrows a copy: the main spec it is given is left as it was.
 func TestMetricsBlockIngressSpecLeavesMainUnchanged(t *testing.T) {
 	oc := publicStack(nil)
-	main := ingressSpec(oc, "v1-dev-writer", publicWriterHost, []string{"writer-alt.oramadev.net"}, oramacorePort)
+	main := ingressSpec(oc, "v1-dev-writer", publicWriterHost, []string{"writer-alt.nonprod.example"}, oramacorePort)
 	before := main.DeepCopy()
 	companion := metricsBlockIngressSpec(main)
 	if !reflect.DeepEqual(main, *before) {
@@ -232,20 +229,20 @@ func TestMetricsCompanionsLifecycle(t *testing.T) {
 		h := newPublicHarness(t, publicStack(nil))
 		h.mustPublish()
 		h.update(func(o *oramav1alpha1.OramaCloudV1) {
-			o.Spec.Components.Engine.Writer.Host = "writer-next.oramadev.net"
-			o.Spec.Components.Engine.Reader.Host = "reader-next.oramadev.net"
+			o.Spec.Components.Engine.Writer.Host = "writer-next.nonprod.example"
+			o.Spec.Components.Engine.Reader.Host = "reader-next.nonprod.example"
 		})
 		h.mustPublish()
-		assertMetricsCompanion(t, h, "writer", oramacorePort, "writer-next.oramadev.net")
-		assertMetricsCompanion(t, h, "reader", envoyPort, "reader-next.oramadev.net")
+		assertMetricsCompanion(t, h, "writer", oramacorePort, "writer-next.nonprod.example")
+		assertMetricsCompanion(t, h, "reader", envoyPort, "reader-next.nonprod.example")
 		h.update(func(o *oramav1alpha1.OramaCloudV1) {
-			o.Spec.Components.Engine.Reader.ExtraHosts = []string{"reader-alt.oramadev.net"}
+			o.Spec.Components.Engine.Reader.ExtraHosts = []string{"reader-alt.nonprod.example"}
 		})
 		h.mustPublish()
-		assertMetricsCompanion(t, h, "reader", envoyPort, "reader-next.oramadev.net", "reader-alt.oramadev.net")
+		assertMetricsCompanion(t, h, "reader", envoyPort, "reader-next.nonprod.example", "reader-alt.nonprod.example")
 		h.update(func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Reader.ExtraHosts = nil })
 		h.mustPublish()
-		assertMetricsCompanion(t, h, "reader", envoyPort, "reader-next.oramadev.net")
+		assertMetricsCompanion(t, h, "reader", envoyPort, "reader-next.nonprod.example")
 	})
 
 	t.Run("cleared hosts delete both", func(t *testing.T) {

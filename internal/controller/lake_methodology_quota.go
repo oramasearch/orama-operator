@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -22,7 +19,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Methodology pods count against their workspace's quota (orama-operator#799, LSR-137).
+// Methodology pods count against their workspace's quota (orama-operator#799).
 //
 // A workspace methodology's stage, run, collect and serve pods run in the Lake's shared
 // methodology-runs namespace, not in the workspace's namespace: a workspace namespace's policies

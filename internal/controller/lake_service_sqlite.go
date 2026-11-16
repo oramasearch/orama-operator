@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -11,7 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// SQLite services (liquid-bridge decision 47, amended; the contract is lake's
+// SQLite services (the contract is lake's
 // docs/control-plane/services.md, the sqlite row): lake-sqlite (github.com/oramasearch/lake-sqlite,
 // docs/lake/lake-sqlite.md), one pod over one database on a storage_gi volume, run through the
 // wrapper machinery (lake_service_wrapper.go). SQLite has one writer, so instances is always 1
@@ -19,7 +16,7 @@ import (
 
 // DefaultLakeSQLiteImage is the lake-sqlite image when neither the Lake nor the operator's flag
 // names one. The chart passes its own default (lakeServices.sqliteImage) as the flag.
-const DefaultLakeSQLiteImage = "oramasearch/lake-sqlite:0.1.1"
+const DefaultLakeSQLiteImage = "oramasearch/lake-sqlite:0.2.0"
 
 var sqliteServiceKind = wrapperServiceKind{
 	kind:      serviceKindSQLite,

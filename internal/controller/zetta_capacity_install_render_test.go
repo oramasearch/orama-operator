@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -320,15 +317,9 @@ func TestKarpenterInstallPatternsMatchCRD(t *testing.T) {
 
 // The chart and generated ClusterRoles scope RBAC writes, bind and escalate to exactly the bundle's
 // names, and grant none of those verbs without a name.
-// TestChartKarpenterRBACMatchesBundle also covers the vendored Pixie bundles (operator#15), the
-// other vendored RBAC the operator applies: the scoped names are exactly the two bundles' objects.
 func TestChartKarpenterRBACMatchesBundle(t *testing.T) {
 	want := map[string][]string{}
-	pixie := []karpenterObjectKey{}
-	for _, key := range append(append([]pixieObjectKey{}, vizierObjects...), pixieCloudObjects...) {
-		pixie = append(pixie, karpenterObjectKey{Kind: key.Kind, Name: key.Name})
-	}
-	for _, key := range append(append([]karpenterObjectKey{}, karpenterControllerObjects...), pixie...) {
+	for _, key := range karpenterControllerObjects {
 		switch key.Kind {
 		case "ClusterRole":
 			want["clusterroles"] = append(want["clusterroles"], key.Name)

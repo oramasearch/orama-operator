@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -180,7 +177,7 @@ func defaultKubernetesAPIObjects(objects []client.Object) []client.Object {
 		defaults = append(defaults, testKubernetesService())
 	}
 	if !endpoints {
-		defaults = append(defaults, testKubernetesEndpoints("20.237.72.161", 443))
+		defaults = append(defaults, testKubernetesEndpoints("11.2.3.4", 443))
 	}
 	return defaults
 }
@@ -266,8 +263,9 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Six additional Lake-only client policies pair with its egress; all legacy policies remain.
-	// One more lets the operator reach workspace Postgres for credential roles (operator#469).
-	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients) + 6 + 1; len(policies.Items) != want {
+	// One more lets the operator reach workspace Postgres for credential roles (operator#469), and
+	// more let it reach TiDB and Cassandra for their tenant users (operator#771).
+	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients) + 6 + 1 + len(workspaceOramaOperatorIngresses); len(policies.Items) != want {
 		t.Fatalf("network policies = %d, want %d", len(policies.Items), want)
 	}
 	for _, policy := range policies.Items {
@@ -281,6 +279,17 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 				len(policy.Spec.Ingress[0].Ports) != 1 || policy.Spec.Ingress[0].Ports[0].Port.IntVal != servicePostgresPort ||
 				policy.Spec.PodSelector.MatchLabels["cnpg.io/podRole"] != "instance" {
 				t.Fatalf("operator Postgres ingress = %#v", policy.Spec)
+			}
+		}
+		for _, allowance := range workspaceOramaOperatorIngresses {
+			if policy.Name != allowance.name {
+				continue
+			}
+			from := policy.Spec.Ingress[0].From
+			if len(from) != 1 || from[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "orama-system" ||
+				from[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "orama-operator" ||
+				len(policy.Spec.Ingress[0].Ports) != 1 || policy.Spec.Ingress[0].Ports[0].Port.IntVal != allowance.ports[0] {
+				t.Fatalf("operator ingress %s = %#v", policy.Name, policy.Spec)
 			}
 		}
 		if policy.Name == workspaceLakeIngressName {
@@ -621,7 +630,8 @@ func TestWorkspaceIsolationVerifierCoversBoundary(t *testing.T) {
 
 // The workspace Zetta's own egress allowlist follows what its NetworkSandbox renders
 // (operator#724): turning internetEgress on adds *:443 once the rule is in the sandbox, and turning
-// it off takes it away again.
+// it off takes it away again. The value lives in the cluster's ConfigMap, so the cluster's spec
+// (and so its StatefulSet, for an image that re-reads the file) does not change with it.
 func TestLakeWorkspaceZettaEgressFollowsTheSandbox(t *testing.T) {
 	ctx := context.Background()
 	lake := testWorkspaceLake()
@@ -641,14 +651,25 @@ func TestLakeWorkspaceZettaEgressFollowsTheSandbox(t *testing.T) {
 		if err := kube.Get(ctx, key, &cluster); err != nil {
 			t.Fatal(err)
 		}
-		variable := findEnv(cluster.Spec.Env, zettaEgressAllowEnv)
-		if variable == nil {
-			t.Fatalf("workspace Zetta has no %s: %+v", zettaEgressAllowEnv, cluster.Spec.Env)
+		// The allowlist is the cluster's ConfigMap, never its env (operator#724).
+		if variable := findEnv(cluster.Spec.Env, zettaEgressAllowEnv); variable != nil {
+			t.Fatalf("workspace Zetta env still carries %s: %+v", zettaEgressAllowEnv, variable)
 		}
-		if variable.Value == "*" {
+		if cluster.Spec.EgressAllowConfigMap != zettaEgressConfigMapName(cluster.Name) {
+			t.Fatalf("spec.egressAllowConfigMap = %q", cluster.Spec.EgressAllowConfigMap)
+		}
+		var configMap corev1.ConfigMap
+		if err := kube.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.EgressAllowConfigMap}, &configMap); err != nil {
+			t.Fatalf("workspace Zetta egress ConfigMap: %v", err)
+		}
+		if !metav1.IsControlledBy(&configMap, &cluster) {
+			t.Fatal("the egress ConfigMap must be controlled by its OramaZettaCluster")
+		}
+		value := configMap.Data[zettaEgressConfigMapKey]
+		if value == "*" {
 			t.Fatal("the workspace Zetta turns its egress control off")
 		}
-		return variable.Value
+		return value
 	}
 	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
 	renderWorkspaceEgressRules(t, kube, testWorkspaceName)

@@ -81,7 +81,7 @@ lake writes the spec
 ```
 
 The credential is **the workspace's own secret** in lake's secret store (a mount sealed in the
-workspace Zetta, liquid-bridge decision 58), never Orama's. Its fields: S3 protocol
+workspace Zetta), never Orama's. Its fields: S3 protocol
 `access_key_id`, `secret_access_key` (optional `session_token`); Azure `account_key` (Shared Key,
 account name from the endpoint host) or `sas_token`. The operator never reads it through Postgres:
 the spec only names it.

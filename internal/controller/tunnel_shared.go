@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -29,7 +26,7 @@ const (
 	// DefaultZettaTunnelImage is the zetta-tunnel image every role runs unless the manager's
 	// --zetta-tunnel-image flag says otherwise. The repository is private: pods use their owner's
 	// pull secret.
-	DefaultZettaTunnelImage = "oramasearch/zetta-tunnel:main-9cd11b4"
+	DefaultZettaTunnelImage = "oramasearch/zetta-tunnel:main-10acaa2"
 
 	zettaTunnelNamespace     = "zetta-tunnel"
 	zettaTunnelPKISecret     = "zetta-tunnel-pki"

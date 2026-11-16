@@ -29,15 +29,31 @@ the data in and the result out only through Orama's own runtime code. Lake's con
 The rows ride the control-rows poll with builds, which every Lake runs, on the same connection,
 woken by `lake_services`. A schema older than `0078` skips them.
 
+### Bounds the operator holds itself (operator#782)
+
+Lake's intake is not the only limit. A row is `Failed`, and nothing is created for it, when:
+
+- its sizes exceed lake's maxima (lake `include/lake/control/methodologies.hpp`): more than 16 CPUs
+  (`cpu_millis` 16000), 64 GiB of memory, 8 GPUs, or a `timeout_seconds` over 24 hours (runs); the
+  same CPU, memory and GPU maxima for a served model;
+- its `image` is not in the Lake's own registry: it must start with `<host>/`, where the host is
+  `spec.host`, a literal `LAKE_PUBLIC_HOST` in `spec.env`, or `spec.customDomain.host`. Lake names
+  only images it built and serves there; a built image the operator resolves is always under the
+  public host.
+
+The pods that hold a run's or a served model's credential (stage, collect, and the model's stage)
+run the Lake's runtime image, never the image the row names: lake writes the same image into the row
+from `LAKE_METHODOLOGY_RUNTIME_IMAGE`, so this changes nothing for a correct row.
+
 ## Three pods, one volume
 
 Each run gets, in the Lake's namespace `lake-<lake>-methodology-runs`:
 
 | Pod (Job) | Image | Command | What it can reach |
 |---|---|---|---|
-| **stage** (`<slug>-stage`) | `runtime_image` | `/opt/orama/bin/methodology stage --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --out /work/in` | DNS and lake's pods only |
+| **stage** (`<slug>-stage`) | the Lake's runtime image (`spec.methodologies.runtimeImage` or its default), never the row's `runtime_image` (operator#782) | `/opt/orama/bin/methodology stage --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --out /work/in` | DNS and lake's pods only |
 | **run** (`<slug>-run`) | the built image | `/opt/orama/bin/methodology run --in /work/in --out /work/out --source /methodology` | nothing; with `network` true, DNS and the public internet only |
-| **collect** (`<slug>-collect`) | `runtime_image` | `/opt/orama/bin/methodology collect --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --in /work/out [--run-exit-code N]` (the sandbox's exit code once known) | DNS and lake's pods only |
+| **collect** (`<slug>-collect`) | the Lake's runtime image, as for stage | `/opt/orama/bin/methodology collect --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --in /work/out [--run-exit-code N]` (the sandbox's exit code once known) | DNS and lake's pods only |
 
 - `LAKE_URL` is lake's in-cluster Service (`http://lake-<lake>.<namespace>.svc.cluster.local:80`),
   `RUN_ID` the row's id, `HOME=/tmp`. The credential is a file from Secret `<slug>-credential`, never
@@ -133,7 +149,7 @@ policies stay. Status is written only when it changes.
 
 A run's and a served model's pods count against the workspace's own `ResourceQuota` and
 `LimitRange`, the same as its apps and services
-([orama-operator#799](https://github.com/oramasearch/orama-operator/issues/799), LSR-137). They
+([orama-operator#799](https://github.com/oramasearch/orama-operator/issues/799)). They
 cannot run in the workspace's namespace: its policies allow every pod lake, DNS, the internet and
 the workspace's services, and NetworkPolicies only add what they allow, so the code that is not
 trusted could not be kept off the network there. Kubernetes counts a pod only in its own namespace,
@@ -183,7 +199,7 @@ it in the same namespace, with the same split between the code and the credentia
 | Secret `<slug>-credential` | the deployment's credential `lmd.<deployment id>.<secret>`; its SHA-256 goes to `methodology_deployment_status` |
 | Secret `<slug>-pull` | the Lake's pull entries plus lake's registry with Basic user `methodology-deployment` and the credential, for kubelet only |
 | PVC `<slug>-model` | the model volume (`spec.methodologies.workVolumeSize`, `storageClassName`), ReadWriteOnce |
-| Job `<slug>-stage` | the pristine runtime image, role `stage` (the transfer policy: DNS and lake only): `methodology stage-model --lake $(LAKE_URL) --deployment $(DEPLOYMENT_ID) --credential-file /var/run/orama/credential --out /work/model`, which pages the model's artifact from lake's `methodology_deployment_input` and checks its size and SHA-256. For a GPU model it is pinned to the zones where its GPU class has nodes, as a run's stage pod is |
+| Job `<slug>-stage` | the Lake's pristine runtime image (never the row's), role `stage` (the transfer policy: DNS and lake only): `methodology stage-model --lake $(LAKE_URL) --deployment $(DEPLOYMENT_ID) --credential-file /var/run/orama/credential --out /work/model`, which pages the model's artifact from lake's `methodology_deployment_input` and checks its size and SHA-256. For a GPU model it is pinned to the zones where its GPU class has nodes, as a run's stage pod is |
 | Deployment `<slug>` | one replica (`Recreate`), role `serve`: the methodology's image, `methodology serve --model /work/model --source /methodology --port 8080`, the model volume **read-only**, no Secret mounted, no `LAKE_*`/`ZETTA_*` environment, no service account token, no service links, the run pods' security context, requests equal to limits from the row, the GPU class as its nodeSelector, `restartPolicy: Always`, readiness and liveness on `GET /healthz` |
 | Service `<slug>` | ClusterIP, port 80 to the serve pod's 8080 |
 

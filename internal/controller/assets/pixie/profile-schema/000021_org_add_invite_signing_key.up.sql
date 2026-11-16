@@ -1,2 +1,0 @@
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-ALTER TABLE orgs ADD COLUMN invite_signing_key TEXT;

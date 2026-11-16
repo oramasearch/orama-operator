@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -32,7 +29,7 @@ import (
 // writer_url with its master_api_key, mints the writer's JWT audience from writer_url, and prefixes
 // the read key with its cluster_prefix. A control DB that has the schema but no row cannot create a
 // project. Cluster rows are never copied from Prod 1, so the operator's c1 row is the only one a
-// stack has (bridge decision 9, 2026-10-16). Once the schema is applied the operator runs a Job
+// stack has. Once the schema is applied the operator runs a Job
 // that inserts the row when the table is empty. It never updates or deletes a row: a control DB
 // with any row is left as it is.
 
@@ -338,7 +335,7 @@ func (r *OramaCloudV1Reconciler) clusterRowIDFromPods(ctx context.Context, job *
 // clusterRowID is the id of the stack's c1 row the cluster-row Job recorded (clusterRowIDKey), or ""
 // when the stack inserts no row, the Job has not recorded one yet, or the control DB has no live c1
 // row. The dashboard then gets no ORAMACORE_PLACEMENT_CLUSTER_ID and places new projects on the newest
-// row, which is the c1 row on a stack whose only row it is (bridge decision 9, 2026-10-16).
+// row, which is the c1 row on a stack whose only row it is.
 func (r *OramaCloudV1Reconciler) clusterRowID(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (string, error) {
 	if !controlDBClusterRowApplies(oc) {
 		return "", nil

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -273,7 +270,12 @@ func TestAJobLaunchRunsOnceWithItsCredentialAndReportsItsOutcome(t *testing.T) {
 
 func TestAServiceLaunchIsReadyWhenItsDeploymentIs(t *testing.T) {
 	store := &fakeServiceStore{launches: []LakeAgentLaunch{testLaunch(agentLaunchModeService)}}
-	h := newServiceHarness(t, agentsTestLake(), store)
+	lake := agentsTestLake()
+	// A service launch's own token is derived from the Lake's agent service token (agent-runtime#14).
+	h := newServiceHarness(t, lake, store, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: lakeAgentServiceTokenSecret(lake.Name), Namespace: testServiceNamespace},
+		Data:       map[string][]byte{agentServiceTokenKey: []byte("the-lake-agent-service-token")},
+	})
 	h.poll()
 	if store.launchStatus(t).Phase != AgentPhasePending {
 		t.Fatalf("status %+v", store.launchStatus(t))

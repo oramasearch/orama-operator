@@ -1,0 +1,135 @@
+# An example, in the shape of a real deployment. The values are not Orama's: every name,
+# host and id is a placeholder. See README.md in this folder.
+apiVersion: orama.cloud/v1alpha1
+kind: CloudflareR2Bucket
+metadata:
+  name: status-page-status
+  namespace: orama-system
+spec:
+  secretRef: cloudflare-api-token
+  name: status-page-status
+  deletionPolicy: Retain
+  credentials:
+    secretName: status-page-status-s3
+  customDomain:
+    domain: status.lake.example.com
+    zoneID: "00000000000000000000000000000000"
+    minTLS: "1.2"
+---
+apiVersion: orama.cloud/v1alpha1
+kind: StatusPage
+metadata:
+  name: status-page
+  namespace: orama-system
+spec:
+  title: lake.example.com status
+  intervalSeconds: 60
+  timeoutSeconds: 10
+  failureThreshold: 3
+  publish:
+    bucketSecretRef: status-page-status-s3
+    publicURL: https://status.lake.example.com
+  alerts:
+    email:
+      secretRef: status-page-status-email
+  components:
+  - name: eu-api
+    title: API
+    group: Europe
+    checks:
+    - name: readyz
+      url: https://eu.lake.example.com/readyz
+      expect:
+        json: [{path: ok, equals: "true"}]
+        minCertificateDays: 14
+    - name: server-info
+      url: https://eu.lake.example.com/v1/server_info
+      expect:
+        json:
+        - {path: ok, equals: "true"}
+        - {path: value.region.name, equals: swedencentral}
+    - name: workspace-zetta
+      url: https://eu.lake.example.com/v1/workspace_engine_info?workspace_id=$(workspace_id)
+      secretRef: status-page-probe-eu
+      bearerTokenKey: token
+      expect:
+        json: [{path: ok, equals: "true"}]
+  - name: eu-agent-bus
+    title: Agents
+    group: Europe
+    checks:
+    - name: receive-agent-tasks
+      url: https://eu.lake.example.com/v1/receive_agent_tasks?agent=$(agent)&wait_ms=0
+      secretRef: status-page-probe-eu
+      bearerTokenKey: agent_credential
+      expect:
+        json: [{path: ok, equals: "true"}]
+  - name: eu-web
+    title: Web app
+    group: Europe
+    checks:
+    - name: console
+      url: https://eu.lake.example.com/
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake Console</title>"]
+    - name: sign-in
+      url: https://eu.lake.example.com/sign-in
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake Console</title>"]
+  - name: us-api
+    title: API
+    group: United States
+    checks:
+    - name: readyz
+      url: https://us.lake.example.com/readyz
+      expect:
+        json: [{path: ok, equals: "true"}]
+        minCertificateDays: 14
+    - name: server-info
+      url: https://us.lake.example.com/v1/server_info
+      expect:
+        json:
+        - {path: ok, equals: "true"}
+        - {path: value.region.name, equals: eastus}
+    - name: workspace-zetta
+      url: https://us.lake.example.com/v1/workspace_engine_info?workspace_id=$(workspace_id)
+      secretRef: status-page-probe-us
+      bearerTokenKey: token
+      expect:
+        json: [{path: ok, equals: "true"}]
+  - name: us-agent-bus
+    title: Agents
+    group: United States
+    checks:
+    - name: receive-agent-tasks
+      url: https://us.lake.example.com/v1/receive_agent_tasks?agent=$(agent)&wait_ms=0
+      secretRef: status-page-probe-us
+      bearerTokenKey: agent_credential
+      expect:
+        json: [{path: ok, equals: "true"}]
+  - name: us-web
+    title: Web app
+    group: United States
+    checks:
+    - name: console
+      url: https://us.lake.example.com/
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake Console</title>"]
+    - name: sign-in
+      url: https://us.lake.example.com/sign-in
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake Console</title>"]
+  - name: order-sheet
+    title: Order sheet (lake.example.com)
+    group: Global
+    checks:
+    - name: apex
+      url: https://lake.example.com/
+      headers: {Accept: text/html}
+      expect:
+        bodyContains: ["<title>Lake — Get Lake"]
+        minCertificateDays: 14

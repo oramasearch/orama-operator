@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -176,7 +173,7 @@ func lakeCustomDomainOwnershipRecord(lake *oramav1alpha1.Lake, host string) oram
 // lakeCustomDomainOriginName is the DNS-only record in the Lake's own zone that the customer's
 // CNAME points at, so the customer's record never needs to change when the load balancer does:
 // <the Lake's host without its zone, dots as dashes>.origin.<zone>, for example
-// acme.origin.lake.live for acme.lake.live. Empty without a DNS credential, or when the zone
+// acme.origin.example.com for acme.example.com. Empty without a DNS credential, or when the zone
 // cannot be told from the host.
 func lakeCustomDomainOriginName(lake *oramav1alpha1.Lake) string {
 	if !lakeHasDNSCredential(lake) || lake.Spec.Host == "" {

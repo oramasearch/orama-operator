@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package main
 
@@ -10,7 +7,7 @@ import (
 	"testing"
 )
 
-// LSR-268: both installation paths explicitly disable the admission webhook and per-Ingress
+// Both installation paths explicitly disable the admission webhook and per-Ingress
 // snippets while ingress-nginx remains required; chart defaults must not decide either policy.
 func TestIngressDisablesAdmissionWebhooksAndSnippetAnnotations(t *testing.T) {
 	check := func(where string, releases map[string]platformRelease) {
@@ -39,7 +36,7 @@ func TestIngressDisablesAdmissionWebhooksAndSnippetAnnotations(t *testing.T) {
 		})
 	}
 	check("helmfile.yaml", helmfilePlatform(t))
-	paths, err := filepath.Glob("../config/clusters/*/platform.yaml")
+	paths, err := filepath.Glob(filepath.Join(clustersDir(), "*", "platform.yaml"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no leaf platform files (%v)", err)
 	}

@@ -33,7 +33,7 @@ spec:
       reader: { replicas: 3 }
       envoy: true
     dashboard: { enabled: true, host: app.example.com }
-    docs: { enabled: true, host: docs.example.com }   # docs.orama.com (Next.js + Fumadocs)
+    docs: { enabled: true, host: docs.example.com }   # docs.example.com (Next.js + Fumadocs)
     ingestion: { enabled: true, harvest: true }     # index-builder = plain Deployment
     controlDB: { enabled: true, mode: in-cluster }  # CloudNativePG (primary)
     analytics: { enabled: true, mode: in-cluster }  # ClickHouse

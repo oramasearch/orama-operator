@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -124,7 +121,8 @@ func newTunnelFixture(t *testing.T, extra ...client.Object) *tunnelFixture {
 		},
 	}
 	workspace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testTunnelNS, Labels: map[string]string{
-		workspaceLabel: testWorkspaceID, workspaceLakeLabel: lake.Name, workspaceManagedByLabel: "orama-operator",
+		workspaceLabel: testWorkspaceID, workspaceCustomerLabel: testServiceCustomer, workspaceLakeLabel: lake.Name,
+		workspaceManagedByLabel: "orama-operator",
 	}}}
 	sandbox := &oramav1alpha1.NetworkSandbox{
 		ObjectMeta: metav1.ObjectMeta{Name: networkSandboxName, Namespace: testTunnelNS, UID: types.UID("sandbox-uid")},

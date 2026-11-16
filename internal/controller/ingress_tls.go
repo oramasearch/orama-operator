@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -21,7 +18,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Origin TLS for Cloud v1's Ingresses (operator#457, decision 5 of the 2026-10-16 decisions page).
+// Origin TLS for Cloud v1's Ingresses (operator#457).
 // Every stack owns one namespaced cert-manager Issuer (Let's Encrypt, DNS-01 through Cloudflare);
 // every Ingress the stack renders calls applyIngressTLS inside its CreateOrUpdate mutation, after
 // its rules are set. cert-manager's ingress-shim then creates one Certificate per TLS entry and

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package main
 
@@ -26,7 +23,15 @@ import (
 // The key is crdrollout.Change.Key(): "<crd> <version> <field path> <what>". Clear the list when a
 // release is tagged, in the pull request that merges main back into dev; an entry that no longer
 // differs from the last release fails the test.
-var acknowledgedCRDChanges = map[string]string{}
+var acknowledgedCRDChanges = map[string]string{
+	"observabilityagents.orama.cloud CRD removed":    retiredPixie,
+	"observabilityhubs.orama.cloud CRD removed":      retiredPixie,
+	"observabilityproviders.orama.cloud CRD removed": retiredPixie,
+	"pixieclouds.orama.cloud CRD removed":            retiredPixie,
+	"pixieviziers.orama.cloud CRD removed":           retiredPixie,
+}
+
+const retiredPixie = "Pixie is removed (operator#1192), with the observability kinds built on it. Its objects are deleted under the release that ships it before this one rolls: make check-crds fails while any exists (hack/retired-crds.txt)."
 
 // lastRelease is the newest release tag behind HEAD, or "" outside a git checkout. A tag on HEAD
 // itself is skipped: at a release's own tag the changes it carries are measured against the release
@@ -137,6 +142,33 @@ func TestNoCRDFieldThePreviousReleaseReadsDisappearsUnnoticed(t *testing.T) {
 	for key := range acknowledgedCRDChanges {
 		if !seen[key] {
 			t.Errorf("acknowledgedCRDChanges names %q, which does not differ from %s: remove the entry", key, tag)
+		}
+	}
+}
+
+// Every CRD this change removes is in hack/retired-crds.txt, so make check-crds refuses a roll while
+// objects of it remain: a removed kind's objects have no controller after the roll, and one with a
+// finalizer can never be deleted again.
+func TestEveryRemovedCRDIsCheckedBeforeTheRoll(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "hack", "retired-crds.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			retired[line] = true
+		}
+	}
+	for key := range acknowledgedCRDChanges {
+		if crd, ok := strings.CutSuffix(key, " CRD removed"); ok && !retired[crd] {
+			t.Errorf("%s is removed from chart/crds but not listed in hack/retired-crds.txt", crd)
+		}
+	}
+	now := chartCRDsNow(t)
+	for crd := range retired {
+		if _, ok := now[crd]; ok {
+			t.Errorf("hack/retired-crds.txt lists %s, which chart/crds still ships", crd)
 		}
 	}
 }

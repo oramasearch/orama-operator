@@ -61,6 +61,26 @@ joined workspace namespace and labelled with the full workspace UUID. App resour
 names include the first 12 app-ID hex characters so multiple apps can share the namespace without
 colliding. Standalone `LakeApp` resources retain their separately owned app namespace.
 
+## Workspace routing is checked by the operator (operator#781)
+
+Every row that places objects in a workspace namespace (services, stores, agent launches and
+schedules, connections, egress rules, tunnel grants, peers, apps, methodology runs and deployments)
+is routed by lake's `workspaces` table. The operator does not take that routing on trust:
+
+- **Each listing joins the workspace on the row's own customer**: `JOIN workspaces w ON w.id =
+  <row>.workspace_id AND w.customer_id = <row>.customer_id`, and a methodology row's build with
+  `b.customer_id = <row>.customer_id`. A row naming another customer's workspace reaches no
+  namespace.
+- **Before writing, the namespace is checked on the cluster** (`workspaceNamespaceRefusal`,
+  `internal/controller/lake_workspace_routing.go`): it must not be the Lake namespace, and it must
+  carry `orama.cloud/workspace=<workspace id>`, `orama.cloud/customer=<customer id>` and
+  `orama.cloud/lake=<lake>`, the labels this reconciler writes. Otherwise the row is `Failed` with
+  the reason, and nothing is written. A namespace that does not exist is not refused there: no
+  intake creates one, so the API server refuses the write and the row waits.
+
+Apps had the same check from #713 (`lakeapp_controller.go`); lake's routing triggers remain the first
+line.
+
 ## Workspace Zetta ownership
 
 The workspace reconciler creates `<lake>-ws-<first 12 workspace UUID hex>` in the reconciled
@@ -77,7 +97,7 @@ remain reconciled normally.
 
 Lake's `workspaces.storage_gi` (migration `0069`, default 5, never decreasing: lake's trigger
 refuses a smaller value, and `set_workspace_storage` advances the row's generation) is the desired
-size of each of the workspace Zetta's volumes. Decision 54 puts the workspace's liquid store,
+size of each of the workspace Zetta's volumes. Lake puts the workspace's liquid store,
 tenant images and search index on that volume, so it has to grow with the workspace.
 
 - **On create** the child `OramaZettaCluster` gets `storage.size` = `storage_gi` GiB.
@@ -220,6 +240,8 @@ whose kind is not in use selects no pod.
 | `allow-cnpg-apiserver-egress` | `cnpg.io/cluster` exists (instances and the initdb/join Jobs) | Kubernetes API, see below | Service port + endpoint ports | initdb, the instance manager's `Cluster` reads, primary lease and status |
 | `allow-cnpg-operator-ingress` | `cnpg.io/podRole=instance` with `cnpg.io/cluster` | `cnpg-system`, `app.kubernetes.io/name=cloudnative-pg` | TCP 8000, 5432 | status extraction, promotion and switchover |
 | `allow-operator-to-postgres` | `cnpg.io/podRole=instance` with `cnpg.io/cluster` | the Orama operator's namespace, `app.kubernetes.io/name=orama-operator` | TCP 5432 | per-connection roles of credential-scoped Connections ([#469](https://github.com/oramasearch/orama-operator/issues/469)) |
+| `allow-orama-operator-tidb-sql` | `app.kubernetes.io/component=tidb`, `managed-by=tidb-operator` | the Orama operator, as above | TCP 4000 | signs in as root to keep the tenant user ([#771](https://github.com/oramasearch/orama-operator/issues/771), [services](services.md#tenant-users-for-tidb-and-cassandra-operator771)) |
+| `allow-orama-operator-cassandra-cql` | `cassandra.datastax.com/cluster` exists | the Orama operator, as above | TCP 9042 | signs in as the superuser to keep the tenant role ([#771](https://github.com/oramasearch/orama-operator/issues/771), [services](services.md#tenant-users-for-tidb-and-cassandra-operator771)) |
 | `allow-strimzi-apiserver-egress` | `strimzi.io/kind=Kafka`, `strimzi.io/component-type=entity-operator` | Kubernetes API | Service port + endpoint ports | the Topic and User Operators watch `KafkaTopic`/`KafkaUser` and write the user Secret the Kafka connection is read from |
 | `allow-tidb-discovery-apiserver-egress` | `app.kubernetes.io/component=discovery`, `app.kubernetes.io/managed-by=tidb-operator` | Kubernetes API | Service port + endpoint ports | discovery reads the `TidbCluster` to tell each PD how to join |
 | `allow-clickhouse-operator-ingress` | `clickhouse.altinity.com/app=chop` with `clickhouse.altinity.com/chi` | `clickhouse-system`, `app.kubernetes.io/name=altinity-clickhouse-operator` | TCP 8123 | host readiness and schema queries over HTTP |
@@ -256,12 +278,12 @@ on every reconcile, so a moved API server address follows within one poll. If th
 address, the policies are not written and the workspace retries: an egress rule with no destination
 would allow every destination.
 
-On the dev AKS cluster (`orama-production-cluster-01`, read 2026-10-03), the `kubernetes` Service is
-`10.0.0.1:443` and its Endpoints hold one address, `20.237.72.161:443`, the public address of the
+On the dev AKS cluster (`example-management`, read 2026-10-03), the `kubernetes` Service is
+`10.0.0.1:443` and its Endpoints hold one address, `203.0.113.10:443`, the public address of the
 AKS-managed control plane. There is no API Server VNet integration and the cluster is not private.
 `konnectivity-agent` in `kube-system` carries traffic from the control plane to nodes (logs, exec,
-webhooks), not from pods to the API, so pods reach the API directly at `20.237.72.161:443`. The
-rule is therefore `10.0.0.1/32` and `20.237.72.161/32` on TCP 443. The network data plane is Azure
+webhooks), not from pods to the API, so pods reach the API directly at `203.0.113.10:443`. The
+rule is therefore `10.0.0.1/32` and `203.0.113.10/32` on TCP 443. The network data plane is Azure
 CNI powered by Cilium 1.18 with kube-proxy replacement, which translates `10.0.0.1` to the endpoint
 at connect time. Cilium gives an API server outside the cluster an identity that keeps its CIDR
 labels (`resolveLabels` in `pkg/ipcache/metadata.go` drops them only for nodes and other in-cluster

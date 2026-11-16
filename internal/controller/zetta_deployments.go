@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -42,7 +39,7 @@ const (
 	zettaRowTimeLayout = "2006-01-02T15:04:05.000000Z"
 )
 
-// The operator's orama_control columns are lake's contract (operator#560, Steve 2026-10-17: lake's
+// The operator's orama_control columns are lake's contract (operator#560: lake's
 // format is the contract and the operator conforms). Each list is a copy of lake's
 // include/lake/control/zetta_control.hpp; lake selects exactly these columns WHERE lake =
 // LAKE_PUBLIC_HOST, and Zetta refuses a SELECT naming a column no row of the table carries

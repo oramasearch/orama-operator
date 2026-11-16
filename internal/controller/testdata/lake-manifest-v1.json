@@ -523,7 +523,7 @@
       "secret": true
     },
     {
-      "description": "Where orders go (default support@orama.com)",
+      "description": "Where orders go (default support@company.example)",
       "name": "LAKE_SUPPORT_EMAIL",
       "required": false,
       "secret": false

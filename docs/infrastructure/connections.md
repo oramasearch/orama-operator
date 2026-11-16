@@ -65,7 +65,7 @@ kind's StatefulSet. So `resolveServiceTarget` (`internal/controller/service_targ
 
 If no primary resource carries the id, pods labelled `orama.cloud/service-id=<id>` are the target.
 Tunnels (`resolveTunnelTarget`), egress rules with a service source, and the credential's kind lookup
-use the same resolution. Found on 2026-10-14 on Lake/prod: before this, every connection to a service
+use the same resolution. Found on a development Lake: before this, every connection to a service
 stayed `Pending` waiting for the target's Service ports.
 
 A row with non-null `credential_scope` also gets a credential of its own: see
@@ -104,8 +104,14 @@ namespace. Only the operator reads it. Each workspace `NetworkSandbox` has the a
 computes itself, so the plaintext password never reaches the server, its logs or
 `pg_stat_activity`.
 
+**The superuser session verifies the server** (orama-operator#775). The operator connects to
+`<cluster>-rw.<namespace>.svc`, the name CloudNativePG's server certificate carries, with
+`sslmode=verify-full` against the cluster's own CA (Secret `<cluster>-ca`, key `ca.crt`), and never
+falls back to an unverified or plaintext session. Until that Secret exists the Connection waits
+("waiting for the target's Postgres CA Secret") and the superuser password is never sent.
+
 **The superuser session trusts nothing in the tenant's database**
-([operator#800](https://github.com/oramasearch/orama-operator/issues/800), LSR-138). The database
+([operator#800](https://github.com/oramasearch/orama-operator/issues/800)). The database
 belongs to the tenant: its owner may set the database's default `search_path` and create objects in
 its own schemas, so a name resolved through that path could be the owner's look-alike of a catalog
 view, function or operator, run with superuser rights. Every session the operator opens as the
@@ -190,6 +196,6 @@ resolution, guarded rollout, removal in one reconcile, absence before `network_g
 egress retirement and non-flapping status writes. The opt-in pgx test creates the 0084 connection
 tables itself because that migration is not yet vendored.
 
-The named acceptance probe on `orama-nonprod-cluster-01` is deferred to rollout: an app with one
+The named acceptance probe on `example-nonprod` is deferred to rollout: an app with one
 connection reaches only its selected service, the same app without the connection is refused, and
 setting the row absent refuses the path after one reconcile.

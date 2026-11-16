@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -15,8 +12,8 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// The isolation rules a tenant's app runs under, which the deep search of operator#711
-// (docs/security/deep-search-711-tenant-app.md) relies on. Each test pins one rule so that it
+// The isolation rules a tenant's app runs under, which a security review of tenant apps relies
+// on. Each test pins one rule so that it
 // cannot silently stop holding.
 
 const isolationTestWorkspace = "prod-ws-0123456789ab"
@@ -229,6 +226,12 @@ func TestNoWorkspaceAPIServerOrOperatorAllowanceSelectsATenantApp(t *testing.T) 
 		operatorPostgres := workspaceOperatorPostgresPolicy("orama-system", isolationTestWorkspace, nil)
 		if selectorMatches(t, operatorPostgres.Spec.PodSelector, labels) {
 			t.Fatalf("%s: the operator's Postgres allowance selects the app", name)
+		}
+		for _, allowance := range workspaceOramaOperatorIngresses {
+			policy := workspaceOramaOperatorIngressPolicy(allowance, "orama-system", isolationTestWorkspace, nil)
+			if selectorMatches(t, policy.Spec.PodSelector, labels) {
+				t.Fatalf("%s: the operator's allowance %s selects the app", name, policy.Name)
+			}
 		}
 	}
 }

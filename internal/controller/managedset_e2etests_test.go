@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -75,7 +72,7 @@ func TestALakeSetRunsItsE2ETestOnItsMembersCluster(t *testing.T) {
 	if set.Status.Phase != clusterPhaseReady {
 		t.Fatalf("a run does not change the set's phase: %+v", set.Status.ManagedSetStatus)
 	}
-	if got := set.Status.E2ETests[0]; got.Phase != e2ePhaseRunning || got.Cluster != "orama-nonprod-cluster-01" || got.JobName != "testing-gate-e2e-1" {
+	if got := set.Status.E2ETests[0]; got.Phase != e2ePhaseRunning || got.Cluster != "example-nonprod" || got.JobName != "testing-gate-e2e-1" {
 		t.Fatalf("running: %+v", got)
 	}
 

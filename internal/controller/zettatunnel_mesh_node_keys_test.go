@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -42,7 +39,7 @@ func daemonSetNodes(daemonSet *appsv1.DaemonSet, all []string) []string {
 	return nodes
 }
 
-// TestEachMeshNodeReceivesOnlyItsOwnWorkloadKeys is LSR-039 (orama-operator#788): kubelet delivers
+// TestEachMeshNodeReceivesOnlyItsOwnWorkloadKeys is orama-operator#788: kubelet delivers
 // every Secret a pod mounts to that pod's node, so root on one node read every node's workload
 // private keys when the one DaemonSet mounted every template shard. Read from the rendered objects:
 // every private key a mesh pod on a node can receive belongs to a workload on that node.

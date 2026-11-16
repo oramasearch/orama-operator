@@ -12,7 +12,7 @@ Every Lake runs it; there is no switch. Every field is optional:
 ```yaml
 spec:
   apps:
-    wildcard: apps.oramadev.net    # empty: the Lake's spec.host
+    wildcard: apps.nonprod.example.com    # empty: the Lake's spec.host
     ingressClass: nginx
     runtimeImage: oramasearch/app-runtime:<immutable-tag>   # empty: the operator's default
   dnsSecretRef:
@@ -101,7 +101,12 @@ reason `SecretDeliveryPending` and no workload is created; a failed delivery say
 reason. An unpinned lake source is delivered again every five minutes ([sealed
 secrets](sealed-secrets.md#rotation-of-a-lake-source)), so a new version changes the copy and the pod
 template's credential digest and the pods roll. Removing the reference deletes the
-`LakeSealedSecret`, its produced Secret and the copy.
+`LakeSealedSecret`, its produced Secret and the copy. When lake answers that the secret is gone (`not_found`: deleted,
+destroyed, or its mount removed), the `LakeSealedSecret` reports `Revoked` and deletes its produced
+Secret, and the LakeApp deletes its copy in the workspace namespace and takes the workload down with
+`SecretDeliveryPending`, so no pod keeps the withdrawn value
+([orama-operator#777](https://github.com/oramasearch/orama-operator/issues/777); see
+[sealed secrets](sealed-secrets.md#when-lake-stops-delivering-a-secret-orama-operator777)).
 
 Lake must authorize these references and detect secret env values before writing them; plaintext
 credentials belong in lake's secret store, never these JSON columns. `bindings_json` is:
@@ -113,8 +118,11 @@ credentials belong in lake's secret store, never these JSON columns. `bindings_j
 `zetta` can be null or absent. The sync checks each service ID against a present `services` row
 in the same workspace and resolves its name. Duplicate or unsafe filenames fail validation.
 The Service reconciler publishes an ID key alongside its existing `<slug>.json` key in the
-Lake-owned `lake-<lake>-services` Secret; both contain the same connection document. Only requested
-ID keys are copied to `app-bindings` in the app namespace. The pod mounts them as
+Lake-owned `lake-<lake>-services` Secret; both contain the same connection document, and an
+annotation `service-workspace.orama.cloud/<id>` records the service's workspace. Only requested
+ID keys **whose annotation names the app's own workspace** are copied to `app-bindings` in the app
+namespace (lake#945): a `LakeApp` naming another workspace's service reports
+`ServiceInAnotherWorkspace` and gets nothing, whatever its bindings say. The pod mounts them as
 `/var/run/orama/bindings/services/<service name>`. Withdrawn services lose both keys; an app whose
 connection is unavailable stops its workload and reports binding progress.
 
@@ -264,7 +272,7 @@ The Lake-level settings are:
   lake's generated build Dockerfile uses the configured private base image rather than an implicit
   Docker Hub library image;
 - `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`; empty uses the
-  Lake's own `spec.host`, so an app is `<app>.<lake host>` (`myapp.lake-dev.oramadev.net`). The
+  Lake's own `spec.host`, so an app is `<app>.<lake host>` (`myapp.lake-dev.nonprod.example.com`). The
   operator injects it into lake as `LAKE_APPS_WILDCARD` so lake can validate and create app hosts.
   HTTPS on these two-level names needs a certificate per zone ([#515](https://github.com/oramasearch/orama-operator/issues/515));
 - `spec.apps.ingressClass`: the app Ingress class, defaulting to `nginx`.
@@ -393,7 +401,7 @@ the auth call reaches the browser. When the Lake has public ingress (`ingressEna
 `https://<lake host>/apps/authorize?app=<app id>&rd=https://$host$escaped_request_uri`. The return URL
 is always https because TLS ends at the edge proxy. The handoff and cookie are specified in lake#407.
 
-**Control-plane credentials (LSR-208).** The shared ingress-nginx platform configuration clears
+**Control-plane credentials.** The shared ingress-nginx platform configuration clears
 `Authorization` before proxying to every tenant app, including public apps, runtime and image apps,
 and custom hosts. It drops the entire `Cookie` header if it contains `lake_session`,
 `__Host-lake_session` or `__Secure-lake_session` (case-insensitive, including repeated cookie
@@ -500,7 +508,6 @@ inside that document (lake#1205).
 security and no Kubernetes token, egress only to cluster DNS, the Lake's API port and the app's own
 workspace, ingress only from ingress-nginx and the owning Lake, no workspace Kubernetes API or
 operator allowance selecting an app, and Lake-protected identity headers set from Lake's answer.
-The security review behind them is [`../security/deep-search-711-tenant-app.md`](../security/deep-search-711-tenant-app.md).
 The Services/Stores shared-Secret regression additionally verifies ID aliases and their withdrawal.
 
 The field-by-field reference is in [`../crd-reference.md`](../crd-reference.md#lakeapp-separate-crd-namespaced--one-deployed-app).

@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -129,7 +126,7 @@ func TestDashboardGrantsSQL(t *testing.T) {
 		"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON subscription_plans, stripe_addon_prices, llms, oramacore_clusters FROM dashboard;",
 		"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO dashboard;",
 		"controldb-schema " + schemaVersion(dashboardSchemaSQL),
-		"controldb-schema-0008 " + schemaVersion(mustSQL(controlDBSchema0008SQL())),
+		"controldb-schema-0008 " + schemaVersion(mustSQL(controlDBSchema0008SQL(dashboardReferenceRowsSQL))),
 	} {
 		if !strings.Contains(last.sql, want) {
 			t.Errorf("dashboard grants lack %q:\n%s", want, last.sql)

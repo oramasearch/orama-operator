@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -423,7 +420,7 @@ func TestR2BucketInitialConfigurationAfterNotFound(t *testing.T) {
 
 func TestR2BucketCustomDomain(t *testing.T) {
 	b := testR2Bucket(oramav1alpha1.BucketDeletionRetain, false)
-	b.Spec.CustomDomain = &oramav1alpha1.CloudflareR2CustomDomain{Domain: "status.lake.live", ZoneID: "zone-1"}
+	b.Spec.CustomDomain = &oramav1alpha1.CloudflareR2CustomDomain{Domain: "status.lakelive.example", ZoneID: "zone-1"}
 	r, kube, cf := newR2Fixture(t, b)
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(b)})
 	if err != nil {
@@ -432,22 +429,22 @@ func TestR2BucketCustomDomain(t *testing.T) {
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(b), b); err != nil {
 		t.Fatal(err)
 	}
-	got := cf.domains["status.lake.live"]
+	got := cf.domains["status.lakelive.example"]
 	if got == nil || got["zoneId"] != "zone-1" || got["enabled"] != true || got["minTLS"] != "1.2" {
 		t.Fatalf("attached %v", got)
 	}
-	if b.Status.CustomDomain != "status.lake.live" || b.Status.CustomDomainStatus != "ownership=pending ssl=pending" || result.RequeueAfter == 0 {
+	if b.Status.CustomDomain != "status.lakelive.example" || b.Status.CustomDomainStatus != "ownership=pending ssl=pending" || result.RequeueAfter == 0 {
 		t.Fatalf("status %+v requeue %v: a pending domain is looked at again", b.Status, result.RequeueAfter)
 	}
 	// Next pass reads Cloudflare's verdict and stops requeueing; a disabled domain is re-enabled.
-	cf.domains["status.lake.live"]["enabled"] = false
+	cf.domains["status.lakelive.example"]["enabled"] = false
 	result, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(b)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = kube.Get(context.Background(), client.ObjectKeyFromObject(b), b)
-	if cf.domains["status.lake.live"]["enabled"] != true || b.Status.CustomDomainStatus != r2CustomDomainActive || result.RequeueAfter != 0 {
-		t.Fatalf("domain %v status %+v requeue %v", cf.domains["status.lake.live"], b.Status, result.RequeueAfter)
+	if cf.domains["status.lakelive.example"]["enabled"] != true || b.Status.CustomDomainStatus != r2CustomDomainActive || result.RequeueAfter != 0 {
+		t.Fatalf("domain %v status %+v requeue %v", cf.domains["status.lakelive.example"], b.Status, result.RequeueAfter)
 	}
 	// Dropping it from the spec detaches it.
 	b.Spec.CustomDomain = nil

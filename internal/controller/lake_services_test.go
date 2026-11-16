@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -40,6 +37,11 @@ const (
 	testDefaultID        = "33333333-3333-4333-8333-333333333333"
 	testDefaultSlug      = "ws-0123456789ab"
 )
+
+// testServiceWorkspaceNamespace is the workspace namespace of every test service row. The Lake's
+// own namespace is testServiceNamespace: a tenant service runs only in its workspace namespace,
+// never in the Lake namespace (operator#778).
+const testServiceWorkspaceNamespace = testWorkspaceName
 
 // fakeServiceStore is the in-memory LakeServiceStore: it serves the rows it holds and records
 // every status upsert, applying it so the next read sees it.
@@ -353,7 +355,7 @@ func (f *fakeServiceStore) setDesired(id, desired string) {
 
 func testService(id, slug, kind, spec string, isDefault bool) LakeService {
 	return LakeService{ID: id, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
-		WorkspaceNamespace: testServiceNamespace, Kind: kind, Name: kind, Slug: slug,
+		WorkspaceNamespace: testServiceWorkspaceNamespace, Kind: kind, Name: kind, Slug: slug,
 		IsDefault: isDefault, Spec: spec, Desired: serviceDesiredPresent, Generation: 1}
 }
 
@@ -391,6 +393,9 @@ type serviceHarness struct {
 	updates *int
 	// changing is what the last poll reported: a service still starting or being deleted.
 	changing bool
+	// tenantUsers stands in for the operator's SQL and CQL sessions to TiDB and Cassandra
+	// (operator#771).
+	tenantUsers *fakeTenantUsers
 }
 
 func newServiceHarness(t *testing.T, lake *oramav1alpha1.Lake, store *fakeServiceStore, objects ...client.Object) *serviceHarness {
@@ -454,8 +459,12 @@ func newServiceHarnessWithout(t *testing.T, lake *oramav1alpha1.Lake, store *fak
 				return c.Delete(ctx, obj, opts...)
 			},
 		}).Build()
+	users := &fakeTenantUsers{}
+	previous := tenantUsers
+	tenantUsers = users
+	t.Cleanup(func() { tenantUsers = previous })
 	return &serviceHarness{t: t, client: c, scheme: s, store: store, lake: lake, deletes: deletes, deletedKinds: deletedKinds, updates: updates,
-		reconciler: &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}}
+		tenantUsers: users, reconciler: &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}}
 }
 
 func (h *serviceHarness) poll() {
@@ -470,7 +479,7 @@ func (h *serviceHarness) poll() {
 func (h *serviceHarness) zettaCluster(slug string) *oramav1alpha1.OramaZettaCluster {
 	h.t.Helper()
 	cluster := &oramav1alpha1.OramaZettaCluster{}
-	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: serviceResourceName("prod", slug)}, cluster); err != nil {
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: serviceResourceName("prod", slug)}, cluster); err != nil {
 		h.t.Fatalf("get zetta service cluster %s: %v", slug, err)
 	}
 	return cluster
@@ -478,7 +487,7 @@ func (h *serviceHarness) zettaCluster(slug string) *oramav1alpha1.OramaZettaClus
 
 func (h *serviceHarness) postgresCluster(slug string) *unstructured.Unstructured {
 	h.t.Helper()
-	cluster := newCNPGCluster(testServiceNamespace, serviceResourceName("prod", slug))
+	cluster := newCNPGCluster(testServiceWorkspaceNamespace, serviceResourceName("prod", slug))
 	if err := h.client.Get(context.Background(), client.ObjectKeyFromObject(cluster), cluster); err != nil {
 		h.t.Fatalf("get postgres service cluster %s: %v", slug, err)
 	}
@@ -529,7 +538,7 @@ func lakeOwnerRef(lake *oramav1alpha1.Lake) []metav1.OwnerReference {
 func zettaDataClaim(cluster string, ordinal int, deleting bool) *corev1.PersistentVolumeClaim {
 	owner := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: cluster}}
 	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
-		Name: fmt.Sprintf("data-%s-zetta-%d", cluster, ordinal), Namespace: testServiceNamespace, Labels: zettaLabels(owner),
+		Name: fmt.Sprintf("data-%s-zetta-%d", cluster, ordinal), Namespace: testServiceWorkspaceNamespace, Labels: zettaLabels(owner),
 	}}
 	if deleting {
 		now := metav1.Now()
@@ -560,14 +569,22 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 	}
 	if cluster.Spec.Replicas != 2 || cluster.Spec.Storage.Size != "20Gi" || cluster.Spec.Image != "oramasearch/zetta:service" ||
 		cluster.Spec.IngressEnabled || cluster.Spec.ProvisionOperatorSchema == nil || *cluster.Spec.ProvisionOperatorSchema ||
-		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 4 ||
+		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 3 ||
 		cluster.Spec.Env[0].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || cluster.Spec.Env[0].Value != "134217728" ||
 		cluster.Spec.Env[1].Name != "MALLOC_ARENA_MAX" || cluster.Spec.Env[1].Value != "2" ||
-		cluster.Spec.Env[2].Name != "ZETTA_EGRESS_ALLOW" || cluster.Spec.Env[2].Value != "" ||
-		cluster.Spec.Env[3].Name != "ZETTA_CONNECTOR_ALLOW_DESTINATIONS" || cluster.Spec.Env[3].Value != "" {
+		cluster.Spec.Env[2].Name != "ZETTA_CONNECTOR_ALLOW_DESTINATIONS" || cluster.Spec.Env[2].Value != "" ||
+		// The egress allowlist is the cluster's ConfigMap, not its env (operator#724).
+		cluster.Spec.EgressAllowConfigMap != cluster.Name+"-zetta-egress" {
 		t.Fatalf("unexpected zetta service spec: %+v", cluster.Spec)
 	}
-	endpoint := "http://prod-svc-111111111111-zetta.lake.svc.cluster.local:4800"
+	var egress corev1.ConfigMap
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: cluster.Namespace, Name: cluster.Spec.EgressAllowConfigMap}, &egress); err != nil {
+		t.Fatalf("the service Zetta's egress ConfigMap: %v", err)
+	}
+	if allow, found := egress.Data["allow"]; !found || allow != "" || !metav1.IsControlledBy(&egress, cluster) {
+		t.Fatalf("egress ConfigMap = %+v, want an empty (deny) allowlist controlled by the cluster", egress)
+	}
+	endpoint := "http://prod-svc-111111111111-zetta.prod-ws-123e4567e89b.svc.cluster.local:4800"
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseProvisioning, "waiting for the Zetta nodes", endpoint)
 
 	// One of two nodes ready is not ready.
@@ -583,7 +600,7 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 		t.Fatal("credential written before the admin token exists")
 	}
 
-	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-111111111111-zetta-admin", Namespace: testServiceNamespace},
+	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-111111111111-zetta-admin", Namespace: testServiceWorkspaceNamespace},
 		Data: map[string][]byte{"token": []byte("zetta-admin-token")}})
 	h.poll()
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseReady, "service ready", endpoint)
@@ -694,7 +711,7 @@ func TestServicesPostgresCreateAndCredential(t *testing.T) {
 	if superuser, _, _ := unstructured.NestedBool(cluster.Object, "spec", "enableSuperuserAccess"); !superuser {
 		t.Fatalf("superuser access is off: %v", cluster.Object["spec"])
 	}
-	endpoint := "prod-svc-222222222222-rw.lake.svc.cluster.local:5432"
+	endpoint := "prod-svc-222222222222-rw.prod-ws-123e4567e89b.svc.cluster.local:5432"
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances", endpoint)
 
 	// Ready instances must equal spec instances.
@@ -724,7 +741,7 @@ func TestServicesPostgresCreateAndCredential(t *testing.T) {
 	h.create(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "lake-prod-abc", Namespace: testServiceNamespace,
 		Labels: map[string]string{"app.kubernetes.io/name": "lake"}}})
 	uri := "postgresql://app:secret@prod-svc-222222222222-rw.lake:5432/app"
-	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-222222222222-app", Namespace: testServiceNamespace},
+	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-222222222222-app", Namespace: testServiceWorkspaceNamespace},
 		Data: map[string][]byte{"username": []byte("app"), "password": []byte("secret"), "dbname": []byte("app"), "uri": []byte(uri),
 			"host": []byte("prod-svc-222222222222-rw"), "port": []byte("5432")}})
 	h.poll()
@@ -744,7 +761,7 @@ func TestServicesPostgresCreateAndCredential(t *testing.T) {
 		t.Fatalf("lake pod annotation = %q, want the services Secret version %q", got, secret.ResourceVersion)
 	}
 	raw := h.credentials()[testPostgresSlug+".json"]
-	want := `{"kind":"postgres","host":"prod-svc-222222222222-rw.lake.svc.cluster.local","port":5432,"database":"app","user":"app","password":"secret","uri":"` + uri + `"}`
+	want := `{"kind":"postgres","host":"prod-svc-222222222222-rw.prod-ws-123e4567e89b.svc.cluster.local","port":5432,"database":"app","user":"app","password":"secret","uri":"` + uri + `"}`
 	if string(raw) != want {
 		t.Fatalf("postgres credential =\n%s\nwant\n%s", raw, want)
 	}
@@ -754,7 +771,7 @@ func TestServicesSkipWorkspaceOwnedZettaAndReconcileOtherServices(t *testing.T) 
 	lake := serviceTestLake()
 	name := serviceResourceName("prod", testDefaultSlug)
 	workspace := &oramav1alpha1.OramaZettaCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testServiceNamespace, OwnerReferences: lakeOwnerRef(lake),
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testServiceWorkspaceNamespace, OwnerReferences: lakeOwnerRef(lake),
 			Labels:      map[string]string{workspaceLabel: testWorkspaceID, serviceIDLabel: testDefaultID, serviceKindLabel: serviceKindZetta, serviceLakeLabel: "prod", "app.kubernetes.io/name": "lake-workspace"},
 			Annotations: map[string]string{serviceCustomerAnnotation: testServiceCustomer}},
 		Spec: oramav1alpha1.OramaZettaClusterSpec{Replicas: 1, Image: "oramasearch/zetta:workspace-owner", Storage: oramav1alpha1.OramaZettaStorage{Size: "5Gi"}},
@@ -783,19 +800,19 @@ func TestServicesSkipWorkspaceOwnedZettaAndReconcileOtherServices(t *testing.T) 
 		t.Fatal("services poll wrote workspace Zetta status")
 	}
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances",
-		"prod-svc-222222222222-rw.lake.svc.cluster.local:5432")
+		"prod-svc-222222222222-rw.prod-ws-123e4567e89b.svc.cluster.local:5432")
 }
 
 func TestServicesRefuseForeignResources(t *testing.T) {
 	lake := serviceTestLake()
 	// A cluster of the right name the Lake does not control.
-	foreign := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: serviceResourceName("prod", testZettaSlug), Namespace: testServiceNamespace,
+	foreign := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: serviceResourceName("prod", testZettaSlug), Namespace: testServiceWorkspaceNamespace,
 		Labels: map[string]string{serviceLakeLabel: "prod", serviceIDLabel: testZettaServiceID}}}
 	// A workspace cluster without this service's identity is foreign.
-	workspace := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: serviceResourceName("prod", testDefaultSlug), Namespace: testServiceNamespace,
+	workspace := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: serviceResourceName("prod", testDefaultSlug), Namespace: testServiceWorkspaceNamespace,
 		OwnerReferences: lakeOwnerRef(lake), Labels: map[string]string{workspaceIDLabel: testDefaultSlug, serviceLakeLabel: "prod"}}}
 	// A Lake-controlled CNPG cluster labelled as another service.
-	postgres := newCNPGCluster(testServiceNamespace, serviceResourceName("prod", testPostgresSlug))
+	postgres := newCNPGCluster(testServiceWorkspaceNamespace, serviceResourceName("prod", testPostgresSlug))
 	postgres.SetOwnerReferences(lakeOwnerRef(lake))
 	postgres.SetLabels(map[string]string{serviceLakeLabel: "prod", serviceIDLabel: "44444444-4444-4444-8444-444444444444"})
 	store := &fakeServiceStore{services: []LakeService{
@@ -806,9 +823,9 @@ func TestServicesRefuseForeignResources(t *testing.T) {
 	h := newServiceHarness(t, lake, store, foreign, workspace, postgres)
 	h.poll()
 
-	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseFailed, "OramaZettaCluster lake/prod-svc-111111111111 exists and is not this Lake's service", "")
-	expectStatus(t, store.status(t, testDefaultID), ServicePhaseFailed, "OramaZettaCluster lake/prod-ws-0123456789ab exists and is not this Lake's service", "")
-	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed, "CloudNativePG Cluster lake/prod-svc-222222222222 exists and is not this Lake's service", "")
+	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseFailed, "OramaZettaCluster prod-ws-123e4567e89b/prod-svc-111111111111 exists and is not this Lake's service", "")
+	expectStatus(t, store.status(t, testDefaultID), ServicePhaseFailed, "OramaZettaCluster prod-ws-123e4567e89b/prod-ws-0123456789ab exists and is not this Lake's service", "")
+	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed, "CloudNativePG Cluster prod-ws-123e4567e89b/prod-svc-222222222222 exists and is not this Lake's service", "")
 	if h.zettaCluster(testDefaultSlug).Labels[serviceIDLabel] != "" {
 		t.Fatal("a service claimed a foreign workspace cluster")
 	}
@@ -820,15 +837,15 @@ func TestServicesRefuseForeignResources(t *testing.T) {
 	if len(*h.deletes) != 0 {
 		t.Fatalf("deleted a foreign resource: %v", *h.deletes)
 	}
-	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseFailed, "OramaZettaCluster lake/prod-svc-111111111111 exists and is not this Lake's service", "")
-	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed, "CloudNativePG Cluster lake/prod-svc-222222222222 exists and is not this Lake's service", "")
+	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseFailed, "OramaZettaCluster prod-ws-123e4567e89b/prod-svc-111111111111 exists and is not this Lake's service", "")
+	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed, "CloudNativePG Cluster prod-ws-123e4567e89b/prod-svc-222222222222 exists and is not this Lake's service", "")
 
 	// A live data volume nothing proves is this service's blocks creation.
 	h2Store := &fakeServiceStore{services: []LakeService{testService(testZettaServiceID, testZettaSlug, serviceKindZetta, `{}`, false)}}
 	h2 := newServiceHarness(t, serviceTestLake(), h2Store, zettaDataClaim(serviceResourceName("prod", testZettaSlug), 0, false))
 	h2.poll()
 	expectStatus(t, h2Store.status(t, testZettaServiceID), ServicePhaseFailed,
-		"PersistentVolumeClaim lake/data-prod-svc-111111111111-zetta-0 exists and is not this Lake's service", "")
+		"PersistentVolumeClaim prod-ws-123e4567e89b/data-prod-svc-111111111111-zetta-0 exists and is not this Lake's service", "")
 }
 
 func TestServicesZettaDeletionOrderAndDeleted(t *testing.T) {
@@ -838,7 +855,7 @@ func TestServicesZettaDeletionOrderAndDeleted(t *testing.T) {
 	name := serviceResourceName("prod", testZettaSlug)
 	h.create(zettaDataClaim(name, 0, false))
 	h.create(zettaDataClaim(name, 1, false))
-	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name + "-zetta-admin", Namespace: testServiceNamespace}, Data: map[string][]byte{"token": []byte("t")}})
+	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name + "-zetta-admin", Namespace: testServiceWorkspaceNamespace}, Data: map[string][]byte{"token": []byte("t")}})
 	h.markZettaReady(testZettaSlug, 2)
 	h.poll()
 	if store.status(t, testZettaServiceID).Phase != ServicePhaseReady || h.credentials()[testZettaSlug+".json"] == nil {
@@ -865,7 +882,7 @@ func TestServicesZettaDeletionOrderAndDeleted(t *testing.T) {
 		t.Fatal("credential key kept for an absent service")
 	}
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseDeleting, "deleting the Zetta cluster",
-		"http://prod-svc-111111111111-zetta.lake.svc.cluster.local:4800")
+		"http://prod-svc-111111111111-zetta.prod-ws-123e4567e89b.svc.cluster.local:4800")
 	if got := store.status(t, testZettaServiceID).ObservedGeneration; got != 2 {
 		t.Fatalf("observed_generation = %d, want 2", got)
 	}
@@ -891,7 +908,7 @@ func TestServicesPostgresDeletionWaitsForVolumes(t *testing.T) {
 	h := newServiceHarness(t, serviceTestLake(), store)
 	h.poll()
 	name := serviceResourceName("prod", testPostgresSlug)
-	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name + "-1", Namespace: testServiceNamespace,
+	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name + "-1", Namespace: testServiceWorkspaceNamespace,
 		Labels: map[string]string{cnpgClusterLabel: name}}}
 	h.create(claim)
 
@@ -902,7 +919,7 @@ func TestServicesPostgresDeletionWaitsForVolumes(t *testing.T) {
 	}
 	// The garbage collector has not removed the volume yet.
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseDeleting, "deleting the Postgres data volumes",
-		"prod-svc-222222222222-rw.lake.svc.cluster.local:5432")
+		"prod-svc-222222222222-rw.prod-ws-123e4567e89b.svc.cluster.local:5432")
 
 	if err := h.client.Delete(context.Background(), claim); err != nil {
 		t.Fatal(err)
@@ -924,7 +941,7 @@ func TestServicesQuotaRefusesOnlyNewServices(t *testing.T) {
 		t.Fatalf("first service: %+v", store.status(t, testZettaServiceID))
 	}
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed, "service quota reached (1)", "")
-	postgres := newCNPGCluster(testServiceNamespace, serviceResourceName("prod", testPostgresSlug))
+	postgres := newCNPGCluster(testServiceWorkspaceNamespace, serviceResourceName("prod", testPostgresSlug))
 	if err := h.client.Get(context.Background(), client.ObjectKeyFromObject(postgres), postgres); !apierrors.IsNotFound(err) {
 		t.Fatalf("a service over quota was created: %v", err)
 	}
@@ -989,7 +1006,7 @@ func TestServicesQuotaIsIndependentFromMaxWorkspaces(t *testing.T) {
 	if h.zettaCluster(testZettaSlug).Spec.Image != "oramasearch/zetta:workspace" {
 		t.Fatal("spec.workspaces.image is not the fallback Zetta image")
 	}
-	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances", "prod-svc-222222222222-rw.lake.svc.cluster.local:5432")
+	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances", "prod-svc-222222222222-rw.prod-ws-123e4567e89b.svc.cluster.local:5432")
 }
 
 func TestServicesStatusUpsertOnlyOnChange(t *testing.T) {

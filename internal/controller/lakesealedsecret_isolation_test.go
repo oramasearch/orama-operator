@@ -1,12 +1,9 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
-// Regression tests for the isolation rules the security deep search of sealed secret delivery
-// relied on (orama-operator#714, docs/security/deep-search-714-workspace-services.md). Each test
+// Regression tests for the isolation rules a security review of sealed secret delivery relied
+// on. Each test
 // names the rule it holds: break the rule and the test fails.
 
 import (
@@ -265,7 +262,9 @@ func TestLakeSealedSecretStatusNeverCarriesThePlaintext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		mint := decodeMintRequest(t, request)
 		if refuse {
-			_ = json.NewEncoder(writer).Encode(lakeMintResponse{OK: false, Error: &lakeAPIError{Code: "not_found", Message: "no such secret"}})
+			// A refusal that is not a revocation (not_found now deletes the projection, operator#777,
+			// TestLakeSourceRevokedByLakeDeletesTheSecret): the mint fails and its error comes back.
+			_ = json.NewEncoder(writer).Encode(lakeMintResponse{OK: false, Error: &lakeAPIError{Code: "store_unavailable", Message: "the secret store is unavailable"}})
 			return
 		}
 		record := referenceSealForMintRequest(t, mint, []byte(isolationPlaintext), 1)

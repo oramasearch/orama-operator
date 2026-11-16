@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -24,13 +21,13 @@ import (
 )
 
 // originTLSLake is a production-shaped Lake: a region host, the apex, a preview wildcard and the
-// lake.live zone's token Secret.
+// lakelive.example zone's token Secret.
 func originTLSLake() (*oramav1alpha1.Lake, *corev1.Secret) {
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "shared", UID: "lake-uid"},
 		Spec: oramav1alpha1.LakeSpec{
 			Namespace: "lake", Image: "oramasearch/lake:test", IngressEnabled: true,
-			Host: "eu.lake.live", ApexHost: "lake.live", PreviewWildcard: "preview.lake.live",
+			Host: "eu.lakelive.example", ApexHost: "lakelive.example", PreviewWildcard: "preview.lakelive.example",
 			DNSSecretRef: &corev1.LocalObjectReference{Name: "cloudflare-api-token-lake-live"},
 		},
 	}
@@ -89,7 +86,7 @@ func TestLakeOriginTLSCoversEveryHostAndWildcard(t *testing.T) {
 
 	main := getIngress(t, c, "lake", "lake-shared")
 	got := tlsSecretsByHost(main)
-	if len(got) != 2 || got["eu.lake.live"] != "eu.lake.live-tls" || got["lake.live"] != "lake.live-tls" {
+	if len(got) != 2 || got["eu.lakelive.example"] != "eu.lakelive.example-tls" || got["lakelive.example"] != "lakelive.example-tls" {
 		t.Errorf("main ingress TLS = %+v", main.Spec.TLS)
 	}
 	if main.Annotations[annotationCertManagerIssuer] != "lake-shared-letsencrypt" {
@@ -97,8 +94,8 @@ func TestLakeOriginTLSCoversEveryHostAndWildcard(t *testing.T) {
 	}
 
 	for name, host := range map[string]string{
-		"lake-shared-apps-wildcard":    "*.eu.lake.live",
-		"lake-shared-preview-wildcard": "*.preview.lake.live",
+		"lake-shared-apps-wildcard":    "*.eu.lakelive.example",
+		"lake-shared-preview-wildcard": "*.preview.lakelive.example",
 	} {
 		ing := getIngress(t, c, "lake", name)
 		if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != host {
@@ -107,7 +104,7 @@ func TestLakeOriginTLSCoversEveryHostAndWildcard(t *testing.T) {
 		if tlsSecretsByHost(ing)[host] != ingressTLSSecretName(host) || ing.Annotations[annotationCertManagerIssuer] != "lake-shared-letsencrypt" {
 			t.Errorf("%s TLS = %+v annotations %+v", name, ing.Spec.TLS, ing.Annotations)
 		}
-		if ing.Annotations[annotationNginxPermanentRedirect] != "https://eu.lake.live/" {
+		if ing.Annotations[annotationNginxPermanentRedirect] != "https://eu.lakelive.example/" {
 			t.Errorf("%s does not send unknown names to the Lake: %+v", name, ing.Annotations)
 		}
 	}
@@ -186,7 +183,7 @@ func TestLakeIngressFollowsTheZone(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); err != nil {
 		t.Fatal(err)
 	}
-	policy.Status.Hosts = []oramav1alpha1.EdgeZoneHostStatus{{Name: "*.eu.lake.live", Edge: "TLS handshake failed"}}
+	policy.Status.Hosts = []oramav1alpha1.EdgeZoneHostStatus{{Name: "*.eu.lakelive.example", Edge: "TLS handshake failed"}}
 	if err := c.Status().Update(context.Background(), &policy); err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +231,7 @@ func TestLakeWithoutADNSCredentialIssuesThroughHTTP01(t *testing.T) {
 
 	main := getIngress(t, c, "lake", "lake-shared")
 	got := tlsSecretsByHost(main)
-	if len(got) != 2 || got["eu.lake.live"] != "eu.lake.live-tls" || got["lake.live"] != "lake.live-tls" {
+	if len(got) != 2 || got["eu.lakelive.example"] != "eu.lakelive.example-tls" || got["lakelive.example"] != "lakelive.example-tls" {
 		t.Errorf("main ingress TLS = %+v", main.Spec.TLS)
 	}
 	if main.Annotations[annotationCertManagerIssuer] != "lake-shared-letsencrypt" {
@@ -290,7 +287,7 @@ func TestLakeIssuerChoosesTheSolverPerHost(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); err != nil {
 		t.Fatal(err)
 	}
-	policy.Status.Zone = "Lake.Live."
+	policy.Status.Zone = "LakeLive.Example."
 	if err := c.Status().Update(context.Background(), &policy); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +299,7 @@ func TestLakeIssuerChoosesTheSolverPerHost(t *testing.T) {
 	dns01 := solvers[0].(map[string]any)
 	zones, _, _ := unstructured.NestedStringSlice(dns01, "selector", "dnsZones")
 	ref, _, _ := unstructured.NestedStringMap(dns01, "dns01", "cloudflare", "apiTokenSecretRef")
-	if len(zones) != 1 || zones[0] != "lake.live" || ref["name"] != "cloudflare-api-token-lake-live" || ref["key"] != "token" {
+	if len(zones) != 1 || zones[0] != "lakelive.example" || ref["name"] != "cloudflare-api-token-lake-live" || ref["key"] != "token" {
 		t.Errorf("DNS-01 solver = %v", dns01)
 	}
 	http01 := solvers[1].(map[string]any)
@@ -313,12 +310,12 @@ func TestLakeIssuerChoosesTheSolverPerHost(t *testing.T) {
 		t.Errorf("HTTP-01 solver = %v", http01)
 	}
 	// Every Lake host and both wildcards are in the zone, so they stay on DNS-01.
-	for _, host := range []string{"eu.lake.live", "lake.live", "*.eu.lake.live", "*.preview.lake.live"} {
-		if !dnsZoneCovers("lake.live", host) {
+	for _, host := range []string{"eu.lakelive.example", "lakelive.example", "*.eu.lakelive.example", "*.preview.lakelive.example"} {
+		if !dnsZoneCovers("lakelive.example", host) {
 			t.Errorf("%s is not solved by DNS-01", host)
 		}
 	}
-	if dnsZoneCovers("lake.live", "shop.example.com") || dnsZoneCovers("lake.live", "notlake.live") {
+	if dnsZoneCovers("lakelive.example", "shop.example.com") || dnsZoneCovers("lakelive.example", "notlakelive.example") {
 		t.Error("a name outside the zone is solved by DNS-01")
 	}
 }
@@ -336,7 +333,7 @@ func TestLakeAppIngressGetsOriginTLS(t *testing.T) {
 	ctx := context.Background()
 	lake, secret := originTLSLake()
 	wildcardSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "wildcard.eu.lake.live-tls", Namespace: "lake"},
+		ObjectMeta: metav1.ObjectMeta{Name: "wildcard.eu.lakelive.example-tls", Namespace: "lake"},
 		Type:       corev1.SecretTypeTLS,
 		Data:       map[string][]byte{corev1.TLSCertKey: []byte("cert"), corev1.TLSPrivateKeyKey: []byte("key")},
 	}
@@ -351,11 +348,11 @@ func TestLakeAppIngressGetsOriginTLS(t *testing.T) {
 	ns := "ws-1"
 	workload := lakeAppWorkloadObjectName(app)
 
-	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.eu.lake.live"); err != nil {
+	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.eu.lakelive.example"); err != nil {
 		t.Fatalf("reconcile app ingress: %v", err)
 	}
 	ing := getIngress(t, c, ns, workload)
-	copyName := tlsSecretsByHost(ing)["shop.eu.lake.live"]
+	copyName := tlsSecretsByHost(ing)["shop.eu.lakelive.example"]
 	if copyName == "" {
 		t.Fatalf("app ingress TLS = %+v", ing.Spec.TLS)
 	}
@@ -404,7 +401,7 @@ func TestLakeAppIngressGetsOriginTLS(t *testing.T) {
 	}
 
 	// Back under the wildcard: its own Certificate is deleted.
-	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.eu.lake.live"); err != nil {
+	if err := r.reconcileLakeAppIngress(ctx, lake, app, ns, "shop.eu.lakelive.example"); err != nil {
 		t.Fatalf("reconcile app ingress: %v", err)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "shop.example.com-tls"}, certificate); !apierrors.IsNotFound(err) {
@@ -422,7 +419,7 @@ func TestLakeEnvironmentIngressGetsOriginTLS(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "lake", UID: "environment-uid"},
 		Spec: oramav1alpha1.LakeEnvironmentSpec{
 			LakeRef: "shared", Repository: "repo-1", Environment: "checkout", Kind: oramav1alpha1.LakeEnvironmentKindNamed,
-			Host: "checkout.lake.live", Domains: []oramav1alpha1.LakeEnvironmentDomain{{Host: "shop.lake.live"}},
+			Host: "checkout.lakelive.example", Domains: []oramav1alpha1.LakeEnvironmentDomain{{Host: "shop.lakelive.example"}},
 			Image: testEnvironmentImage, Replicas: 1, Port: 8080,
 		},
 	}
@@ -430,15 +427,15 @@ func TestLakeEnvironmentIngressGetsOriginTLS(t *testing.T) {
 		WithStatusSubresource(environment, &networkingv1.Ingress{}).Build()
 	r := &LakeEnvironmentReconciler{Client: c, Scheme: scheme}
 	namespace := lakeEnvironmentNamespace(environment)
-	if _, err := r.reconcileEnvironmentIngress(ctx, lake, environment, namespace, "checkout.lake.live"); err != nil {
+	if _, err := r.reconcileEnvironmentIngress(ctx, lake, environment, namespace, "checkout.lakelive.example"); err != nil {
 		t.Fatalf("reconcile environment ingress: %v", err)
 	}
 	ing := getIngress(t, c, namespace, environmentWorkloadName(environment))
 	got := tlsSecretsByHost(ing)
-	if len(got) != 2 || got["checkout.lake.live"] == "" || got["shop.lake.live"] == "" {
+	if len(got) != 2 || got["checkout.lakelive.example"] == "" || got["shop.lakelive.example"] == "" {
 		t.Errorf("environment ingress TLS = %+v", ing.Spec.TLS)
 	}
-	for _, host := range []string{"checkout.lake.live", "shop.lake.live"} {
+	for _, host := range []string{"checkout.lakelive.example", "shop.lakelive.example"} {
 		certificate := &unstructured.Unstructured{}
 		certificate.SetGroupVersionKind(certManagerCertificateGVK)
 		if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: ingressTLSSecretName(host)}, certificate); err != nil {
@@ -450,10 +447,10 @@ func TestLakeEnvironmentIngressGetsOriginTLS(t *testing.T) {
 	}
 
 	// A preview host is one label under the preview wildcard: the wildcard's certificate.
-	if got := lakeWildcardFor(lake, "7ac4c59b92e4.preview.lake.live"); got != "*.preview.lake.live" {
+	if got := lakeWildcardFor(lake, "7ac4c59b92e4.preview.lakelive.example"); got != "*.preview.lakelive.example" {
 		t.Errorf("preview wildcard = %q", got)
 	}
-	if got := lakeWildcardFor(lake, "a.b.preview.lake.live"); got != "" {
+	if got := lakeWildcardFor(lake, "a.b.preview.lakelive.example"); got != "" {
 		t.Errorf("two labels under a wildcard are not covered by it, got %q", got)
 	}
 }
@@ -471,15 +468,15 @@ func TestLakeWithoutADNSCredentialIssuesAppAndEnvironmentHosts(t *testing.T) {
 	app := &oramav1alpha1.LakeApp{ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "lake", UID: "app-uid"}, Spec: oramav1alpha1.LakeAppSpec{LakeRef: "shared"}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, app).WithStatusSubresource(&networkingv1.Ingress{}).Build()
 	r := &LakeAppReconciler{Client: c, Scheme: s}
-	if err := r.reconcileLakeAppIngress(ctx, lake, app, "ws-1", "shop.eu.lake.live"); err != nil {
+	if err := r.reconcileLakeAppIngress(ctx, lake, app, "ws-1", "shop.eu.lakelive.example"); err != nil {
 		t.Fatalf("reconcile app ingress: %v", err)
 	}
-	if tlsSecretsByHost(getIngress(t, c, "ws-1", lakeAppWorkloadObjectName(app)))["shop.eu.lake.live"] == "" {
+	if tlsSecretsByHost(getIngress(t, c, "ws-1", lakeAppWorkloadObjectName(app)))["shop.eu.lakelive.example"] == "" {
 		t.Error("the app's Ingress has no TLS entry")
 	}
 	certificate := &unstructured.Unstructured{}
 	certificate.SetGroupVersionKind(certManagerCertificateGVK)
-	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "shop.eu.lake.live-tls"}, certificate); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "shop.eu.lakelive.example-tls"}, certificate); err != nil {
 		t.Fatalf("app certificate: %v", err)
 	}
 	if issuer, _, _ := unstructured.NestedString(certificate.Object, "spec", "issuerRef", "name"); issuer != "lake-shared-letsencrypt" {
@@ -498,7 +495,7 @@ func TestLakeWithoutADNSCredentialIssuesAppAndEnvironmentHosts(t *testing.T) {
 	ec := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake, preview).WithStatusSubresource(preview, &networkingv1.Ingress{}).Build()
 	er := &LakeEnvironmentReconciler{Client: ec, Scheme: scheme}
 	namespace := lakeEnvironmentNamespace(preview)
-	previewHost := "7ac4c59b92e4.preview.lake.live"
+	previewHost := "7ac4c59b92e4.preview.lakelive.example"
 	if _, err := er.reconcileEnvironmentIngress(ctx, lake, preview, namespace, previewHost); err != nil {
 		t.Fatalf("reconcile environment ingress: %v", err)
 	}

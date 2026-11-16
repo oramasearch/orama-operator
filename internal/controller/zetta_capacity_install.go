@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -31,7 +28,7 @@ import (
 // `unstructured` objects (embedded via go:embed) so it stays decoupled from Karpenter's Go types/version
 // — the same decoupling the NodePool reconcile uses. Cloud-gated: a clean no-op on bare-metal / k0s (no
 // cloud provider ⇒ no VM API to drive) and on AKS (Node Auto Provisioning already manages Karpenter);
-// the self-install path targets EKS. See docs/research/karpenter-manual.md + docs/components.md.
+// the self-install path targets EKS. See docs/components.md.
 
 //go:embed assets/karpenter/v1.13.0/crds.yaml
 var karpenterCRDManifests []byte

@@ -244,7 +244,7 @@ spec:
                     type: string
                   publicURL:
                     description: PublicURL is where the page is read, for example
-                      https://status.lake.live. Shown in alerts.
+                      https://status.example.com. Shown in alerts.
                     type: string
                 required:
                 - bucketSecretRef
@@ -258,7 +258,8 @@ spec:
                 minimum: 1
                 type: integer
               title:
-                description: Title is the page's heading, for example "lake.live status".
+                description: Title is the page's heading, for example "example.com
+                  status".
                 minLength: 1
                 type: string
             required:

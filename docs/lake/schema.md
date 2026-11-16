@@ -180,7 +180,7 @@ file in one transaction; one already at `0027` exits with
 ([services.md](services.md#duckdb-and-polars-lake195)); lake can only write them once this schema has
 applied.
 
-Migration `0026_sqlite_services` (liquid-bridge decision 47, amended) widens the `services.kind`
+Migration `0026_sqlite_services` widens the `services.kind`
 check once more, adding `sqlite` (dropping and re-adding `service_kind_check`, which every existing
 row already satisfies), and adds the completion table `public.sqlite_services_guard`, which was
 Lake's PostgresSchema guard until `0027`. No data changes. A database already at `0025` applies the whole
@@ -189,7 +189,7 @@ idempotent file in one transaction; one already at `0026` exits with
 ([services.md](services.md#sqlite-decision-47-amended)); lake can only write it once this schema has
 applied.
 
-Migration `0025_service_catalog` (liquid-bridge decision 47) widens the `services.kind` check to
+Migration `0025_service_catalog` widens the `services.kind` check to
 `zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey` (dropping and re-adding
 `service_kind_check`, which every existing row already satisfies) and adds the completion table
 `public.service_catalog_guard`, which was Lake's PostgresSchema guard until `0026`. No data changes. A
@@ -198,7 +198,7 @@ database already at `0024` applies the whole idempotent file in one transaction;
 new kinds ([services.md](services.md#the-catalog-decision-47)); lake can only write them once this
 schema has applied.
 
-Migration `0024_services` (liquid-bridge decision 46) adds `services`, written by lake, and
+Migration `0024_services` adds `services`, written by lake, and
 `service_status`, written by the operator's managed-services poll ([services.md](services.md)),
 plus the completion table `public.services_guard`, which was Lake's PostgresSchema guard until `0025`. It
 is additive: no backfill. A database already at `0023` applies the whole idempotent file in one
@@ -310,7 +310,7 @@ role with permission to create databases:
 ```sh
 export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
 export LAKE_SCHEMA_TEST_POSTGRES=1
-export PGUSER=stevesperandeo
+export PGUSER=postgres
 export GOFLAGS=-p=6
 export GOMAXPROCS=6
 go build ./... && go vet ./... && go test ./...

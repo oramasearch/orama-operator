@@ -57,8 +57,8 @@ spec:
             type: object
           spec:
             description: |-
-              ClerkApplicationSpec is the desired state of a Clerk application, one per environment
-              (orama-bridge#116). The Platform API token comes from the referenced Secret (key
+              ClerkApplicationSpec is the desired state of a Clerk application, one per environment.
+              The Platform API token comes from the referenced Secret (key
               `platformToken`) — never in the CR, never logged.
             properties:
               applicationName:

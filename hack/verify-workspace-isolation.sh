@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+
 set -eu
 
 if [ "$#" -ne 4 ]; then

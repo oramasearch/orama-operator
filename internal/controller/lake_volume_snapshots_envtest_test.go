@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -427,7 +424,7 @@ func TestVolumeSnapshotsAreTakenOnScheduleAndOnRequestAndPruned(t *testing.T) {
 	}
 }
 
-// operator#260 and decision 54 S12: deleting a workspace leaves its snapshots. Once lake marks the
+// operator#260: deleting a workspace leaves its snapshots. Once lake marks the
 // workspace deleted the operator takes and prunes nothing for it and leaves its status, and every
 // content it was bound to stays (deletionPolicy Retain), labelled with the workspace for a restore.
 func TestVolumeSnapshotsOutliveTheirWorkspace(t *testing.T) {

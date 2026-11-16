@@ -1,7 +1,4 @@
-/*
-Copyright 2026 OramaSearch.
-Licensed under the Apache License, Version 2.0.
-*/
+// SPDX-License-Identifier: MIT
 
 package controller
 
@@ -37,7 +34,7 @@ import (
 
 // OramaCloudV1Migration (operator#653) copies one Prod 1 team into one OramaCloudV1 stack. The
 // operator does not copy anything itself: each step runs the cloud-v1-migration image's run-step
-// (oramacore-aws#108) as a Job owned by the resource, and the tool's status --json, written to the
+// as a Job owned by the resource, and the tool's status --json, written to the
 // termination message, becomes status.result. The resource is the declared state ("team T is
 // copied into stack S, up to step X"); each Job is how the operator reaches it, kept as the record.
 
@@ -76,7 +73,7 @@ const (
 	// never cleared: the removal never runs again, even once its Job is gone.
 	migrationRemovedCondition = "Removed"
 
-	// The tool's exit codes (oramacore-aws#108): 0 completed, 3 blocked by a guard or preflight,
+	// The tool's exit codes: 0 completed, 3 blocked by a guard or preflight,
 	// 1 an unexpected error, 4 verification found a difference.
 	migrationExitBlocked    = 3
 	migrationExitDifference = 4
@@ -628,7 +625,7 @@ func migrationPullSecrets(m *oramav1alpha1.OramaCloudV1Migration, oc *oramav1alp
 	return refs
 }
 
-// migrationEnv is the tool's environment, a contract with run-step (oramacore-aws#108). Only the
+// migrationEnv is the tool's environment, a contract with run-step. Only the
 // scope, paths, URLs, revisions and SSM location are literal; every credential is a secretKeyRef.
 // ORAMA_MIGRATION_PROD2_CLUSTER_ID is left unset: the tool reads the target's c1 row itself.
 func migrationEnv(m *oramav1alpha1.OramaCloudV1Migration, target *migrationTarget, run migrationRun) []corev1.EnvVar {
