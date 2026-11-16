@@ -329,7 +329,7 @@ spec:
       rbac:
         extraRules:
           - apiGroups: ["orama.cloud"]
-            resources: ["oramacloudv1s", "pixieclouds", "pixieviziers", "peerconnections"]
+            resources: ["oramacloudv1s", "peerconnections"]
             verbs: ["list", "watch"]
       customResourceState:
         enabled: true
@@ -360,43 +360,6 @@ spec:
                         labelsFromPath:
                           component: [name]
                         valueFrom: [ready]
-              - groupVersionKind: {group: orama.cloud, version: v1alpha1, kind: PixieCloud}
-                metricNamePrefix: orama_pixiecloud
-                labelsFromPath:
-                  name: [metadata, name]
-                  namespace: [metadata, namespace]
-                metrics:
-                  - name: phase
-                    help: The observability hub's phase.
-                    each:
-                      type: StateSet
-                      stateSet:
-                        labelName: phase
-                        path: [status, phase]
-                        list: [Pending, Progressing, Ready, Degraded, Refused]
-                  - name: agent_connected
-                    help: 1 while the hub sees the agent cluster heartbeat.
-                    each:
-                      type: Gauge
-                      gauge:
-                        path: [status, agents]
-                        labelsFromPath:
-                          agent: [name]
-                        valueFrom: [connected]
-              - groupVersionKind: {group: orama.cloud, version: v1alpha1, kind: PixieVizier}
-                metricNamePrefix: orama_pixievizier
-                labelsFromPath:
-                  name: [metadata, name]
-                  namespace: [metadata, namespace]
-                metrics:
-                  - name: phase
-                    help: The cluster's observability agents' phase.
-                    each:
-                      type: StateSet
-                      stateSet:
-                        labelName: phase
-                        path: [status, phase]
-                        list: [Pending, Progressing, Ready, Degraded, Refused]
               - groupVersionKind: {group: orama.cloud, version: v1alpha1, kind: PeerConnection}
                 metricNamePrefix: orama_peerconnection
                 labelsFromPath:

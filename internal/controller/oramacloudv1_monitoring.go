@@ -65,7 +65,7 @@ func v1ControlDBMonitorName(oc *oramav1alpha1.OramaCloudV1) string { return oc.N
 // oramaCloudScrapeAllowances let only the platform's Prometheus reach the engine's and the control
 // database's metrics ports.
 func oramaCloudScrapeAllowances(engine, cnpgPods metav1.LabelSelector) []oramav1alpha1.NetworkSandboxPolicy {
-	prometheus := []networkingv1.NetworkPolicyPeer{namespacePodPeer(pixieMonitoringNamespace, map[string]string{prometheusPodsLabel: prometheusPodsValue})}
+	prometheus := []networkingv1.NetworkPolicyPeer{namespacePodPeer(platformMonitoringNamespace, map[string]string{prometheusPodsLabel: prometheusPodsValue})}
 	return []oramav1alpha1.NetworkSandboxPolicy{
 		sandboxAllowance("The platform's Prometheus scrapes the writer's and readers' /metrics on :8080 (operator#15).",
 			networkPolicy("allow-prometheus-engine-scrape", engine, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},

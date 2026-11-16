@@ -211,8 +211,7 @@ to its Service. Until it does, ingress-nginx stays, and #457 puts TLS on it firs
 
 ### Observability
 
-Pixie (#456) for live tracing; network flows and policy verdicts from Hubble need ACNS on AKS, so the
-portable record is our own: the tunnel, the broker endpoints and the gateways each log who connected
+Network flows and policy verdicts from Hubble need ACNS on AKS, so the portable record is our own: the tunnel, the broker endpoints and the gateways each log who connected
 to what, into the workspace Zetta.
 
 ## 6. Lake's part (lake#724)

@@ -49,9 +49,6 @@ kubectl --kubeconfig /tmp/nonprod.kubeconfig get nodes
 | `LakeSet` | `lset` | Lake instances on managed clusters, from one template. |
 | `OramaCloudV1Set` | `ocv1set` | Orama Cloud v1 instances on managed clusters, from one template. |
 | `LakeOrderSource` | `lorders` | Provisions the paid lake.live orders a `LakeSet`'s Lakes record ([orders](orders.md)). |
-| `ObservabilityProvider` | `obsprovider` | The pinned Pixie release, every image by digest ([observability](observability.md)). |
-| `ObservabilityHub` | `obshub` | A purpose's observability hub: production's on the managing cluster (no `clusterRef`), nonprod's on a nonprod cluster. |
-| `ObservabilityAgent` | `obsagent` | A cluster's Pixie agents, reporting to the hub of its purpose. |
 
 One command shows everything:
 
@@ -144,15 +141,11 @@ Edit the `ClusterHelmRelease` (`spec.chart.version`, `spec.values`) and
 apply. Read the chart's release notes for CRD changes first. `dependsOn` orders installs
 (cert-manager before K8ssandra); `crdURLs` names CRDs a chart ships in a separate file (TiDB).
 
-## Observability: hubs and agents
+## Observability
 
-Order, prerequisites and rollback are in [`observability.md`](observability.md#rolling-it-out):
-images from #455 first, then the platform layer (kube-prometheus-stack and Perses) on every cluster,
-then the operator, then nonprod's hub and agent, then production's hub on the managing cluster and
-production's agents. On a cluster, `kubectl get pxcloud -n plc` and `kubectl get pxvizier -n pl` show the
-concrete side; `kubectl get peer -n pl` the link. Nothing in `plc` or `pl` is edited by hand: the
-managing cluster writes the concrete resources, and each cluster's operator mints its own
-credentials.
+The platform layer's Prometheus, Alertmanager and Perses are installed like any other platform chart
+(above). The operator has no observability kinds since Pixie was removed (#1192); the order for
+rolling that removal onto a cluster is in [`observability.md`](observability.md#removed-pixie-and-the-observability-kinds).
 
 ## Run instances: sets
 

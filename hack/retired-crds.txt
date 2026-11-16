@@ -1,0 +1,11 @@
+# CRDs the chart no longer ships whose objects must be gone before an operator without them rolls.
+# hack/check-cluster-crds.sh (make check-crds) fails while any object of one still exists, and
+# cmd/crd_field_removal_test.go checks that every "CRD removed" in acknowledgedCRDChanges is here.
+# Keep an entry for as long as a cluster may still run a release that ships the kind.
+
+# Pixie and the observability kinds built on it (operator#1192), removed after v0.11.12.
+observabilityagents.orama.cloud
+observabilityhubs.orama.cloud
+observabilityproviders.orama.cloud
+pixieclouds.orama.cloud
+pixieviziers.orama.cloud

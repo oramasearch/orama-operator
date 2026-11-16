@@ -167,46 +167,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "PeerLink")
 		os.Exit(1)
 	}
-	// Observability (operator#15, #456): the managing cluster's abstract kinds and the pixie
-	// provider's concrete kinds run on every cluster; which do anything depends on the resources.
-	if err = (&controller.ObservabilityProviderReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityProvider")
-		os.Exit(1)
-	}
-	if err = (&controller.ObservabilityHubReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityHub")
-		os.Exit(1)
-	}
-	if err = (&controller.ObservabilityAgentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ObservabilityAgent")
-		os.Exit(1)
-	}
-	if err = (&controller.PixieCloudReconciler{
-		Client:            mgr.GetClient(),
-		APIReader:         mgr.GetAPIReader(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PixieCloud")
-		os.Exit(1)
-	}
-	if err = (&controller.PixieVizierReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PixieVizier")
-		os.Exit(1)
-	}
 	if err = (&controller.CloudflareTunnelReconciler{
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),

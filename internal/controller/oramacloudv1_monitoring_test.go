@@ -91,7 +91,7 @@ func TestOramaCloudV1ScrapeAllowancesAdmitOnlyPrometheus(t *testing.T) {
 		}
 		rule := allowance.Spec.Ingress[0]
 		peer := rule.From[0]
-		if peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != pixieMonitoringNamespace || peer.PodSelector.MatchLabels[prometheusPodsLabel] != prometheusPodsValue {
+		if peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != platformMonitoringNamespace || peer.PodSelector.MatchLabels[prometheusPodsLabel] != prometheusPodsValue {
 			t.Errorf("%s admits %+v, not only the platform's Prometheus", allowance.Name, peer)
 		}
 		if len(rule.Ports) != 1 {

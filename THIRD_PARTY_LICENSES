@@ -183,10 +183,10 @@ part of this repository's source.
 
 Vendored in this repository
 
-internal/controller/assets/pixie/   Pixie's rendered Kubernetes manifests, Apache-2.0, with Pixie's
-                                    LICENSE kept beside them (https://github.com/pixie-io/pixie)
-hack/pixie-patches/                 patches to Pixie, under Pixie's Apache-2.0
-Both leave the operator when Pixie is removed from the stack.
+internal/controller/assets/karpenter/  Karpenter 1.13.0's rendered Helm chart and CRDs, Apache-2.0
+                                      (https://github.com/kubernetes-sigs/karpenter)
+hack/charts/                          kube-prometheus-stack 92.3.0 and Perses 0.23.3 chart archives,
+                                      Apache-2.0, used offline by the tests only
 
 Installed at runtime, not distributed
 
@@ -240,10 +240,6 @@ upstream's LICENSE and NOTICE in them (Apache-2.0, section 4).
 Images under oramasearch/ (lake, zetta, zetta-tunnel, the agents, lake-sqlite, lake-duckdb,
 lake-polars, lake-builder, app-runtime, methodology-runtime) are this stack's own components; each
 repository has its own LICENSE and THIRD_PARTY_LICENSES.
-
-Pixie (Apache-2.0, https://github.com/pixie-io/pixie) and what its resources install with it (Ory
-Kratos and Hydra, NATS, OpenSearch 2.19: all Apache-2.0) are installed by the PixieCloud and
-PixieVizier resources while they remain in the operator; Pixie is being removed from the stack.
 
 ================================================================================
 github.com/BurntSushi/toml v1.3.2 — MIT

@@ -339,8 +339,8 @@ func (g *kubeconfigGetter) ToRESTMapper() (meta.RESTMapper, error) {
 func (g *kubeconfigGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig { return g.config }
 
 // leafScheme is the kinds a leaf client knows: Kubernetes' own and Orama's. client.New's default
-// knows only Kubernetes', and a typed read of an Orama kind on a leaf (the observability agent
-// reading the hub's PixieCloud) failed with "no kind is registered".
+// knows only Kubernetes', and a typed read of an Orama kind on a leaf failed with "no kind is
+// registered".
 var leafScheme = func() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
