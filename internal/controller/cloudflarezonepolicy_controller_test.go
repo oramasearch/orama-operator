@@ -436,7 +436,7 @@ func TestZonePolicyReportsTheZoneName(t *testing.T) {
 	zone := &fakeCloudflareZone{
 		settings: map[string]string{"ssl": "strict", "tls_client_auth": "on", "always_use_https": "on"},
 		records:  zoneRecords(),
-		name:     "Lake.Live",
+		name:     "LakeLive.Example",
 	}
 	_, _, reconcile := newZonePolicyFixture(t, zone, fakeEdgeProber{})
 	policy := reconcile()

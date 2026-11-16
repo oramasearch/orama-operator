@@ -868,4 +868,3 @@ func TestLakeAppBindingsCopyOnlyTheAppsWorkspaceServices(t *testing.T) {
 		}
 	}
 }
-

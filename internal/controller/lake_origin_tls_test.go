@@ -287,7 +287,7 @@ func TestLakeIssuerChoosesTheSolverPerHost(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); err != nil {
 		t.Fatal(err)
 	}
-	policy.Status.Zone = "Lake.Live."
+	policy.Status.Zone = "LakeLive.Example."
 	if err := c.Status().Update(context.Background(), &policy); err != nil {
 		t.Fatal(err)
 	}

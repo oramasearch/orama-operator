@@ -37,7 +37,8 @@ MIT-licensed.
 
 Every kind and field is in [the CRD reference](docs/crd-reference.md). What each reconciler creates,
 and how far each one has been tested, is in [the components page](docs/components.md); what each
-release contains is in [the release notes](docs/releases/README.md).
+release contains is in [the release notes](docs/releases/README.md). The current release is
+[v0.11.12](docs/releases/v0.11.12.md).
 
 ## Quickstart
 
