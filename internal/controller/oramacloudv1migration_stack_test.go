@@ -132,7 +132,7 @@ func TestStackSandboxOpensProd1OnlyForItsMigrations(t *testing.T) {
 	oc := migrationTestStack(nil)
 	other := migrationTestResource(func(m *oramav1alpha1.OramaCloudV1Migration) {
 		m.Name, m.Spec.TargetRef = "other-team", "v1-other"
-		m.Spec.Source.DatabaseHost = "other.psdb.cloud"
+		m.Spec.Source.DatabaseHost = "other-db.example.com"
 	})
 	sandbox := migrationSandbox(t, oc, other)
 	for _, a := range sandbox.Spec.Policies {
@@ -170,12 +170,12 @@ func TestStackSandboxOpensProd1OnlyForItsMigrations(t *testing.T) {
 		}
 	}
 	// The hosts it is for: exactly each database on 5432, the engine origins and the region's SSM on 443.
-	hosts := "aws.connect.psdb.cloud:5432, reader-2.prod1.example.com:443, reader.prod1.example.com:443, ssm.us-east-2.amazonaws.com:443, writer.prod1.example.com:443"
-	if !strings.Contains(prod1.Comment, "at "+hosts+" (operator#653)") || strings.Contains(prod1.Comment, "other.psdb.cloud") {
+	hosts := "db.example.com:5432, reader-2.prod1.example.com:443, reader.prod1.example.com:443, ssm.us-east-2.amazonaws.com:443, writer.prod1.example.com:443"
+	if !strings.Contains(prod1.Comment, "at "+hosts+" (operator#653)") || strings.Contains(prod1.Comment, "other-db.example.com") {
 		t.Fatalf("Prod 1 egress comment = %q", prod1.Comment)
 	}
 	if got := migrationProd1Hosts([]oramav1alpha1.OramaCloudV1Migration{*migrationTestResource(nil)}); !reflect.DeepEqual(got, []string{
-		"aws.connect.psdb.cloud:5432", "reader.prod1.example.com:443", "ssm.us-east-2.amazonaws.com:443", "writer.prod1.example.com:443",
+		"db.example.com:5432", "reader.prod1.example.com:443", "ssm.us-east-2.amazonaws.com:443", "writer.prod1.example.com:443",
 	}) {
 		t.Fatalf("hosts = %v", got)
 	}

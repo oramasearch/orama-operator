@@ -30,7 +30,7 @@ import (
 const (
 	migrationTestImage = "docker.io/oramasearch/cloud-v1-migration@sha256:0000000000000000000000000000000000000000000000000000000000000001"
 	// Secret values: none may appear anywhere in a rendered Job.
-	migrationTestDSN      = "postgresql://ro:prod1-db-password@aws.connect.psdb.cloud/oramacore"
+	migrationTestDSN      = "postgresql://ro:example-password@db.example.com/oramacore"
 	migrationTestKey      = "prod1-master-key-value"
 	migrationTestAWSID    = "AKIAPROD1SETTINGS"
 	migrationTestAWSKey   = "prod1-aws-secret-value"
@@ -58,23 +58,23 @@ func migrationTestStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.Or
 // migrationTestResource is the issue's example migration.
 func migrationTestResource(mut func(*oramav1alpha1.OramaCloudV1Migration)) *oramav1alpha1.OramaCloudV1Migration {
 	m := &oramav1alpha1.OramaCloudV1Migration{
-		ObjectMeta: metav1.ObjectMeta{Name: "team-4e01bc49", Namespace: "v1-dev", UID: types.UID("uid-migration"), Generation: 1},
+		ObjectMeta: metav1.ObjectMeta{Name: "team-7e57a000", Namespace: "v1-dev", UID: types.UID("uid-migration"), Generation: 1},
 		Spec: oramav1alpha1.OramaCloudV1MigrationSpec{
 			TargetRef:  "v1-dev",
-			TeamID:     "4e01bc49-b388-43c2-8986-2395a0b8fe52",
-			ProjectIDs: []string{"b0d16f69-1a49-4659-8a60-008886765691", "a0d16f69-1a49-4659-8a60-008886765691"},
+			TeamID:     "7e57a000-0000-4000-8000-000000000001",
+			ProjectIDs: []string{"7e57c000-0000-4000-8000-000000000003", "7e57b000-0000-4000-8000-000000000002"},
 			RunID:      "pilot-1",
 			Step:       oramav1alpha1.MigrationStepSeed,
 			Apply:      true,
 			EvidenceSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "team-4e01bc49-evidence"}, Key: "isolation.json"},
+				LocalObjectReference: corev1.LocalObjectReference{Name: "team-7e57a000-evidence"}, Key: "isolation.json"},
 			Image:          migrationTestImage,
 			PullSecretName: "oramasearch-dockerhub",
 			RemoveOnDelete: true,
 			Source: oramav1alpha1.OramaCloudV1MigrationSource{
 				DatabaseSecretRef: corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "v1-nonprod-prod1-db-ro"}, Key: "url"},
-				DatabaseHost: "aws.connect.psdb.cloud",
+				DatabaseHost: "db.example.com",
 				WriterURL:    "https://writer.prod1.example.com",
 				ReaderURL:    "https://reader.prod1.example.com",
 				MasterKeySecretRef: corev1.SecretKeySelector{
@@ -83,8 +83,8 @@ func migrationTestResource(mut func(*oramav1alpha1.OramaCloudV1Migration)) *oram
 				SchemaRevision:     "890a7e97",
 				Settings: oramav1alpha1.OramaCloudV1MigrationSettings{
 					Region:               "us-east-2",
-					InstanceID:           "i-0b9478719a8f91e2b",
-					Document:             "OramaMigrationReadIndexInfo",
+					InstanceID:           "i-0123456789abcdef0",
+					Document:             "ExampleReadIndexInfo",
 					DataDir:              "/opt/oramacore/.data/writer",
 					CredentialsSecretRef: corev1.LocalObjectReference{Name: "v1-nonprod-prod1-settings-ssm"},
 				},
@@ -121,7 +121,7 @@ func migrationTestInputs(oc *oramav1alpha1.OramaCloudV1) []client.Object {
 		secret("v1-nonprod-prod1-db-ro", map[string]string{"url": migrationTestDSN}),
 		secret("v1-nonprod-prod1-master-key", map[string]string{"key": migrationTestKey}),
 		secret("v1-nonprod-prod1-settings-ssm", map[string]string{"access_key_id": migrationTestAWSID, "secret_access_key": migrationTestAWSKey}),
-		secret("team-4e01bc49-evidence", map[string]string{"isolation.json": migrationTestEvidence}),
+		secret("team-7e57a000-evidence", map[string]string{"isolation.json": migrationTestEvidence}),
 		secret("oramasearch-dockerhub", map[string]string{".dockerconfigjson": "{}"}),
 		secret(migrationRoleSecretName(oc), map[string]string{"username": "migration", "password": migrationTestRolePass,
 			"uri": "postgresql://migration:" + migrationTestRolePass + "@v1-dev-controldb-rw.v1-dev:5432/oramacore"}),
@@ -281,10 +281,10 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 	h := newMigrationHarness(t, migrationTestResource(nil), migrationStack(t, nil)...)
 	h.reconcile()
 	m := h.migration()
-	if m.Status.Phase != oramav1alpha1.MigrationPhaseRunning || m.Status.JobName != "team-4e01bc49-seed-0" {
+	if m.Status.Phase != oramav1alpha1.MigrationPhaseRunning || m.Status.JobName != "team-7e57a000-seed-0" {
 		t.Fatalf("status = %+v", m.Status)
 	}
-	job := h.job("team-4e01bc49-seed-0")
+	job := h.job("team-7e57a000-seed-0")
 	pod := job.Spec.Template.Spec
 	c := pod.Containers[0]
 
@@ -301,9 +301,9 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 		name string
 		want
 	}{
-		{"TEAM_ID", want{value: "4e01bc49-b388-43c2-8986-2395a0b8fe52"}},
+		{"TEAM_ID", want{value: "7e57a000-0000-4000-8000-000000000001"}},
 		{"RUN_ID", want{value: "pilot-1"}},
-		{"PROJECT_IDS", want{value: "a0d16f69-1a49-4659-8a60-008886765691,b0d16f69-1a49-4659-8a60-008886765691"}},
+		{"PROJECT_IDS", want{value: "7e57b000-0000-4000-8000-000000000002,7e57c000-0000-4000-8000-000000000003"}},
 		{"RUNS_DIR", want{value: "/runs"}},
 		{"EVIDENCE_PATH", want{value: "/evidence/isolation.json"}},
 		{"ORAMA_MIGRATION_PROD1_DSN", want{secret: "v1-nonprod-prod1-db-ro", key: "url"}},
@@ -313,8 +313,8 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 		{"ORAMA_MIGRATION_PROD1_DEPLOYMENT_REVISION", want{value: "v1.2.39"}},
 		{"ORAMA_MIGRATION_PROD1_SCHEMA_REVISION", want{value: "890a7e97"}},
 		{"ORAMA_MIGRATION_PROD1_SETTINGS_SSM_REGION", want{value: "us-east-2"}},
-		{"ORAMA_MIGRATION_PROD1_SETTINGS_SSM_INSTANCE_ID", want{value: "i-0b9478719a8f91e2b"}},
-		{"ORAMA_MIGRATION_PROD1_SETTINGS_SSM_DOCUMENT", want{value: "OramaMigrationReadIndexInfo"}},
+		{"ORAMA_MIGRATION_PROD1_SETTINGS_SSM_INSTANCE_ID", want{value: "i-0123456789abcdef0"}},
+		{"ORAMA_MIGRATION_PROD1_SETTINGS_SSM_DOCUMENT", want{value: "ExampleReadIndexInfo"}},
 		{"ORAMA_MIGRATION_PROD1_SETTINGS_DATA_DIR", want{value: "/opt/oramacore/.data/writer"}},
 		{"ORAMA_MIGRATION_PROD1_SETTINGS_AWS_ACCESS_KEY_ID", want{secret: "v1-nonprod-prod1-settings-ssm", key: "access_key_id"}},
 		{"ORAMA_MIGRATION_PROD1_SETTINGS_AWS_SECRET_ACCESS_KEY", want{secret: "v1-nonprod-prod1-settings-ssm", key: "secret_access_key"}},
@@ -374,14 +374,14 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 	if len(mounts) != 3 || mounts["/runs"].Name != "runs" || mounts["/tmp"].Name != "tmp" || !mounts["/evidence"].ReadOnly {
 		t.Fatalf("mounts = %+v", c.VolumeMounts)
 	}
-	if v := volumes["runs"].PersistentVolumeClaim; v == nil || v.ClaimName != "team-4e01bc49-runs" {
+	if v := volumes["runs"].PersistentVolumeClaim; v == nil || v.ClaimName != "team-7e57a000-runs" {
 		t.Fatalf("runs volume = %+v", volumes["runs"])
 	}
 	if volumes["tmp"].EmptyDir == nil {
 		t.Fatalf("tmp volume = %+v", volumes["tmp"])
 	}
 	ev := volumes["evidence"].Secret
-	if ev == nil || ev.SecretName != "team-4e01bc49-evidence" || *ev.DefaultMode != 0o400 ||
+	if ev == nil || ev.SecretName != "team-7e57a000-evidence" || *ev.DefaultMode != 0o400 ||
 		!reflect.DeepEqual(ev.Items, []corev1.KeyToPath{{Key: "isolation.json", Path: "isolation.json"}}) {
 		t.Fatalf("evidence volume = %+v", volumes["evidence"])
 	}
@@ -423,7 +423,7 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 	// Labels put the pod in the stack's sandbox as component migration.
 	for k, v := range map[string]string{
 		"app.kubernetes.io/name": appName, "app.kubernetes.io/instance": "v1-dev", "app.kubernetes.io/component": "migration",
-		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator", migrationLabel: "team-4e01bc49",
+		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator", migrationLabel: "team-7e57a000",
 	} {
 		if job.Spec.Template.Labels[k] != v {
 			t.Errorf("pod label %s = %q, want %q", k, job.Spec.Template.Labels[k], v)
@@ -438,7 +438,7 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 
 	// The run volume: owned, ReadWriteOnce, 20Gi by default.
 	pvc := &corev1.PersistentVolumeClaim{}
-	if err := h.kube.Get(context.Background(), client.ObjectKey{Namespace: "v1-dev", Name: "team-4e01bc49-runs"}, pvc); err != nil {
+	if err := h.kube.Get(context.Background(), client.ObjectKey{Namespace: "v1-dev", Name: "team-7e57a000-runs"}, pvc); err != nil {
 		t.Fatal(err)
 	}
 	if !metav1.IsControlledBy(pvc, m) || !reflect.DeepEqual(pvc.Spec.AccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}) ||
@@ -476,13 +476,13 @@ func TestMigrationCommandPerStepAndApply(t *testing.T) {
 		args     []string
 		evidence bool
 	}{
-		{oramav1alpha1.MigrationStepPlan, false, "team-4e01bc49-plan-0", []string{"plan"}, false},
-		{oramav1alpha1.MigrationStepPlan, true, "team-4e01bc49-plan-0", []string{"plan"}, false},
-		{oramav1alpha1.MigrationStepSeed, false, "team-4e01bc49-seed-dry-run-0", []string{"seed"}, true},
-		{oramav1alpha1.MigrationStepSeed, true, "team-4e01bc49-seed-0", []string{"seed", "--apply"}, true},
-		{oramav1alpha1.MigrationStepCatchUp, false, "team-4e01bc49-catch-up-dry-run-0", []string{"catch-up"}, true},
-		{oramav1alpha1.MigrationStepCatchUp, true, "team-4e01bc49-catch-up-0", []string{"catch-up", "--apply"}, true},
-		{oramav1alpha1.MigrationStepVerify, true, "team-4e01bc49-verify-0", []string{"verify"}, false},
+		{oramav1alpha1.MigrationStepPlan, false, "team-7e57a000-plan-0", []string{"plan"}, false},
+		{oramav1alpha1.MigrationStepPlan, true, "team-7e57a000-plan-0", []string{"plan"}, false},
+		{oramav1alpha1.MigrationStepSeed, false, "team-7e57a000-seed-dry-run-0", []string{"seed"}, true},
+		{oramav1alpha1.MigrationStepSeed, true, "team-7e57a000-seed-0", []string{"seed", "--apply"}, true},
+		{oramav1alpha1.MigrationStepCatchUp, false, "team-7e57a000-catch-up-dry-run-0", []string{"catch-up"}, true},
+		{oramav1alpha1.MigrationStepCatchUp, true, "team-7e57a000-catch-up-0", []string{"catch-up", "--apply"}, true},
+		{oramav1alpha1.MigrationStepVerify, true, "team-7e57a000-verify-0", []string{"verify"}, false},
 	} {
 		m := migrationTestResource(func(m *oramav1alpha1.OramaCloudV1Migration) { m.Spec.Step, m.Spec.Apply = tt.step, tt.apply })
 		run := migrationRunFor(m)
@@ -503,7 +503,7 @@ func TestMigrationCommandPerStepAndApply(t *testing.T) {
 		}
 	}
 	removal := migrationRemovalRun(migrationTestResource(func(m *oramav1alpha1.OramaCloudV1Migration) { m.Spec.Attempt = 2 }))
-	if c := migrationJob(migrationTestResource(nil), target, removal).Spec.Template.Spec.Containers[0]; removal.jobName != "team-4e01bc49-remove-2" ||
+	if c := migrationJob(migrationTestResource(nil), target, removal).Spec.Template.Spec.Containers[0]; removal.jobName != "team-7e57a000-remove-2" ||
 		!reflect.DeepEqual(c.Args, []string{"remove-target", "--apply"}) {
 		t.Fatalf("removal Job %s args %v", removal.jobName, c.Args)
 	}
@@ -597,7 +597,7 @@ func TestMigrationRefusesUnsafeOrOutOfOrderSteps(t *testing.T) {
 	h := newMigrationHarness(t, migrationTestResource(func(m *oramav1alpha1.OramaCloudV1Migration) { m.Spec.Apply = false }),
 		migrationStack(t, func(oc *oramav1alpha1.OramaCloudV1) { oc.Spec.Components.Dashboard.Crons.Suspend = boolPtr(false) })...)
 	h.reconcile()
-	if jobs := h.jobs(); !reflect.DeepEqual(jobs, []string{"team-4e01bc49-seed-dry-run-0"}) {
+	if jobs := h.jobs(); !reflect.DeepEqual(jobs, []string{"team-7e57a000-seed-dry-run-0"}) {
 		t.Fatalf("dry run Jobs = %v", jobs)
 	}
 }
@@ -607,7 +607,7 @@ func TestMigrationRefusesUnsafeOrOutOfOrderSteps(t *testing.T) {
 func TestMigrationSeedThenCatchUpReRunsOnAttempt(t *testing.T) {
 	h := newMigrationHarness(t, migrationTestResource(nil), migrationStack(t, nil)...)
 	h.reconcile()
-	h.finish("team-4e01bc49-seed-0", 0, `{"version": 1, "phase": "seeded"}`)
+	h.finish("team-7e57a000-seed-0", 0, `{"version": 1, "phase": "seeded"}`)
 	h.reconcile()
 	if m := h.migration(); m.Status.Phase != oramav1alpha1.MigrationPhaseSucceeded || !meta.IsStatusConditionTrue(m.Status.Conditions, migrationSeededCondition) {
 		t.Fatalf("after the seed: %+v", m.Status)
@@ -617,15 +617,15 @@ func TestMigrationSeedThenCatchUpReRunsOnAttempt(t *testing.T) {
 		m.Spec.Step, m.Spec.Attempt = oramav1alpha1.MigrationStepCatchUp, 1
 	})
 	h.reconcile()
-	h.finish("team-4e01bc49-catch-up-1", 0, `{"version": 1, "phase": "reconciled"}`)
+	h.finish("team-7e57a000-catch-up-1", 0, `{"version": 1, "phase": "reconciled"}`)
 	h.reconcile()
 	h.update(func(m *oramav1alpha1.OramaCloudV1Migration) { m.Spec.Attempt = 2 })
 	h.reconcile()
-	if jobs := h.jobs(); !reflect.DeepEqual(jobs, []string{"team-4e01bc49-catch-up-1", "team-4e01bc49-catch-up-2", "team-4e01bc49-seed-0"}) {
+	if jobs := h.jobs(); !reflect.DeepEqual(jobs, []string{"team-7e57a000-catch-up-1", "team-7e57a000-catch-up-2", "team-7e57a000-seed-0"}) {
 		t.Fatalf("Jobs = %v", jobs)
 	}
 	m := h.migration()
-	if m.Status.Phase != oramav1alpha1.MigrationPhaseRunning || m.Status.JobName != "team-4e01bc49-catch-up-2" ||
+	if m.Status.Phase != oramav1alpha1.MigrationPhaseRunning || m.Status.JobName != "team-7e57a000-catch-up-2" ||
 		m.Status.Step != oramav1alpha1.MigrationStepCatchUp || m.Status.Attempt != 2 || !m.Status.Apply || m.Status.Result != nil {
 		t.Fatalf("status = %+v", m.Status)
 	}
@@ -634,9 +634,9 @@ func TestMigrationSeedThenCatchUpReRunsOnAttempt(t *testing.T) {
 	}
 
 	// A finished run is not run again, even once its Job has expired.
-	h.finish("team-4e01bc49-catch-up-2", 0, `{}`)
+	h.finish("team-7e57a000-catch-up-2", 0, `{}`)
 	h.reconcile()
-	if err := h.kube.Delete(context.Background(), h.job("team-4e01bc49-catch-up-2")); err != nil {
+	if err := h.kube.Delete(context.Background(), h.job("team-7e57a000-catch-up-2")); err != nil {
 		t.Fatal(err)
 	}
 	h.reconcile()
@@ -651,7 +651,7 @@ func TestMigrationNeverRunsTwoJobsAtOnce(t *testing.T) {
 	h.reconcile()
 	h.update(func(m *oramav1alpha1.OramaCloudV1Migration) { m.Spec.Apply = true })
 	h.reconcile()
-	if m := h.migration(); m.Status.Phase != oramav1alpha1.MigrationPhasePending || !strings.Contains(m.Status.Message, "waiting for Job team-4e01bc49-seed-dry-run-0 to finish") {
+	if m := h.migration(); m.Status.Phase != oramav1alpha1.MigrationPhasePending || !strings.Contains(m.Status.Message, "waiting for Job team-7e57a000-seed-dry-run-0 to finish") {
 		t.Fatalf("status = %s %q", m.Status.Phase, m.Status.Message)
 	}
 	if jobs := h.jobs(); len(jobs) != 1 {
@@ -677,7 +677,7 @@ func TestMigrationOutcomeFromTheToolsExit(t *testing.T) {
 	} {
 		h := newMigrationHarness(t, migrationTestResource(nil), migrationStack(t, nil)...)
 		h.reconcile()
-		h.finish("team-4e01bc49-seed-0", tt.code, tt.message)
+		h.finish("team-7e57a000-seed-0", tt.code, tt.message)
 		h.reconcile()
 		m := h.migration()
 		if m.Status.Phase != tt.phase || !strings.Contains(m.Status.Message, tt.says) || m.Status.CompletedAt == nil {
@@ -699,7 +699,7 @@ func TestMigrationOutcomeFromTheToolsExit(t *testing.T) {
 func TestMigrationOutcomeWaitsForAReadablePod(t *testing.T) {
 	h := newMigrationHarness(t, migrationTestResource(nil), migrationStack(t, nil)...)
 	h.reconcile()
-	h.finish("team-4e01bc49-seed-0", 0, `{"phase": "seeded"}`)
+	h.finish("team-7e57a000-seed-0", 0, `{"phase": "seeded"}`)
 	h.failPods = true
 	if _, err := h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.key}); err == nil {
 		t.Fatal("an unreadable pod did not fail the reconcile")
@@ -718,7 +718,7 @@ func TestMigrationOutcomeWaitsForAReadablePod(t *testing.T) {
 func TestMigrationDeadlineIsFailed(t *testing.T) {
 	h := newMigrationHarness(t, migrationTestResource(nil), migrationStack(t, nil)...)
 	h.reconcile()
-	job := h.job("team-4e01bc49-seed-0")
+	job := h.job("team-7e57a000-seed-0")
 	job.Status.Failed = 1
 	job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded}}
 	if err := h.kube.Status().Update(context.Background(), job); err != nil {
@@ -740,7 +740,7 @@ func TestMigrationStatusIsWrittenOnlyOnATransition(t *testing.T) {
 	if h.statusWrites != writes {
 		t.Fatalf("a running migration rewrote its status %d times", h.statusWrites-writes)
 	}
-	h.finish("team-4e01bc49-seed-0", 0, `{"phase": "seeded"}`)
+	h.finish("team-7e57a000-seed-0", 0, `{"phase": "seeded"}`)
 	h.reconcile()
 	if h.statusWrites != writes+1 {
 		t.Fatalf("finishing wrote status %d times, want once", h.statusWrites-writes)
@@ -769,27 +769,27 @@ func TestMigrationDeletionRemovesTheTeamThenTheRunVolume(t *testing.T) {
 	start := func(t *testing.T) *migrationHarness {
 		h := newMigrationHarness(t, migrationTestResource(nil), migrationStack(t, nil)...)
 		h.reconcile()
-		h.finish("team-4e01bc49-seed-0", 1, `{}`)
+		h.finish("team-7e57a000-seed-0", 1, `{}`)
 		h.reconcile()
 		h.update(func(m *oramav1alpha1.OramaCloudV1Migration) { m.Spec.Attempt = 1 })
 		h.reconcile()
-		h.finish("team-4e01bc49-seed-1", 0, `{"phase": "seeded"}`)
+		h.finish("team-7e57a000-seed-1", 0, `{"phase": "seeded"}`)
 		h.reconcile()
 		if err := h.kube.Delete(ctx, h.migration()); err != nil {
 			t.Fatal(err)
 		}
 		h.reconcile()
 		m := h.migration()
-		if m.Status.Phase != oramav1alpha1.MigrationPhaseRemoving || m.Status.JobName != "team-4e01bc49-remove-1" {
+		if m.Status.Phase != oramav1alpha1.MigrationPhaseRemoving || m.Status.JobName != "team-7e57a000-remove-1" {
 			t.Fatalf("status = %s %s", m.Status.Phase, m.Status.JobName)
 		}
-		if args := h.job("team-4e01bc49-remove-1").Spec.Template.Spec.Containers[0].Args; !reflect.DeepEqual(args, []string{"remove-target", "--apply"}) {
+		if args := h.job("team-7e57a000-remove-1").Spec.Template.Spec.Containers[0].Args; !reflect.DeepEqual(args, []string{"remove-target", "--apply"}) {
 			t.Fatalf("removal args %v", args)
 		}
 		return h
 	}
 	runVolume := func(h *migrationHarness) bool {
-		err := h.kube.Get(ctx, client.ObjectKey{Namespace: "v1-dev", Name: "team-4e01bc49-runs"}, &corev1.PersistentVolumeClaim{})
+		err := h.kube.Get(ctx, client.ObjectKey{Namespace: "v1-dev", Name: "team-7e57a000-runs"}, &corev1.PersistentVolumeClaim{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			t.Fatal(err)
 		}
@@ -798,7 +798,7 @@ func TestMigrationDeletionRemovesTheTeamThenTheRunVolume(t *testing.T) {
 
 	t.Run("removed", func(t *testing.T) {
 		h := start(t)
-		h.finish("team-4e01bc49-remove-1", 0, `{"phase": "removed"}`)
+		h.finish("team-7e57a000-remove-1", 0, `{"phase": "removed"}`)
 		h.reconcile()
 		m := h.migration()
 		if !meta.IsStatusConditionTrue(m.Status.Conditions, migrationRemovedCondition) {
@@ -830,7 +830,7 @@ func TestMigrationDeletionRemovesTheTeamThenTheRunVolume(t *testing.T) {
 	})
 	t.Run("switched", func(t *testing.T) {
 		h := start(t)
-		h.finish("team-4e01bc49-remove-1", 3, `{"phase": "switched", "target_write_active": true}`)
+		h.finish("team-7e57a000-remove-1", 3, `{"phase": "switched", "target_write_active": true}`)
 		h.reconcile()
 		h.reconcile()
 		m := h.migration()
@@ -849,7 +849,7 @@ func TestMigrationDeletionRemovesTheTeamThenTheRunVolume(t *testing.T) {
 			m.Spec.Step = oramav1alpha1.MigrationStepPlan
 		}), migrationStack(t, nil)...)
 		h.reconcile()
-		h.finish("team-4e01bc49-plan-0", 0, `{}`)
+		h.finish("team-7e57a000-plan-0", 0, `{}`)
 		h.reconcile()
 		if err := h.kube.Delete(ctx, h.migration()); err != nil {
 			t.Fatal(err)
