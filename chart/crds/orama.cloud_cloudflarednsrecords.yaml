@@ -70,7 +70,7 @@ spec:
                 - Retain
                 type: string
               name:
-                description: Name is the record FQDN (e.g. app.orama.com).
+                description: Name is the record FQDN (e.g. app.example.com).
                 type: string
               proxied:
                 default: true

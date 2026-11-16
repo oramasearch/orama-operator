@@ -1,4 +1,4 @@
-# The first leaf cluster (operator#355): orama-nonprod-cluster-01, for staging, dev and testing.
+# The first leaf cluster (operator#355): example-nonprod, for staging, dev and testing.
 # Apply on the management cluster, with cluster management enabled
 # (docs/infrastructure/README.md).
 #
@@ -15,7 +15,7 @@ spec:
     namespace: orama-system
   aks:
     subscriptionID: 00000000-0000-0000-0000-000000000000   # the Azure subscription
-    resourceGroupSuffix: _group                            # orama-nonprod-cluster-01_group
+    resourceGroupSuffix: _group                            # example-nonprod_group
     skuTier: Standard
     network:
       plugin: azure
@@ -30,10 +30,10 @@ spec:
 apiVersion: orama.cloud/v1alpha1
 kind: KubernetesCluster
 metadata:
-  name: orama-nonprod-cluster-01
+  name: example-nonprod
 spec:
   providerRef: azure-orama
-  region: westus2   # Washington state; chosen by Steve, 2026-10-12
+  region: westus2   # Washington state
   kubernetesVersion: "1.35"
   # Required, with no default. Delete destroys the cluster when this resource is deleted.
   deletionPolicy: Delete

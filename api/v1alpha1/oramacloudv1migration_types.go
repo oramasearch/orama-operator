@@ -75,8 +75,7 @@ type OramaCloudV1MigrationSpec struct {
 	Attempt int32 `json:"attempt,omitempty"`
 
 	// EvidenceSecretRef names the Secret key holding the isolation receipt the tool requires for
-	// seed and catchUp (docs/migration/README.md in oramacore-aws, "Isolation and preflight
-	// evidence"). It is mounted read-only for those two steps only. The operator does not create it.
+	// seed and catchUp (the migration tool's isolation and preflight evidence). It is mounted read-only for those two steps only. The operator does not create it.
 	// +optional
 	EvidenceSecretRef *corev1.SecretKeySelector `json:"evidenceSecretRef,omitempty"`
 
@@ -132,8 +131,7 @@ type OramaCloudV1MigrationSource struct {
 	// +kubebuilder:validation:MaxLength=128
 	SchemaRevision string `json:"schemaRevision"`
 
-	// Settings reaches the Prod 1 writer's per-index info.json through one read-only SSM document
-	// (orama-bridge#205).
+	// Settings reaches the Prod 1 writer's per-index info.json through one read-only SSM document.
 	Settings OramaCloudV1MigrationSettings `json:"settings"`
 }
 

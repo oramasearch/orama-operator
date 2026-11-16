@@ -27,7 +27,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// The service catalog (liquid-bridge decision 47; the contract is lake's
+// The service catalog (the contract is lake's
 // docs/control-plane/services.md, "The catalog"). Kafka, ClickHouse, TiDB, Cassandra and Valkey
 // are each run by their own upstream operator. The Orama operator writes that operator's resources
 // as unstructured objects — it never imports the upstream Go modules — named <lake>-<slug> (plus,
@@ -35,7 +35,7 @@ import (
 // reads readiness from the upstream status and the connection from a Secret. SQLite, DuckDB and
 // Polars have no upstream operator: the Orama operator writes the StatefulSet and Service of
 // lake-sqlite, lake-duckdb and lake-polars itself through the same machinery
-// (lake_service_wrapper.go; decision 47, amended; lake#195). The per-kind builders live in
+// (lake_service_wrapper.go; lake#195). The per-kind builders live in
 // lake_service_<kind>.go; this file holds what every kind shares.
 //
 // +kubebuilder:rbac:groups=kafka.strimzi.io,resources=kafkas;kafkanodepools;kafkausers,verbs=get;list;watch;create;update;patch;delete

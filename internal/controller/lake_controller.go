@@ -1814,7 +1814,7 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	dnsRecord := func() *oramav1alpha1.CloudflareDNSRecord {
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: dnsName, Namespace: ns}}
 	}
-	// The apex host's record (decision 64): the region picker's host, beside the Lake's own.
+	// The apex host's record: the region picker's host, beside the Lake's own.
 	apexRecord := func() *oramav1alpha1.CloudflareDNSRecord {
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: svcName + "-apex-dns", Namespace: ns}}
 	}

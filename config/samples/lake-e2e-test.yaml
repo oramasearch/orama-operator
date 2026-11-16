@@ -1,6 +1,6 @@
 # A LakeE2ETest as a cluster holds it: lake's end-to-end suite (oramasearch/lake-e2e,
 # orama-operator#537) against the `testing` member of LakeSet lake-nonprod, on the cluster that runs
-# that member (orama-nonprod-cluster-01), where the member's Lake is the cluster-scoped Lake
+# that member (example-nonprod), where the member's Lake is the cluster-scoped Lake
 # `testing` labelled orama.cloud/managed-by-set=LakeSet.lake-nonprod.
 #
 # The testing -> staging gate itself is not created from this file: it is the `testing-gate` entry
@@ -10,7 +10,7 @@
 # The controller waits for the Lake, its Postgres and its schema, then runs Job gate-e2e-<generation>
 # in the Lake's namespace with:
 #   LAKE_E2E_BASE_URL    http://lake-testing.lake-testing.svc.cluster.local (REST, MCP, liquid sync)
-#   LAKE_E2E_PUBLIC_URL  https://lake-testing.oramadev.net (the browser; Lake's cookie is Secure)
+#   LAKE_E2E_PUBLIC_URL  https://lake-testing.example.net (the browser; Lake's cookie is Secure)
 #   LAKE_E2E_RUN_ID      unique per run; names the test person and everything it creates
 # The suite signs a fresh person up (never the admin bearer) and changes data only in that Lake.
 #

@@ -472,7 +472,7 @@ func main() {
 	// Infrastructure (operator#351, #354, #363): the abstract KubernetesCluster, the provider it
 	// points at, the concrete AksCluster, and what is installed on a managed cluster. Every
 	// cluster's operator runs these: there is no difference between a management cluster's
-	// operator and a leaf's, and any cluster can manage others (Steve, 2026-10-12). A cluster
+	// operator and a leaf's, and any cluster can manage others. A cluster
 	// with none of these resources reconciles nothing.
 	if err = (&controller.KubernetesClusterProviderReconciler{
 		Client: mgr.GetClient(),
@@ -521,7 +521,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSet")
 		os.Exit(1)
 	}
-	// Paid lake.live orders (operator#634): registered on every cluster like every other kind. It
+	// Paid Lake orders (operator#634): registered on every cluster like every other kind. It
 	// acts only where a LakeOrderSource exists, which is the management cluster.
 	if err = (&controller.LakeOrderSourceReconciler{
 		Client: mgr.GetClient(),

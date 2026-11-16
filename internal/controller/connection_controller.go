@@ -584,7 +584,7 @@ func (r *ConnectionReconciler) connectionsForApp(
 		return nil
 	}
 	// object is the informer's shared cached copy: a handler must never change it. Setting its
-	// namespace here once corrupted every reader's LakeApp (dev-d6699eb on Lake/prod): app
+	// namespace here once corrupted every reader's LakeApp (in a dev build): app
 	// identities were hashed from the workspace namespace, so every Connection and EgressRule
 	// selected no pod, and the LakeApp controller could not find its own apps.
 	return r.connectionsInNamespaceNamed(ctx, app.Spec.Sync.WorkspaceNamespace)

@@ -9,8 +9,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ClerkApplicationSpec is the desired state of a Clerk application, one per environment
-// (orama-bridge#116). The Platform API token comes from the referenced Secret (key
+// ClerkApplicationSpec is the desired state of a Clerk application, one per environment.
+// The Platform API token comes from the referenced Secret (key
 // `platformToken`) — never in the CR, never logged.
 type ClerkApplicationSpec struct {
 	// SecretRef names the Secret holding the Clerk Platform API access token (key `platformToken`).

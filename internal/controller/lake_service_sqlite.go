@@ -11,7 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// SQLite services (liquid-bridge decision 47, amended; the contract is lake's
+// SQLite services (the contract is lake's
 // docs/control-plane/services.md, the sqlite row): lake-sqlite (github.com/oramasearch/lake-sqlite,
 // docs/lake/lake-sqlite.md), one pod over one database on a storage_gi volume, run through the
 // wrapper machinery (lake_service_wrapper.go). SQLite has one writer, so instances is always 1

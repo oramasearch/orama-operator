@@ -16,7 +16,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// A production dashboard never runs on sandbox authentication defaults (operator#794, LSR-132).
+// A production dashboard never runs on sandbox authentication defaults (operator#794).
 //
 // The dashboard is internet-facing, and some of its routes are authenticated only by a shared value:
 // the cron routes by `Authorization: Bearer $CRON_SECRET`, the Stripe webhook by a signature made
@@ -35,7 +35,7 @@ import (
 //   - CRON_SECRET comes from the generated <cr>-cron-secret whether or not crons are enabled;
 //   - STRIPE_SECRET_KEY comes from spec.components.dashboard.stripeSecretKeySecretRef, and its value
 //     is a live-mode restricted key (rk_live_), never the account's full secret key (sk_) nor a
-//     test-mode key (#802, LSR-140): the dashboard holds only the Stripe permissions it uses;
+//     test-mode key (#802): the dashboard holds only the Stripe permissions it uses;
 //   - the operator seeds no placeholder for any of them into <cr>-dashboard-secret.
 //
 // Otherwise the dashboard step fails before the Deployment is written, naming every missing setting

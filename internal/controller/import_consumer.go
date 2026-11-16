@@ -16,7 +16,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// The import consumer (spec.components.importConsumer, operator#446, orama-bridge#240).
+// The import consumer (spec.components.importConsumer, operator#446).
 //
 // On Prod 1 an EventBridge rule starts one Fargate task of oramasearch/airbyte-fargate-consumer for
 // each object written to the import bucket; the task reads S3_BUCKET and S3_KEY, asks the dashboard

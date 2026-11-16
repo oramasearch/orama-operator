@@ -421,7 +421,7 @@ func (r *LakeSealedSecretReconciler) secretContentMACValid(
 
 // lakeMintRequest is the body of a mint call. It carries no attestation: the operator's own
 // service-account token authorizes cluster-wide Secret and workload access and must never leave the
-// operator (LSR-042, orama-operator#791). Lake authenticates the call with its admin bearer alone.
+// operator (orama-operator#791). Lake authenticates the call with its admin bearer alone.
 type lakeMintRequest struct {
 	Recipient lakeMintRecipient                    `json:"recipient"`
 	Source    oramav1alpha1.LakeSealedSecretSource `json:"source"`

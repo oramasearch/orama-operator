@@ -65,7 +65,7 @@ const (
 	leafAPITimeout = 30 * time.Second
 	// How long Helm waits for a chart's hooks (a Job that installs CRDs, for one). It is not the
 	// API timeout: on a new cluster a hook's image is pulled alongside everything else, and the
-	// ClickHouse operator's took over 30 seconds on orama-production-cluster-03, where a
+	// ClickHouse operator's took over 30 seconds on a new production cluster, where a
 	// 30-second limit failed the release 26 times in a row before one attempt got through.
 	leafHookTimeout = 10 * time.Minute
 )

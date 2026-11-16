@@ -21,7 +21,7 @@ import (
 //   - StripeCatalog: created and owned by a PaymentCatalog of a stripe provider; the only kind that
 //     writes Stripe products and prices.
 //
-// Cloud v1 and Lake bill through one shared Stripe account (orama-bridge#199); these kinds let the
+// Cloud v1 and Lake bill through one shared Stripe account; these kinds let the
 // operator manage what the apps need there from committed resources.
 
 // PaymentSecretKeyRef names one key of a Secret in the referring resource's namespace.

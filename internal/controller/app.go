@@ -530,7 +530,7 @@ func jwtIssuerHash(oc *oramav1alpha1.OramaCloudV1) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// reconcileDocs provisions docs.orama.com (Next.js + Fumadocs) as a Deployment + Service
+// reconcileDocs provisions docs.example.com (Next.js + Fumadocs) as a Deployment + Service
 // (+ Ingress if a host is set). No component secret — the docs site has no env coupling.
 func (r *OramaCloudV1Reconciler) reconcileDocs(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Docs

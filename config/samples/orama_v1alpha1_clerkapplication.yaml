@@ -1,4 +1,4 @@
-# One Clerk application per environment (orama-bridge#116). The Platform API token is a
+# One Clerk application per environment. The Platform API token is a
 # Secret you create by hand (never the agent): kubectl create secret generic clerk-platform \
 #   --from-literal=platformToken=<your-clerk-platform-api-token>
 # dev/testing/staging use a development instance (free clerk.accounts.dev domain); prod uses a
@@ -26,5 +26,5 @@ spec:
   secretRef: clerk-platform
   applicationName: orama-studio-prod
   environment: prod
-  domain: studio.orama.com
+  domain: studio.example.com
   deletionPolicy: Retain

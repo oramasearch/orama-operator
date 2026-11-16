@@ -16,7 +16,7 @@ type CloudflareDNSRecordSpec struct {
 	// SecretRef names the Secret holding the Cloudflare credentials (`token`, `zoneID`,
 	// `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`.
 	SecretRef string `json:"secretRef"`
-	// Name is the record FQDN (e.g. app.orama.com).
+	// Name is the record FQDN (e.g. app.example.com).
 	Name string `json:"name"`
 	// Type is A, CNAME or TXT; empty = inferred from Content (IP → A, hostname → CNAME).
 	// +optional

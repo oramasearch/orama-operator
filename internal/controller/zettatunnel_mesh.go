@@ -444,7 +444,7 @@ func meshPolicyPort(port networkingv1.NetworkPolicyPort, target *corev1.Pod) (in
 }
 
 // Each node's template, and the workload certificates and private keys it names, are in that
-// node's own Secret, mounted only by that node's agent (orama-operator#788, LSR-039). The kubelet
+// node's own Secret, mounted only by that node's agent (orama-operator#788). The kubelet
 // delivers a Secret to a node only for a pod bound there that mounts it, so root on one node reads
 // only the keys of the workloads on that node, never another node's.
 

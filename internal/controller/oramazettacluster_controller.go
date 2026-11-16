@@ -108,7 +108,7 @@ func zettaCustomEnv(env []corev1.EnvVar) ([]corev1.EnvVar, []string) {
 }
 
 // OramaZettaClusterReconciler deploys a headless Orama Zetta cluster (StatefulSet of equal-peer CRDT
-// nodes) from an OramaZettaCluster CR. Step 1 of One Orama (orama-bridge#130): it only RUNS Zetta
+// nodes) from an OramaZettaCluster CR. Step 1 of One Orama: it only RUNS Zetta
 // headless — no operator↔Zetta symbiosis and no changes to Zetta's MCP service.
 type OramaZettaClusterReconciler struct {
 	client.Client
@@ -555,7 +555,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// 4. Optional external exposure — Ingress (+ proxied Cloudflare DNS) for the HTTP API/UI on 4800
-	//    (e.g. zetta.oramadev.net). No-op unless spec.host is set.
+	//    (e.g. zetta.example.net). No-op unless spec.host is set.
 	if err := r.reconcileZettaIngress(ctx, &z, clientName, lbls); err != nil {
 		return ctrl.Result{}, err
 	}

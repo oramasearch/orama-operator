@@ -86,8 +86,8 @@ const (
 	edgeZoneRecheck = 10 * time.Minute
 	// edgeZoneHostLimit bounds status.hosts.
 	edgeZoneHostLimit = 50
-	// edgeProbeLabel is the name a wildcard record is probed with: *.eu.lake.live is checked as
-	// orama-edge-probe.eu.lake.live.
+	// edgeProbeLabel is the name a wildcard record is probed with: *.eu.example.com is checked as
+	// orama-edge-probe.eu.example.com.
 	edgeProbeLabel = "orama-edge-probe"
 )
 

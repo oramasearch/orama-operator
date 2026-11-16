@@ -31,8 +31,7 @@ import (
 //
 // The NodePool is referenced via `unstructured` (like the CNPG Cluster in controldb.go) so the operator
 // stays decoupled from Karpenter's Go types/version, and so a cluster without Karpenter installed is a
-// graceful no-op rather than a build/runtime coupling. Karpenter model (see the vendored
-// docs/research/karpenter-manual.md): NodePool → provider NodeClass → NodeClaim → Node.
+// graceful no-op rather than a build/runtime coupling. Karpenter model: NodePool → provider NodeClass → NodeClaim → Node.
 const (
 	// zettaCapacityTaintKey taints Zetta nodes so ONLY tolerating pods (the Zetta nodes) land there —
 	// the pool is dedicated to Zetta, per the manual's isolated-pool recipe.

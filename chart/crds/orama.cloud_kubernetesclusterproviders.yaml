@@ -120,7 +120,7 @@ spec:
                   resourceGroupSuffix:
                     default: _group
                     description: ResourceGroupSuffix defaults to "_group", matching
-                      orama-production-cluster-01_group.
+                      an AKS cluster named <name> in <name>_group.
                     type: string
                   skuTier:
                     default: Standard

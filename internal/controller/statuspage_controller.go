@@ -40,9 +40,9 @@ import (
 )
 
 // StatusPage: external checks, alerts on a component's change of state, and a static public page
-// (liquid-bridge#14, techops-docs docs/lake/status-page.md). The checks run in the operator that
+// (docs/infrastructure/status-pages.md). The checks run in the operator that
 // holds the resource, so they see a service the way a customer does only when that operator is
-// outside the service's own cluster: lake.live's page lives on the managing cluster.
+// outside the service's own cluster: a hosted Lake's page lives on its managing cluster.
 //
 // Each run fetches every check at once, counts consecutive failures in memory, and marks a check
 // failing at spec.failureThreshold (one pass clears it). The status subresource is written only on

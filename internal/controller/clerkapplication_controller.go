@@ -30,7 +30,7 @@ const clerkPlatformBase = "https://api.clerk.com/v1/platform"
 const clerkFinalizer = "orama.cloud/clerk-application-cleanup"
 
 // ClerkApplicationReconciler provisions a Clerk application per environment via the Clerk
-// Platform API and reflects the instance keys + issuer into an owned Secret (orama-bridge#116).
+// Platform API and reflects the instance keys + issuer into an owned Secret.
 // It follows the CloudflareDNSRecord "external resource as an owned CRD" pattern: adopt-or-create
 // on reconcile, delete-from-Clerk only when deletionPolicy=Delete on finalize.
 type ClerkApplicationReconciler struct {

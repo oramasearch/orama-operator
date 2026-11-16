@@ -42,7 +42,7 @@ const (
 	// scramIterations matches PostgreSQL's default scram_iterations.
 	scramIterations = 4096
 	// trustedSearchPath is the only search_path a superuser session against a service uses
-	// (operator#800, LSR-138). The service's database belongs to the tenant, and its owner may set
+	// (operator#800). The service's database belongs to the tenant, and its owner may set
 	// the database's default search_path and create objects in its own schemas; a superuser session
 	// that resolved a name through that path would run the owner's look-alike of a catalog view,
 	// function or operator with superuser rights. pg_temp is listed last so a temporary object can

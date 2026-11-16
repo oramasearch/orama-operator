@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Wrapper services (liquid-bridge decision 47, amended; the contract is lake's
+// Wrapper services (the contract is lake's
 // docs/control-plane/services.md, the sqlite, duckdb and polars rows). These kinds have no upstream
 // operator we would use, so the Orama operator runs a small web service of ours — each in its own
 // private repository and image: lake-sqlite, lake-duckdb, lake-polars — itself: a StatefulSet (one

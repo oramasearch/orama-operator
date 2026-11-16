@@ -27,7 +27,7 @@ const (
 )
 
 // OramaZettaClusterSpec describes a headless Orama Zetta cluster — N equal-peer CRDT nodes.
-// Step 1 of the One Orama plan (orama-bridge#130): the operator only *runs* Zetta headless; the
+// Step 1 of the One Orama plan: the operator only *runs* Zetta headless; the
 // bi-directional operator↔Zetta symbiosis (Zetta as the operator's datastore) is a later stage.
 type OramaZettaClusterSpec struct {
 	// Replicas is the number of equal-peer headless zetta nodes.
@@ -104,7 +104,7 @@ type OramaZettaClusterSpec struct {
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
 	// Host is the domain name the cluster's HTTP API/UI (:4800 — MCP + REST + serving) is exposed at
-	// (e.g. zetta.oramadev.net) when IngressEnabled is true. Requires an ingress controller.
+	// (e.g. zetta.example.net) when IngressEnabled is true. Requires an ingress controller.
 	// +optional
 	Host string `json:"host,omitempty"`
 
@@ -257,7 +257,7 @@ type OramaZettaCapacity struct {
 // (`limits`); the provider-specific NodeClass (EC2NodeClass on EKS / AKSNodeClass on AKS) is owned by
 // the platform and referenced via NodeClassRef, because it carries cluster-specific cloud details
 // (AMI/subnet/IAM on AWS) the operator cannot invent. Karpenter reference model: NodePool → NodeClass →
-// NodeClaim → Node (see docs/research/karpenter-manual.md).
+// NodeClaim → Node.
 type KarpenterCapacity struct {
 	// Enabled turns on operator-managed Karpenter capacity. When true the operator reconciles the Zetta
 	// NodePool and pins the Zetta pods onto it (a dedicated taint + toleration and a pool nodeSelector),
@@ -526,8 +526,7 @@ type ZettaIdentityStatus struct {
 // OramaZettaCluster deploys a headless Orama Zetta cluster (a StatefulSet of equal-peer CRDT nodes)
 // from one CR. Peer replication is TCP 7777 (always mTLS — every node shares one operator-minted
 // cluster join token that derives the cluster CA, operator#92); the HTTP API (MCP + REST + serving)
-// is 4800; each node persists to a per-node PVC at /data. See the plan of record in
-// oramasearch/orama-bridge docs/projects/one-orama.
+// is 4800; each node persists to a per-node PVC at /data.
 type OramaZettaCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

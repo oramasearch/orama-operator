@@ -19,14 +19,14 @@ spec:
     - {name: oramasearch-dockerhub, namespace: lake}
     - {name: cloudflare-api-token, namespace: lake}
   clusters:                       # independent of each other
-    - clusterRef: orama-nonprod-cluster-01
+    - clusterRef: example-nonprod
       name: dev
       spec:
-        host: lake-dev.oramadev.net
-    - clusterRef: orama-nonprod-cluster-01
+        host: lake-dev.example.net
+    - clusterRef: example-nonprod
       name: staging
       spec:                       # this member's settings, merged over the template
-        host: lake-staging.oramadev.net
+        host: lake-staging.example.net
         postgres: {instances: 3}
       secrets:                    # this member's own, replacing the set's of the same name
         - {name: staging-cloudflare-token, namespace: lake, as: cloudflare-api-token}
