@@ -151,7 +151,7 @@ func stackRules(t *testing.T, oc *oramav1alpha1.OramaCloudV1) (*unstructured.Uns
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := hubObject(t, objects, "PrometheusRule")
+	rule := monitoringObject(t, objects, "PrometheusRule")
 	groups, _, _ := unstructured.NestedSlice(rule.Object, "spec", "groups")
 	byAlert := map[string]map[string]any{}
 	for _, r := range groups[0].(map[string]any)["rules"].([]any) {
