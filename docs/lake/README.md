@@ -79,7 +79,10 @@ Polars: it writes the
 `OramaZettaCluster`, CloudNativePG `Cluster`, upstream operator's resource (Strimzi, Altinity, TiDB
 Operator, K8ssandra, valkey-operator), or StatefulSet of [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or
 [lake-polars](lake-polars.md) per service, writes `service_status`, and hands lake each connection
-through a mounted Secret ([services.md](services.md)). The same poll runs a customer's **stores**
+through a mounted Secret ([services.md](services.md)). A service runs only in its workspace
+namespace, never in the Lake namespace; anything of a tenant service left there is reported as the
+`TenantServicesIsolated` condition and a Warning event, never deleted
+([services.md](services.md#never-in-the-lake-namespace-operator778), operator#778). The same poll runs a customer's **stores**
 (lake#196, lake#664): cluster volumes (one Lake-owned PersistentVolumeClaim each), the customer's
 own buckets on R2, S3, B2, GCS and Azure (one `LakeSealedSecret` delivering the workspace's
 credential each; the bucket itself is never touched) and Lake-run Zetta and Lake stores, each

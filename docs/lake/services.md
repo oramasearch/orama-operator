@@ -482,7 +482,7 @@ Secret `lake-<lake>-workspaces` is deleted once services run.
 | `Provisioning` | the resource is ready but its credential is not yet in the Secret | `delivering the connection` |
 | `Provisioning` | a previous resource or data volume of that name is still terminating | `waiting for the previous … to be deleted` |
 | `Ready` | the resource is ready **and** its credential was written in this poll | `service ready` |
-| `Failed` | ownership, validation, a missing upstream operator or the quota refused the service | see above; quota: exactly `service quota reached (<n>)`; `the <kind> operator is not installed on this cluster` |
+| `Failed` | ownership, validation, a missing upstream operator or the quota refused the service | see above; quota: exactly `service quota reached (<n>)`; `the <kind> operator is not installed on this cluster`; a workspace namespace that is the Lake's own: `workspace namespace <ns> is the Lake namespace; a tenant service runs only in its workspace namespace` ([below](#never-in-the-lake-namespace-operator778)) |
 | `Deleting` | an absent service's resources are still going | `deleting the Zetta cluster`, `deleting the Zetta data volumes`, `deleting the Postgres cluster`, `deleting the Postgres data volumes`, and for the catalog `deleting the <Kafka\|ClickHouse\|TiDB\|Cassandra\|Valkey\|SQLite\|DuckDB\|Polars> cluster`, then `… data volumes` |
 | `Deleted` | nothing remains | `service deleted` |
 
@@ -540,6 +540,45 @@ kinds' `data-<name>-<i>`, and the PVCs
 that Strimzi, TiDB Operator, cass-operator and the Valkey operator keep, are not deleted by that
 path. The Lake's `spec.zetta` reconcile skips service
 clusters.
+
+## Never in the Lake namespace (operator#778)
+
+A tenant's service runs only in its workspace namespace. The Lake namespace holds the Lake's
+control database, admin token, instance key and every projection, and its policies are the Lake's,
+not the workspace sandbox's; a tenant's database there would sit beside all of that, and its
+Secrets would be Lake-namespace Secrets
+([operator#778](https://github.com/oramasearch/orama-operator/issues/778): a CloudNativePG
+`Cluster` `lake/prod-svc-5d97f8ed8de9` was left there from before services moved to workspace
+namespaces). Three rules keep it out, in `internal/controller/lake_tenant_isolation.go`:
+
+- **Never created there.** A service row whose workspace namespace is the Lake namespace fails
+  with `workspace namespace <ns> is the Lake namespace; a tenant service runs only in its workspace
+  namespace`, whatever its kind, before anything is written. An absent row there fails the same
+  way and deletes nothing. The workspace reconciler refuses a workspace whose namespace would be
+  the Lake namespace with the same message, so a workspace Zetta never goes there either.
+- **Always owned.** Every object the operator writes for a service carries the Lake's controller
+  reference (the Lake is cluster-scoped, so the reference holds in any namespace) and the labels
+  `orama.cloud/lake`, `orama.cloud/service-id`, `orama.cloud/workspace` and
+  `app.kubernetes.io/name=lake-service`. What an upstream operator makes from it (CloudNativePG's
+  Services and Secrets, a StatefulSet's pods) is owned by that object. Deleting the service or the
+  Lake removes them, except the data volumes listed in
+  [Other ways a service goes away](#other-ways-a-service-goes-away).
+- **Reported, never deleted.** Every Lake reconcile lists the Lake namespace for what is left of a
+  tenant service: an `OramaZettaCluster` that is a service or workspace Zetta; a CloudNativePG
+  `Cluster`, a catalog kind's primary object, a StatefulSet, Deployment, Service, Secret or
+  PersistentVolumeClaim that carries `orama.cloud/service-id` or `app.kubernetes.io/name=lake-service`,
+  or whose name is a service's (`<lake>-svc-<12 hex>` or `<lake>-ws-<12 hex>`, alone or followed by
+  `-…`, and `data-` before either), which finds what CloudNativePG derived without the labels. The
+  Lake's own objects there (its Zetta, control database, the services Secret, a bucket store's
+  delivered credential) are not reported. The result is the Lake's `TenantServicesIsolated`
+  condition: `True` (`NoTenantObjects`), `False` (`TenantObjectsInLakeNamespace`, naming up to ten
+  objects and the count), or `Unknown` (`CheckFailed`) when a list fails. When the finding is new or
+  changes, a Warning event `TenantObjectInLakeNamespace` is recorded on the Lake. The condition does
+  not change the Lake's `phase`.
+
+The check never deletes: a leftover may hold data a tenant wrote, and removing it is a person's
+decision, with the consent the cluster rules ask for. Read-only first:
+`kubectl get lake <name> -o jsonpath='{.status.conditions[?(@.type=="TenantServicesIsolated")]}'`.
 
 ## RBAC
 

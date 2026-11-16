@@ -322,6 +322,12 @@ func (r *LakeWorkspacesReconciler) reconcileLakeWorkspace(
 		status.Message = err.Error()
 		return status, false, nil
 	}
+	// A workspace's Zetta is a tenant service: never in the Lake namespace (operator#778).
+	if name == lakeNamespace(lake) {
+		status.Phase = WorkspacePhaseFailed
+		status.Message = lakeNamespaceServiceMessage(lake)
+		return status, false, nil
+	}
 	status.Namespace = name
 	clusterName := lakeWorkspaceZettaName(lake, row)
 	var plan oramav1alpha1.LakeWorkspacePlanSpec

@@ -109,18 +109,18 @@ func catalogCases() []catalogCase {
 			},
 			upstreamSecret: func(h *serviceHarness, c catalogCase) {
 				user := h.upstream(strimziKafkaUserGVK, c.name()+"-app")
-				h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.name() + "-app", Namespace: testServiceNamespace,
+				h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.name() + "-app", Namespace: testServiceWorkspaceNamespace,
 					OwnerReferences: []metav1.OwnerReference{{APIVersion: "kafka.strimzi.io/v1", Kind: "KafkaUser", Name: user.GetName(), UID: user.GetUID()}}},
 					Data: map[string][]byte{"password": []byte("scram-secret"), "sasl.jaas.config": []byte("...")}})
 				kafka := h.upstream(strimziKafkaGVK, c.name())
-				h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.name() + "-cluster-ca-cert", Namespace: testServiceNamespace,
+				h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.name() + "-cluster-ca-cert", Namespace: testServiceWorkspaceNamespace,
 					OwnerReferences: []metav1.OwnerReference{{APIVersion: "kafka.strimzi.io/v1", Kind: "Kafka", Name: kafka.GetName(), UID: kafka.GetUID()}}},
 					Data: map[string][]byte{"ca.crt": []byte("cluster-ca-pem")}})
 			},
-			endpoint: "prod-svc-666666666666-kafka-bootstrap.lake.svc.cluster.local:9092",
+			endpoint: "prod-svc-666666666666-kafka-bootstrap.prod-ws-123e4567e89b.svc.cluster.local:9092",
 			credential: func(string) string {
-				return `{"kind":"kafka","endpoint":"prod-svc-666666666666-kafka-bootstrap.lake.svc.cluster.local:9092",` +
-					`"bootstrap":"prod-svc-666666666666-kafka-bootstrap.lake.svc.cluster.local:9092","username":"prod-svc-666666666666-app",` +
+				return `{"kind":"kafka","endpoint":"prod-svc-666666666666-kafka-bootstrap.prod-ws-123e4567e89b.svc.cluster.local:9092",` +
+					`"bootstrap":"prod-svc-666666666666-kafka-bootstrap.prod-ws-123e4567e89b.svc.cluster.local:9092","username":"prod-svc-666666666666-app",` +
 					`"password":"scram-secret","sasl_mechanism":"SCRAM-SHA-512","security_protocol":"SASL_SSL","ca_certificate":"cluster-ca-pem"}`
 			},
 			claimLabels: map[string]string{strimziClusterLabel: "prod-svc-666666666666", strimziKindLabel: "Kafka"},
@@ -161,10 +161,10 @@ func catalogCases() []catalogCase {
 				h.setStatus(clickHouseKeeperGVK, c.name(), map[string]interface{}{"status": "Completed"})
 			},
 			passwordSecret: "prod-svc-777777777777-credentials", passwordKey: "password",
-			endpoint: "clickhouse-prod-svc-777777777777.lake.svc.cluster.local:8123",
+			endpoint: "clickhouse-prod-svc-777777777777.prod-ws-123e4567e89b.svc.cluster.local:8123",
 			credential: func(password string) string {
-				return `{"kind":"clickhouse","endpoint":"clickhouse-prod-svc-777777777777.lake.svc.cluster.local:8123",` +
-					`"host":"clickhouse-prod-svc-777777777777.lake.svc.cluster.local","http_port":8123,"native_port":9000,` +
+				return `{"kind":"clickhouse","endpoint":"clickhouse-prod-svc-777777777777.prod-ws-123e4567e89b.svc.cluster.local:8123",` +
+					`"host":"clickhouse-prod-svc-777777777777.prod-ws-123e4567e89b.svc.cluster.local","http_port":8123,"native_port":9000,` +
 					`"user":"app","password":"` + password + `","database":"default"}`
 			},
 			claimLabels: map[string]string{clickHouseInstallationLabel: "prod-svc-777777777777", clickHouseAppLabel: "chop"},
@@ -214,11 +214,11 @@ func catalogCases() []catalogCase {
 				h.update(tc)
 			},
 			passwordSecret: "prod-svc-888888888888-init", passwordKey: "root",
-			endpoint: "prod-svc-888888888888-tidb.lake.svc.cluster.local:4000",
+			endpoint: "prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000",
 			credential: func(password string) string {
-				return `{"kind":"tidb","endpoint":"prod-svc-888888888888-tidb.lake.svc.cluster.local:4000",` +
-					`"host":"prod-svc-888888888888-tidb.lake.svc.cluster.local","port":4000,"user":"root","password":"` + password + `",` +
-					`"uri":"mysql://root:` + password + `@prod-svc-888888888888-tidb.lake.svc.cluster.local:4000"}`
+				return `{"kind":"tidb","endpoint":"prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000",` +
+					`"host":"prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local","port":4000,"user":"root","password":"` + password + `",` +
+					`"uri":"mysql://root:` + password + `@prod-svc-888888888888-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000"}`
 			},
 			claimLabels: map[string]string{"app.kubernetes.io/instance": "prod-svc-888888888888", "app.kubernetes.io/managed-by": "tidb-operator"},
 		},
@@ -254,14 +254,14 @@ func catalogCases() []catalogCase {
 			upstreamSecret: func(h *serviceHarness, c catalogCase) {
 				kc := h.upstream(k8ssandraClusterGVK, c.name())
 				controller := true
-				h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.slug + "-superuser", Namespace: testServiceNamespace,
+				h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.slug + "-superuser", Namespace: testServiceWorkspaceNamespace,
 					OwnerReferences: []metav1.OwnerReference{{APIVersion: "k8ssandra.io/v1alpha1", Kind: "K8ssandraCluster", Name: kc.GetName(), UID: kc.GetUID(), Controller: &controller}}},
 					Data: map[string][]byte{"username": []byte(c.slug + "-superuser"), "password": []byte("cql-secret")}})
 			},
-			endpoint: "svc-999999999999-svc-999999999999-service.lake.svc.cluster.local:9042",
+			endpoint: "svc-999999999999-svc-999999999999-service.prod-ws-123e4567e89b.svc.cluster.local:9042",
 			credential: func(string) string {
-				return `{"kind":"cassandra","endpoint":"svc-999999999999-svc-999999999999-service.lake.svc.cluster.local:9042",` +
-					`"host":"svc-999999999999-svc-999999999999-service.lake.svc.cluster.local","port":9042,"datacenter":"dc1",` +
+				return `{"kind":"cassandra","endpoint":"svc-999999999999-svc-999999999999-service.prod-ws-123e4567e89b.svc.cluster.local:9042",` +
+					`"host":"svc-999999999999-svc-999999999999-service.prod-ws-123e4567e89b.svc.cluster.local","port":9042,"datacenter":"dc1",` +
 					`"user":"svc-999999999999-superuser","password":"cql-secret"}`
 			},
 			claimLabels: map[string]string{cassandraClusterLabel: "svc-999999999999"},
@@ -293,10 +293,10 @@ func catalogCases() []catalogCase {
 					"conditions": []interface{}{map[string]interface{}{"type": "Ready", "status": "True"}}})
 			},
 			passwordSecret: "prod-svc-aaaaaaaaaaaa-credentials", passwordKey: "password",
-			endpoint: "valkey-prod-svc-aaaaaaaaaaaa.lake.svc.cluster.local:6379",
+			endpoint: "valkey-prod-svc-aaaaaaaaaaaa.prod-ws-123e4567e89b.svc.cluster.local:6379",
 			credential: func(password string) string {
-				return `{"kind":"valkey","endpoint":"valkey-prod-svc-aaaaaaaaaaaa.lake.svc.cluster.local:6379",` +
-					`"host":"valkey-prod-svc-aaaaaaaaaaaa.lake.svc.cluster.local","port":6379,"user":"app","password":"` + password + `","cluster":true}`
+				return `{"kind":"valkey","endpoint":"valkey-prod-svc-aaaaaaaaaaaa.prod-ws-123e4567e89b.svc.cluster.local:6379",` +
+					`"host":"valkey-prod-svc-aaaaaaaaaaaa.prod-ws-123e4567e89b.svc.cluster.local","port":6379,"user":"app","password":"` + password + `","cluster":true}`
 			},
 			claimLabels: map[string]string{valkeyClusterLabel: "prod-svc-aaaaaaaaaaaa", "app.kubernetes.io/managed-by": "valkey-operator"},
 		},
@@ -318,7 +318,7 @@ func catalogGVK(kind string) schema.GroupVersionKind {
 
 func (h *serviceHarness) upstream(gvk schema.GroupVersionKind, name string) *unstructured.Unstructured {
 	h.t.Helper()
-	obj := newServiceObject(gvk, testServiceNamespace, name)
+	obj := newServiceObject(gvk, testServiceWorkspaceNamespace, name)
 	if err := h.client.Get(context.Background(), client.ObjectKeyFromObject(obj), obj); err != nil {
 		h.t.Fatalf("get %s %s: %v", gvk.Kind, name, err)
 	}
@@ -327,7 +327,7 @@ func (h *serviceHarness) upstream(gvk schema.GroupVersionKind, name string) *uns
 
 func (h *serviceHarness) exists(gvk schema.GroupVersionKind, name string) bool {
 	h.t.Helper()
-	err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: name}, newServiceObject(gvk, testServiceNamespace, name))
+	err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: name}, newServiceObject(gvk, testServiceWorkspaceNamespace, name))
 	if err != nil && !apierrors.IsNotFound(err) {
 		h.t.Fatalf("get %s %s: %v", gvk.Kind, name, err)
 	}
@@ -364,7 +364,7 @@ func (h *serviceHarness) setStatus(gvk schema.GroupVersionKind, name string, fie
 func (h *serviceHarness) secret(name string) *corev1.Secret {
 	h.t.Helper()
 	secret := &corev1.Secret{}
-	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: name}, secret); err != nil {
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: name}, secret); err != nil {
 		h.t.Fatalf("get secret %s: %v", name, err)
 	}
 	return secret
@@ -390,7 +390,7 @@ func (h *serviceHarness) password(c catalogCase) string {
 }
 
 func catalogClaim(c catalogCase, name string) *corev1.PersistentVolumeClaim {
-	return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testServiceNamespace, Labels: c.claimLabels}}
+	return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testServiceWorkspaceNamespace, Labels: c.claimLabels}}
 }
 
 // readyCatalogService brings c's service to Ready and returns the harness and store.
@@ -498,7 +498,7 @@ func TestServicesCatalogDeletionOrder(t *testing.T) {
 			h, store := readyCatalogService(t, c)
 			h.create(catalogClaim(c, "data-"+c.name()+"-0"))
 			h.create(catalogClaim(c, "data-"+c.name()+"-1"))
-			unrelated := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-other", Namespace: testServiceNamespace,
+			unrelated := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data-other", Namespace: testServiceWorkspaceNamespace,
 				Labels: map[string]string{"app": "other"}}}
 			h.create(unrelated)
 
@@ -555,15 +555,15 @@ func TestServicesCatalogRefusesForeignObjects(t *testing.T) {
 			// Every object of the service's names, labelled as the service but not controlled
 			// by the Lake: each one is refused, the primary first.
 			kind, name, _ := strings.Cut(c.objects[0], "/")
-			foreign := newServiceObject(catalogGVK(kind), testServiceNamespace, name)
+			foreign := newServiceObject(catalogGVK(kind), testServiceWorkspaceNamespace, name)
 			foreign.SetLabels(map[string]string{serviceLakeLabel: "prod", serviceIDLabel: c.id})
 			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, c.spec(`{"instances":3}`), false)}}
 			h := newServiceHarness(t, serviceTestLake(), store, foreign)
 			h.poll()
-			want := fmt.Sprintf("%s lake/%s exists and is not this Lake's service", kind, name)
+			want := fmt.Sprintf("%s prod-ws-123e4567e89b/%s exists and is not this Lake's service", kind, name)
 			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, want, "")
 			if c.passwordSecret != "" {
-				if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+				if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 					t.Fatalf("a refused service generated a password Secret: %v", err)
 				}
 			}
@@ -579,11 +579,11 @@ func TestServicesCatalogRefusesForeignObjects(t *testing.T) {
 
 	// A secondary object held by someone else is refused too.
 	c := catalogCases()[0]
-	user := newServiceObject(strimziKafkaUserGVK, testServiceNamespace, c.name()+"-app")
+	user := newServiceObject(strimziKafkaUserGVK, testServiceWorkspaceNamespace, c.name()+"-app")
 	store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{}`, false)}}
 	h := newServiceHarness(t, serviceTestLake(), store, user)
 	h.poll()
-	expectStatus(t, store.status(t, c.id), ServicePhaseFailed, "KafkaUser lake/prod-svc-666666666666-app exists and is not this Lake's service", "")
+	expectStatus(t, store.status(t, c.id), ServicePhaseFailed, "KafkaUser prod-ws-123e4567e89b/prod-svc-666666666666-app exists and is not this Lake's service", "")
 	if h.exists(strimziKafkaGVK, c.name()) {
 		t.Fatal("a Kafka was created next to a foreign KafkaUser")
 	}
@@ -597,10 +597,10 @@ func TestServicesCatalogRefusesForeignSecrets(t *testing.T) {
 		}
 		t.Run(c.kind+"/password", func(t *testing.T) {
 			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{}`, false)}}
-			h := newServiceHarness(t, serviceTestLake(), store, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.passwordSecret, Namespace: testServiceNamespace},
+			h := newServiceHarness(t, serviceTestLake(), store, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.passwordSecret, Namespace: testServiceWorkspaceNamespace},
 				Data: map[string][]byte{c.passwordKey: []byte("chosen-by-someone-else")}})
 			h.poll()
-			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("Secret lake/%s exists and is not this Lake's service", c.passwordSecret), "")
+			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("Secret prod-ws-123e4567e89b/%s exists and is not this Lake's service", c.passwordSecret), "")
 		})
 	}
 	// An upstream Secret its upstream object does not own is not trusted as the credential.
@@ -623,7 +623,7 @@ func TestServicesCatalogRefusesForeignSecrets(t *testing.T) {
 			secret.OwnerReferences = nil
 			h.update(secret)
 			h.poll()
-			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("Secret lake/%s exists and is not this Lake's service", name), c.endpoint)
+			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("Secret prod-ws-123e4567e89b/%s exists and is not this Lake's service", name), c.endpoint)
 			if _, found := h.credentials()[c.slug+".json"]; found {
 				t.Fatal("an untrusted credential was written")
 			}
@@ -650,9 +650,9 @@ func TestServicesCatalogOperatorNotInstalled(t *testing.T) {
 			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("the %s operator is not installed on this cluster", c.kind), "")
 			// The rest of the Lake's services carry on.
 			expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances",
-				"prod-svc-222222222222-rw.lake.svc.cluster.local:5432")
+				"prod-svc-222222222222-rw.prod-ws-123e4567e89b.svc.cluster.local:5432")
 			if c.passwordSecret != "" {
-				if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+				if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 					t.Fatalf("a password Secret was generated for a kind that cannot run: %v", err)
 				}
 			}
@@ -678,7 +678,7 @@ func TestServicesCatalogOldVolumeBlocksCreation(t *testing.T) {
 			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{}`, false)}}
 			h := newServiceHarness(t, serviceTestLake(), store, catalogClaim(c, "data-old"))
 			h.poll()
-			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, "PersistentVolumeClaim lake/data-old exists and is not this Lake's service", "")
+			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, "PersistentVolumeClaim prod-ws-123e4567e89b/data-old exists and is not this Lake's service", "")
 			kind, name, _ := strings.Cut(c.objects[0], "/")
 			if h.exists(catalogGVK(kind), name) {
 				t.Fatal("a service was created over an old volume")
@@ -778,7 +778,7 @@ func TestServicesCatalogCountsTowardQuota(t *testing.T) {
 	if h2.exists(valkeyClusterGVK, c.name()) {
 		t.Fatal("a service over quota was created")
 	}
-	if err := h2.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+	if err := h2.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("a service over quota generated a password: %v", err)
 	}
 }

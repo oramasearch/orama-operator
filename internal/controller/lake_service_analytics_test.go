@@ -44,9 +44,9 @@ func duckdbCatalogCase() catalogCase {
 			h.setStatus(statefulSetGVK, c.name(), map[string]interface{}{"replicas": int64(1), "readyReplicas": int64(1)})
 		},
 		passwordSecret: testDuckDBName + "-credentials", passwordKey: "token",
-		endpoint: "http://prod-svc-dddddddddddd.lake.svc.cluster.local:8080",
+		endpoint: "http://prod-svc-dddddddddddd.prod-ws-123e4567e89b.svc.cluster.local:8080",
 		credential: func(token string) string {
-			return `{"kind":"duckdb","endpoint":"http://prod-svc-dddddddddddd.lake.svc.cluster.local:8080","token":"` + token + `","database":"main"}`
+			return `{"kind":"duckdb","endpoint":"http://prod-svc-dddddddddddd.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"` + token + `","database":"main"}`
 		},
 		claimLabels: map[string]string{"app.kubernetes.io/name": "lake-duckdb", "app.kubernetes.io/instance": testDuckDBName, serviceIDLabel: testDuckDBID},
 	}
@@ -67,9 +67,9 @@ func polarsCatalogCase() catalogCase {
 			h.setStatus(statefulSetGVK, c.name(), map[string]interface{}{"replicas": int64(3), "readyReplicas": int64(3)})
 		},
 		passwordSecret: testPolarsName + "-credentials", passwordKey: "token",
-		endpoint: "http://prod-svc-eeeeeeeeeeee.lake.svc.cluster.local:8080",
+		endpoint: "http://prod-svc-eeeeeeeeeeee.prod-ws-123e4567e89b.svc.cluster.local:8080",
 		credential: func(token string) string {
-			return `{"kind":"polars","endpoint":"http://prod-svc-eeeeeeeeeeee.lake.svc.cluster.local:8080","token":"` + token + `"}`
+			return `{"kind":"polars","endpoint":"http://prod-svc-eeeeeeeeeeee.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"` + token + `"}`
 		},
 		claimLabels: map[string]string{"app.kubernetes.io/name": "lake-polars", "app.kubernetes.io/instance": testPolarsName, serviceIDLabel: testPolarsID},
 	}
@@ -258,7 +258,7 @@ func TestServicesPolarsDeletionRemovesEveryWorkerVolume(t *testing.T) {
 	h.poll()
 	expectStatus(t, store.status(t, c.id), ServicePhaseDeleted, "service deleted", "")
 	for _, name := range []string{"data-" + c.name() + "-0", "data-" + c.name() + "-1", "data-" + c.name() + "-2"} {
-		if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: name}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+		if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceWorkspaceNamespace, Name: name}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
 			t.Fatalf("claim %s survived: %v", name, err)
 		}
 	}

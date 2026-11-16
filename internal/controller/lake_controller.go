@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -106,6 +107,9 @@ type LakeReconciler struct {
 	LakeManifestLogs func(ctx context.Context, namespace, podName string) (string, error)
 	// BuildEventClient posts best-effort pod-level events to lake. Nil uses a bounded client.
 	BuildEventClient *http.Client
+	// Recorder records the Lake's Warning events, such as a tenant service object found in the Lake
+	// namespace (lake_tenant_isolation.go). SetupWithManager sets it; nil records none.
+	Recorder record.EventRecorder
 }
 
 const (
@@ -388,6 +392,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.removeWorkspaceServiceTokenCopies(ctx, &lake); err != nil {
 		log.Error(err, "removing agent service token copies from workspace namespaces deferred")
 	}
+	// No tenant service object is left in the Lake namespace (orama-operator#778): reported as the
+	// TenantServicesIsolated condition and a Warning event, never deleted.
+	tenantIsolationCondition := r.reconcileLakeTenantIsolation(ctx, &lake, ns)
 	// Orama's provider key never stays in a workspace namespace (orama-operator#779).
 	if err := r.removeWorkspaceProviderKeyCopies(ctx, &lake); err != nil {
 		log.Error(err, "removing provider key copies from workspace namespaces deferred")
@@ -449,6 +456,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		conditionsChanged = true
 	}
 	if apimeta.SetStatusCondition(&desiredConditions, lakeFeaturesCondition(&lake)) {
+		conditionsChanged = true
+	}
+	if apimeta.SetStatusCondition(&desiredConditions, tenantIsolationCondition) {
 		conditionsChanged = true
 	}
 	// ClerkReady exists only on a Lake with spec.clerk.
@@ -2080,6 +2090,9 @@ func (r *LakeReconciler) lakeRequestsForStoreClaim(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("lake")
+	}
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.Lake{}).
 		Owns(&appsv1.Deployment{}).
