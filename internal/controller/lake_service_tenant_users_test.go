@@ -9,6 +9,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // tenantUserCall is one call the operator made to keep a tenant user.
@@ -109,7 +112,7 @@ func TestAnAdministratorConnectionIsRemovedFromTheServicesSecret(t *testing.T) {
 			if kind == serviceKindCassandra {
 				admin = `{"kind":"cassandra","user":"` + c.slug + `-superuser","password":"cql-secret"}`
 			}
-			secret := h.secret(lakeServicesSecret("prod"))
+			secret := h.servicesSecret()
 			secret.Data[c.slug+".json"] = []byte(admin)
 			secret.Data[c.id] = []byte(admin)
 			h.update(secret)
@@ -253,4 +256,15 @@ func TestCassandraTenantRoleStatements(t *testing.T) {
 			t.Errorf("%s: statements =\n%s", name, strings.Join(got, "\n"))
 		}
 	}
+}
+
+// servicesSecret is lake-prod-services, which stays in the Lake namespace while each service's own
+// Secrets are in its workspace namespace (operator#778).
+func (h *serviceHarness) servicesSecret() *corev1.Secret {
+	h.t.Helper()
+	secret := &corev1.Secret{}
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: lakeServicesSecret("prod")}, secret); err != nil {
+		h.t.Fatalf("get secret %s: %v", lakeServicesSecret("prod"), err)
+	}
+	return secret
 }

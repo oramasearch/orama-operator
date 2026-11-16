@@ -661,10 +661,10 @@ func TestServicesCatalogRefusesForeignSecrets(t *testing.T) {
 		}
 		t.Run(c.kind+"/tenant", func(t *testing.T) {
 			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{}`, false)}}
-			h := newServiceHarness(t, serviceTestLake(), store, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.tenantSecret, Namespace: testServiceNamespace},
+			h := newServiceHarness(t, serviceTestLake(), store, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.tenantSecret, Namespace: testServiceWorkspaceNamespace},
 				Data: map[string][]byte{"password": []byte("chosen-by-someone-else")}})
 			h.poll()
-			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("Secret lake/%s exists and is not this Lake's service", c.tenantSecret), "")
+			expectStatus(t, store.status(t, c.id), ServicePhaseFailed, fmt.Sprintf("Secret prod-ws-123e4567e89b/%s exists and is not this Lake's service", c.tenantSecret), "")
 		})
 	}
 	// An upstream Secret its upstream object does not own is not trusted as the credential.
